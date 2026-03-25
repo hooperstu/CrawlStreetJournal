@@ -1,0 +1,9 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+output/
+.DS_Store
+.cursor-push-debug.txt
+crawl_background.log
+crawl_background.pid
