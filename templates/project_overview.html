@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% set active_tab = 'overview' %}
+{% block title %}{{ project.name }} — Collector{% endblock %}
+
+{% block content %}
+<h1 class="page-title">{{ project.name }}</h1>
+{% if project.description %}
+<p class="text-muted" style="margin-top:-14px;margin-bottom:20px;">{{ project.description }}</p>
+{% endif %}
+
+<div class="stats">
+  <div class="stat">
+    <div class="stat-value">{{ m.total_runs }}</div>
+    <div class="stat-label">Runs</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value">{{ "{:,}".format(m.total_pages) }}</div>
+    <div class="stat-label">Total pages</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value">{{ "{:,}".format(m.total_assets) }}</div>
+    <div class="stat-label">Total assets</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value" {% if m.total_errors > 0 %}style="color:var(--nhs-red);"{% endif %}>{{ "{:,}".format(m.total_errors) }}</div>
+    <div class="stat-label">Total errors</div>
+  </div>
+</div>
+
+{% if m.recent_runs %}
+<div class="card">
+  <div class="flex-between">
+    <div class="card-title mb-0">Recent Runs</div>
+    <a href="{{ url_for('project_runs', slug=project.slug) }}" class="btn btn-sm btn-secondary">View All Runs</a>
+  </div>
+  <div class="table-wrap mt-16">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Status</th>
+          <th>Pages</th>
+          <th>Created</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in m.recent_runs %}
+        <tr>
+          <td style="font-weight:600;">
+            {% if r.friendly_name %}{{ r.friendly_name }}{% else %}<span class="text-muted" style="font-style:italic;">Unnamed</span>{% endif %}
+          </td>
+          <td>
+            {% if r.status == 'new' %}
+            <span class="badge badge-new">New</span>
+            {% elif r.status == 'running' %}
+            <span class="badge badge-running">Running</span>
+            {% elif r.status == 'interrupted' %}
+            <span class="badge badge-stopping">Interrupted</span>
+            {% elif r.status == 'completed' %}
+            <span class="badge badge-idle">Completed</span>
+            {% else %}
+            <span class="badge badge-idle">{{ r.status }}</span>
+            {% endif %}
+          </td>
+          <td>{{ "{:,}".format(r.page_count|int) }}</td>
+          <td class="text-muted" style="font-size:13px;">{{ r.timestamp_label }}</td>
+          <td>
+            <div style="display:flex;gap:6px;">
+              {% if r.page_count|int > 0 %}
+              <a href="{{ url_for('run_results', slug=project.slug, run_name=r.name) }}" class="btn btn-sm btn-secondary">Results</a>
+              {% endif %}
+              <a href="{{ url_for('run_monitor', slug=project.slug, run_name=r.name) }}" class="btn btn-sm btn-secondary">Monitor</a>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+<div class="card">
+  <p class="text-muted">No runs yet. <a href="{{ url_for('project_runs', slug=project.slug) }}">Create a run</a> to start crawling, or <a href="{{ url_for('project_defaults', slug=project.slug) }}">set up your defaults</a> first.</p>
+</div>
+{% endif %}
+
+<div class="two-col">
+  <a href="{{ url_for('project_defaults', slug=project.slug) }}" class="project-card">
+    <h3>Defaults</h3>
+    <p>Configure seed URLs, allowed domains, sitemaps, and crawl settings. These are copied into each new run.</p>
+  </a>
+  <a href="{{ url_for('project_runs', slug=project.slug) }}" class="project-card">
+    <h3>Runs</h3>
+    <p>Create, launch, and review crawl runs. Each run captures pages, assets, links, and metadata from your target domains.</p>
+  </a>
+</div>
+
+<div style="margin-top:20px;">
+  <button type="button" class="btn btn-sm btn-danger" id="delete-start">Delete Project</button>
+
+  <div id="delete-confirm" style="display:none; margin-top:12px; padding:16px; border:2px solid var(--danger, #dc3545); border-radius:8px; max-width:420px;">
+    <p style="margin:0 0 8px;"><strong>This will permanently delete the project and ALL its data.</strong></p>
+    <label for="delete-input" style="display:block; margin-bottom:4px; font-size:.9em;">
+      Type <strong>{{ project.slug }}</strong> to confirm:
+    </label>
+    <input type="text" id="delete-input" autocomplete="off" spellcheck="false"
+           style="width:100%; padding:6px 8px; margin-bottom:10px; border:1px solid #ccc; border-radius:4px; font-family:monospace;">
+    <form method="post" action="{{ url_for('delete_project_route', slug=project.slug) }}" style="display:inline;">
+      <button type="submit" class="btn btn-sm btn-danger" id="delete-execute" disabled>Confirm Delete</button>
+    </form>
+    <button type="button" class="btn btn-sm" id="delete-cancel" style="margin-left:6px;">Cancel</button>
+  </div>
+
+  <script>
+  (function () {
+    var slug = {{ project.slug | tojson }};
+    var startBtn  = document.getElementById('delete-start');
+    var panel     = document.getElementById('delete-confirm');
+    var input     = document.getElementById('delete-input');
+    var execBtn   = document.getElementById('delete-execute');
+    var cancelBtn = document.getElementById('delete-cancel');
+
+    startBtn.addEventListener('click', function () {
+      startBtn.style.display = 'none';
+      panel.style.display = 'block';
+      input.value = '';
+      execBtn.disabled = true;
+      input.focus();
+    });
+
+    cancelBtn.addEventListener('click', function () {
+      panel.style.display = 'none';
+      startBtn.style.display = '';
+      input.value = '';
+    });
+
+    input.addEventListener('input', function () {
+      execBtn.disabled = (input.value.trim() !== slug);
+    });
+  })();
+  </script>
+</div>
+{% endblock %}

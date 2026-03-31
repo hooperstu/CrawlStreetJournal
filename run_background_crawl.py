@@ -3,6 +3,7 @@
 Long-running crawl for background execution. Logs to crawl_background.log
 and raises MAX_PAGES_TO_CRAWL for multi-hour runs (override in this file).
 """
+import argparse
 import logging
 import signal
 import sys
@@ -11,7 +12,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 LOG_FILE = ROOT / "crawl_background.log"
 
-# Raise cap so the job can run for hours (still stops early if the queue is exhausted).
 BACKGROUND_MAX_PAGES = 1_000_000
 
 _interrupted = False
@@ -34,6 +34,22 @@ def _on_progress(crawled: int, assets: int, current_url: str) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Background Collector crawl")
+    parser.add_argument("--name", default=None, help="Friendly name for a new run")
+    parser.add_argument(
+        "--run", default=None, metavar="FOLDER",
+        help="Start or resume a specific run folder",
+    )
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Resume an interrupted run (requires --run)",
+    )
+    parser.add_argument(
+        "--project", default=None, metavar="SLUG",
+        help="Project slug to run within (scopes output to projects/<slug>/runs/)",
+    )
+    args = parser.parse_args()
+
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
@@ -47,6 +63,10 @@ def main() -> int:
         signal.signal(signal.SIGTERM, _signal_handler)
 
     import config
+    import storage as storage_module
+
+    if args.project:
+        storage_module.activate_project(args.project)
 
     config.MAX_PAGES_TO_CRAWL = BACKGROUND_MAX_PAGES
 
@@ -66,16 +86,20 @@ def main() -> int:
         pages, assets = scraper.crawl(
             on_progress=_on_progress,
             should_stop=lambda: _interrupted,
+            run_name=args.name,
+            run_folder=args.run,
+            resume=args.resume,
         )
     except Exception:
         logging.exception("Crawl failed")
         return 1
 
+    import storage
     logging.info(
         "Finished: %s HTML pages; %s asset rows from links. CSVs in %s/",
         pages,
         assets,
-        config.OUTPUT_DIR,
+        storage.get_active_run_dir(),
     )
     return 0
 

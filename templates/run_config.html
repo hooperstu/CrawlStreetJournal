@@ -1,0 +1,193 @@
+{% extends "base.html" %}
+{% set active_tab = 'runs' %}
+{% block title %}Config — {{ friendly_name or run_name }}{% endblock %}
+
+{% block subnav %}
+<div class="sub-nav">
+  <a href="{{ url_for('run_config', slug=project.slug, run_name=run_name) }}" class="active">Config</a>
+  <a href="{{ url_for('run_monitor', slug=project.slug, run_name=run_name) }}">Monitor</a>
+  <a href="{{ url_for('run_results', slug=project.slug, run_name=run_name) }}">Results</a>
+</div>
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{{ url_for('project_runs', slug=project.slug) }}">Runs</a>
+  <span class="sep">/</span>
+  <strong>{{ friendly_name or run_name }}</strong>
+  <span class="sep">/</span>
+  Config
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="flex-between" style="margin-bottom:20px;">
+  <h1 class="page-title" style="margin-bottom:0;">
+    Run Configuration{% if friendly_name %}: {{ friendly_name }}{% endif %}
+  </h1>
+  <div class="gap-8">
+    {% if run_status == 'new' %}
+    <form method="post" action="{{ url_for('start_run_route', slug=project.slug, run_name=run_name) }}" style="display:inline;">
+      <button type="submit" class="btn btn-primary" {% if status.running %}disabled{% endif %}>Start This Run</button>
+    </form>
+    {% elif run_status == 'interrupted' %}
+    <form method="post" action="{{ url_for('resume_run_route', slug=project.slug, run_name=run_name) }}" style="display:inline;">
+      <button type="submit" class="btn btn-primary" {% if status.running %}disabled{% endif %}>Resume This Run</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{% if run_status not in ('new',) %}
+<div class="card" style="padding:10px 18px;background:#fff3cd;border-left:4px solid var(--nhs-orange);">
+  <strong>Note:</strong> This run has status <strong>{{ run_status }}</strong>.
+  {% if run_status == 'completed' %}
+  Config changes won't affect the completed data.
+  {% elif run_status == 'interrupted' %}
+  Config changes will take effect when you resume this run.
+  {% endif %}
+</div>
+{% endif %}
+
+<form method="post" action="{{ url_for('save_run_config_route', slug=project.slug, run_name=run_name) }}">
+
+  <div class="card">
+    <div class="card-title">Run Name</div>
+    <div class="form-group" style="max-width:400px;">
+      <label class="form-label">Friendly name</label>
+      <input type="text" name="friendly_name" value="{{ friendly_name }}" placeholder="e.g. Weekly full crawl">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">1. Target Sites</div>
+    <div class="form-group">
+      <label class="form-label">Seed URLs</label>
+      <textarea name="seed_urls" rows="10">{% for u in cfg.get('SEED_URLS', []) %}{{ u }}
+{% endfor %}</textarea>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">2. Allowed Domains</div>
+    <div class="form-group">
+      <label class="form-label">Allowed domain substrings</label>
+      <div class="form-hint">One per line.</div>
+      <textarea name="allowed_domains" rows="10">{% for d in cfg.get('ALLOWED_DOMAINS', []) %}{{ d }}
+{% endfor %}</textarea>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">3. Sitemaps</div>
+    <div class="form-group">
+      <label class="form-label">Sitemap URLs</label>
+      <textarea name="sitemap_urls" rows="4">{% for u in cfg.get('SITEMAP_URLS', []) %}{{ u }}
+{% endfor %}</textarea>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" name="load_sitemaps_from_robots" id="cb-robots"
+        {% if cfg.get('LOAD_SITEMAPS_FROM_ROBOTS') %}checked{% endif %}>
+      <label for="cb-robots">Discover sitemaps from robots.txt</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" name="respect_robots_txt" id="cb-respect-robots"
+        {% if cfg.get('RESPECT_ROBOTS_TXT') %}checked{% endif %}>
+      <label for="cb-respect-robots">Respect robots.txt Disallow rules</label>
+    </div>
+    <div class="form-group" style="max-width:300px;">
+      <label class="form-label">Max sitemap URLs to read</label>
+      <input type="number" name="max_sitemap_urls" value="{{ cfg.get('MAX_SITEMAP_URLS', 1000000) }}" min="1">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">4. Crawl Limits</div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">Max pages to crawl</label>
+        <input type="number" name="max_pages" value="{{ cfg.get('MAX_PAGES_TO_CRAWL', 1000000) }}" min="1">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Request timeout (seconds)</label>
+        <input type="number" name="request_timeout" value="{{ cfg.get('REQUEST_TIMEOUT_SECONDS', 20) }}" min="1">
+      </div>
+      {% set delay = cfg.get('REQUEST_DELAY_SECONDS', [3, 5]) %}
+      <div class="form-group">
+        <label class="form-label">Delay min (seconds)</label>
+        <input type="number" name="delay_min" step="0.1" min="0"
+          value="{{ delay[0] if delay is iterable and delay is not string else delay }}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Delay max (seconds)</label>
+        <input type="number" name="delay_max" step="0.1" min="0"
+          value="{{ delay[1] if delay is iterable and delay is not string else delay }}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Max retries</label>
+        <input type="number" name="max_retries" value="{{ cfg.get('MAX_RETRIES', 1) }}" min="0">
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">5. CSV Outputs</div>
+    <div class="form-grid">
+      <div class="checkbox-row">
+        <input type="checkbox" name="write_edges" {% if cfg.get('WRITE_EDGES_CSV') %}checked{% endif %}>
+        <label>edges.csv — link graph between pages</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="write_tags" {% if cfg.get('WRITE_TAGS_CSV') %}checked{% endif %}>
+        <label>tags.csv — one row per tag per page</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="asset_head" {% if cfg.get('ASSET_HEAD_METADATA') %}checked{% endif %}>
+        <label>HEAD-check assets for size and content-type</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="capture_headers" {% if cfg.get('CAPTURE_RESPONSE_HEADERS') %}checked{% endif %}>
+        <label>Record Last-Modified / ETag from responses</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="write_sitemap_urls" {% if cfg.get('WRITE_SITEMAP_URLS_CSV') %}checked{% endif %}>
+        <label>sitemap_urls.csv — all locations from sitemaps</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="write_nav_links" {% if cfg.get('WRITE_NAV_LINKS_CSV') %}checked{% endif %}>
+        <label>nav_links.csv — links inside &lt;nav&gt; elements</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="check_outbound" {% if cfg.get('CHECK_OUTBOUND_LINKS') %}checked{% endif %}>
+        <label>link_checks.csv — HEAD-check outbound links (slow)</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="capture_readability" {% if cfg.get('CAPTURE_READABILITY') %}checked{% endif %}>
+        <label>Flesch–Kincaid readability scores</label>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">6. Logging</div>
+    <div class="form-group" style="max-width:300px;">
+      <label class="form-label">Log level</label>
+      <select name="log_level">
+        {% for lvl in ["DEBUG","INFO","WARNING","ERROR","CRITICAL"] %}
+        <option value="{{ lvl }}" {% if cfg.get('LOG_LEVEL', 'INFO') == lvl %}selected{% endif %}>{{ lvl }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">7. User-Agent</div>
+    <div class="form-group">
+      <label class="form-label">User-Agent string sent with every request</label>
+      <input type="text" name="user_agent" value="{{ cfg.get('USER_AGENT', '') }}">
+    </div>
+  </div>
+
+  <button type="submit" class="btn btn-primary" style="margin-top:4px;">Save Configuration</button>
+</form>
+{% endblock %}

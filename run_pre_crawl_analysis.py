@@ -31,12 +31,9 @@ import parser as parser_module
 import sitemap as sitemap_module
 import storage
 
-# ---------------------------------------------------------------------------
-# Override config so every target domain is reachable
-# ---------------------------------------------------------------------------
-config.ALLOWED_DOMAINS = (
-    "nhs.uk",
-    "nhs.net",
+# Permissive domain list used only during pre-crawl analysis so every
+# target domain is reachable regardless of the user's config.
+_PRE_CRAWL_ALLOWED_DOMAINS = (
     ".co.uk",
     ".org.uk",
     ".org",
@@ -58,124 +55,9 @@ PAGES_FIELDS_EXTENDED = storage.PAGES_FIELDS + ("tech_stack_detected",)
 _interrupted = False
 
 # ---------------------------------------------------------------------------
-# Target domains
+# Target domains — populate via the GUI project defaults or edit here.
 # ---------------------------------------------------------------------------
 TARGET_URLS: List[str] = [
-    "https://www.hee.nhs.uk",
-    "https://digital.nhs.uk",
-    "https://england.nhs.uk",
-    "https://anro.wm.hee.nhs.uk",
-    "https://www.bedfordshirehospitals.nhs.uk",
-    "https://www.healthcareers.nhs.uk",
-    "https://cptraininghub.nhs.uk",
-    "https://dental.hee.nhs.uk",
-    "https://dental.southwest.hee.nhs.uk",
-    "https://digital-transformation.hee.nhs.uk",
-    "https://editlab.this.nhs.uk",
-    "https://emergency.peninsuladeanery.nhs.uk",
-    "https://emergency.severndeanery.nhs.uk",
-    "https://foundation.peninsuladeanery.nhs.uk",
-    "https://foundation.severndeanery.nhs.uk",
-    "https://foundationprogramme.nhs.uk",
-    "https://www.genomicseducation.hee.nhs.uk",
-    "https://global.hee.nhs.uk",
-    "https://gpnursing.jobs.nhs.uk",
-    "https://medical.hee.nhs.uk",
-    "https://gp-training.hee.nhs.uk",
-    "https://healthacademy.lancsteachinghospitals.nhs.uk",
-    "https://icmnro.wm.hee.nhs.uk",
-    "http://jobs.mtw.nhs.uk",
-    "https://kss.hee.nhs.uk",
-    "https://library.hee.nhs.uk",
-    "https://library.nhs.uk",
-    "https://madeinheene.hee.nhs.uk",
-    "https://nshcs.hee.nhs.uk",
-    "https://me.mtw.nhs.uk",
-    "https://medicine.peninsuladeanery.nhs.uk",
-    "https://medicine.severndeanery.nhs.uk",
-    "https://monitoring.ops.data.digital.nhs.uk",
-    "https://www.mtw.nhs.uk",
-    "https://www.myplannedcare.nhs.uk",
-    "https://www.nhsimas.nhs.uk",
-    "https://nhs-pcse-staging.pcse.england.nhs.uk",
-    "https://nursing-associates.hee.nhs.uk",
-    "https://nwschoolofpsychiatry.hee.nhs.uk",
-    "https://obsandgynae.peninsuladeanery.nhs.uk",
-    "https://obsandgynae.severndeanery.nhs.uk",
-    "https://ophthalmology.severndeanery.nhs.uk",
-    "https://paediatrics.peninsuladeanery.nhs.uk",
-    "https://paediatrics.severndeanery.nhs.uk",
-    "https://pathology.peninsuladeanery.nhs.uk",
-    "https://pathology.severndeanery.nhs.uk",
-    "https://pcse.england.nhs.uk",
-    "https://peninsuladeanery.nhs.uk",
-    "https://www.uhsussex.nhs.uk",
-    "https://ppn.nhs.uk",
-    "https://primarycare.peninsuladeanery.nhs.uk",
-    "https://primarycare.severndeanery.nhs.uk",
-    "https://psychiatry.peninsuladeanery.nhs.uk",
-    "https://psychiatry.severndeanery.nhs.uk",
-    "https://publichealth.severndeanery.nhs.uk",
-    "https://radiology.peninsuladeanery.nhs.uk",
-    "https://radiology.severndeanery.nhs.uk",
-    "https://remedy.this.nhs.uk",
-    "https://rs.nhsprofessionals.nhs.uk",
-    "https://rsspare.nhsprofessionals.nhs.uk",
-    "https://scan4safety.nhs.uk",
-    "https://severndeanery.nhs.uk",
-    "https://www.nhsbsa.nhs.uk",
-    "https://www.stepintothenhs.nhs.uk",
-    "https://support.mtw.nhs.uk",
-    "https://surgery.peninsuladeanery.nhs.uk",
-    "https://surgery.severndeanery.nhs.uk",
-    "https://telblog.hee.nhs.uk",
-    "https://thamesvalley.hee.nhs.uk",
-    "https://www.this.nhs.uk",
-    "https://tis-support.hee.nhs.uk",
-    "https://transparency.ndsp.gpconnect.nhs.uk",
-    "https://vts.wm.hee.nhs.uk",
-    "https://websiteadmin.southwest.hee.nhs.uk",
-    "https://wessex.hee.nhs.uk",
-    "https://wordpress-support.hee.nhs.uk",
-    "https://wpms.hee.nhs.uk",
-    # www.academic, www.accs, www.anaesthesia have no non-www counterparts
-    "https://www.academic.peninsuladeanery.nhs.uk",
-    "https://www.academic.severndeanery.nhs.uk",
-    "https://www.accs.peninsuladeanery.nhs.uk",
-    "https://www.accs.severndeanery.nhs.uk",
-    "https://www.anaesthesia.peninsuladeanery.nhs.uk",
-    "https://www.anaesthesia.severndeanery.nhs.uk",
-    # www.ophthalmology.peninsuladeanery has no non-www counterpart
-    "https://www.ophthalmology.peninsuladeanery.nhs.uk",
-    "https://www.supplychain.nhs.uk",
-    "https://beta.digitisingsocialcare.co.uk",
-    "https://www.autismcentral.org.uk",
-    "https://www.capitalnurselondon.co.uk",
-    "https://careersinpharmacy.uk",
-    "https://curriculumlibrary.nshcs.org.uk",
-    "https://www.eintegrity.org",
-    "https://www.e-lfh.org.uk",
-    "https://ftp.nshcs.org.uk",
-    "https://gettingitrightfirsttime.co.uk",
-    "https://girft-hubtoolkit.org.uk",
-    "https://girft-interactivepathways.org.uk",
-    "https://gpinsomerset.com",
-    "https://www.skillsforhealth.org.uk",
-    "https://hub.seschoolofpas.org",
-    "https://seschoolofpas.org",
-    "https://londonpaediatrics.co.uk",
-    "https://stokeanaesthesia.org.uk",
-    "https://migrate.nhs.net",
-    "https://www.nhsfindyourplace.co.uk",
-    "https://www.oxsph.org",
-    "https://stage.digitisingsocialcare.co.uk",
-    "https://studyinghealthcare.ac.uk",
-    "https://survey.nhs.net",
-    "https://thcepn.com",
-    "https://webzang.gpinsomerset.com",
-    "https://work-learn-live-blmk.co.uk",
-    "http://schoolofanaesthesia.co.uk",
-    "https://swimsnetworknhs.uk",
 ]
 
 # ---------------------------------------------------------------------------
@@ -584,7 +466,7 @@ def _process_domain(
     logger.info("  tech stack: %s", tech)
 
     # -- Discover URLs --------------------------------------------------
-    # When the seed redirects (e.g. england.nhs.uk -> www.england.nhs.uk),
+    # When the seed redirects (e.g. example.com -> www.example.com),
     # try sitemaps and BFS on the final origin too.
     final_origin = f"{urlparse(resp.url).scheme}://{urlparse(resp.url).netloc}"
     origins_to_try = [origin]
@@ -838,13 +720,21 @@ def _dedup_targets(urls: List[str]) -> List[str]:
     return out
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Pre-crawl domain sampler")
-    parser.add_argument(
-        "--limit", type=int, default=0,
-        help="Process only the first N domains (0 = all)",
-    )
-    args = parser.parse_args()
+def main(analysis_dir: Optional[str] = None, limit: Optional[int] = None) -> int:
+    global ANALYSIS_DIR
+    if analysis_dir is not None:
+        ANALYSIS_DIR = analysis_dir
+
+    if limit is None:
+        parser = argparse.ArgumentParser(description="Pre-crawl domain sampler")
+        parser.add_argument(
+            "--limit", type=int, default=0,
+            help="Process only the first N domains (0 = all)",
+        )
+        args = parser.parse_args()
+        limit = args.limit
+
+    os.makedirs(ANALYSIS_DIR, exist_ok=True)
 
     logging.basicConfig(
         level=logging.INFO,
@@ -859,39 +749,46 @@ def main() -> int:
         ],
         force=True,
     )
-    os.makedirs(ANALYSIS_DIR, exist_ok=True)
 
     signal.signal(signal.SIGINT, _signal_handler)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _signal_handler)
 
-    targets = _dedup_targets(TARGET_URLS)
-    if args.limit > 0:
-        targets = targets[:args.limit]
+    saved_domains = config.ALLOWED_DOMAINS
+    config.ALLOWED_DOMAINS = _PRE_CRAWL_ALLOWED_DOMAINS
+    try:
+        targets = _dedup_targets(TARGET_URLS)
+        if limit and limit > 0:
+            targets = targets[:limit]
 
-    logger.info(
-        "Pre-crawl analysis: %d unique domains, %d pages each",
-        len(targets), SAMPLE_SIZE,
-    )
+        logger.info(
+            "Pre-crawl analysis: %d unique domains, %d pages each",
+            len(targets), SAMPLE_SIZE,
+        )
 
-    summaries: List[Dict[str, Any]] = []
+        summaries: List[Dict[str, Any]] = []
 
-    for idx, seed_url in enumerate(targets, 1):
-        if _interrupted:
-            break
-        summary = _process_domain(seed_url, idx, len(targets))
-        summaries.append(summary)
+        for idx, seed_url in enumerate(targets, 1):
+            if _interrupted:
+                break
+            summary = _process_domain(seed_url, idx, len(targets))
+            summaries.append(summary)
 
-    summary_path = _write_summary(summaries)
-    logger.info("Summary written to %s", summary_path)
+        summary_path = _write_summary(summaries)
+        logger.info("Summary written to %s", summary_path)
 
-    coverage_path = _build_field_coverage(summaries)
-    logger.info("Field coverage written to %s", coverage_path)
+        coverage_path = _build_field_coverage(summaries)
+        logger.info("Field coverage written to %s", coverage_path)
 
-    ok = sum(s["pages_sampled"] for s in summaries)
-    fail = sum(s["pages_failed"] for s in summaries)
-    logger.info("Done: %d pages sampled, %d failures across %d domains", ok, fail, len(summaries))
-    return 0
+        ok = sum(s["pages_sampled"] for s in summaries)
+        fail = sum(s["pages_failed"] for s in summaries)
+        logger.info("Done: %d pages sampled, %d failures across %d domains", ok, fail, len(summaries))
+        return 0
+    except Exception:
+        logger.exception("Pre-crawl analysis failed")
+        return 1
+    finally:
+        config.ALLOWED_DOMAINS = saved_domains
 
 
 if __name__ == "__main__":

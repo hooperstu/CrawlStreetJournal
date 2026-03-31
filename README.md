@@ -1,6 +1,6 @@
-# NHS Collector
+# Collector
 
-NHS Collector is a **Python crawler** that builds a **structured inventory** of public web pages across NHS-related sites (and any other hosts you allow in configuration). It is designed for **analysis and visualisation**: one row per HTML page with rich metadata, plus **separate CSV files** for linked downloads (PDF, Office, images, and so on), optional link edges, optional tag detail rows, and an error log.
+Collector is a **Python crawler** that builds a **structured inventory** of public web pages across any set of domains you configure. It is designed for **analysis and visualisation**: one row per HTML page with rich metadata, plus **separate CSV files** for linked downloads (PDF, Office, images, and so on), optional link edges, optional tag detail rows, and an error log.
 
 It does **not** filter pages by keywords. Every HTML page the crawler successfully fetches is recorded in `pages.csv`.
 
@@ -32,7 +32,7 @@ It does **not** filter pages by keywords. Every HTML page the crawler successful
 **Requirements:** Python 3.9 or newer.
 
 ```bash
-cd /path/to/NHSE-Collector
+cd /path/to/Collector
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
@@ -46,7 +46,7 @@ python3 main.py
 Use **`run_background_crawl.py`** when you want a high page cap (default **1 000 000** HTML pages in that script, matching `config.py`) and a single log file to review later. It still respects `REQUEST_DELAY_SECONDS` and `robots.txt`.
 
 ```bash
-cd /path/to/NHSE-Collector
+cd /path/to/Collector
 source .venv/bin/activate    # if you use a venv
 pip install -r requirements.txt   # once
 
@@ -59,20 +59,6 @@ echo $! > crawl_background.pid
 - **Results:** same `output/` CSVs as `main.py` (each run overwrites those CSVs at start — only one crawl should write to `output/` at a time)
 
 Edit **`BACKGROUND_MAX_PAGES`** at the top of `run_background_crawl.py` if you need a higher or lower cap.
-
-### Pre-crawl analysis
-
-**`run_pre_crawl_analysis.py`** samples up to 20 pages from each target domain, detects the tech stack (WordPress, Drupal, SilverStripe, etc.), and writes per-domain results to `pre_crawl_analysis/`. It produces:
-
-- Per-domain `pages.csv` and `errors.csv` in `pre_crawl_analysis/<domain>/`
-- `summary.csv` — one row per domain with tech stack, page counts, and feature flags
-- `field_coverage.csv` — fill-rate percentages for every `pages.csv` column, grouped by tech stack
-
-This is useful for verifying that the parser captures data consistently across different CMS platforms before committing to a full crawl.
-
-```bash
-python3 run_pre_crawl_analysis.py
-```
 
 ---
 
@@ -88,7 +74,7 @@ Edit `config.py` before you run. You do not need to change Python code elsewhere
 | `SITEMAP_URLS` | Sitemap index or urlset URLs. Discovered URLs are merged with seeds (de-duplicated). |
 | `LOAD_SITEMAPS_FROM_ROBOTS` | If `True`, also discover sitemap URLs from each seed origin's `robots.txt`. |
 | `MAX_SITEMAP_URLS` | Upper limit on how many page URLs to read from a single sitemap expansion (default 1 000 000). |
-| `ALLOWED_DOMAINS` | A URL is allowed if the hostname **contains** any of these substrings. The default list covers `nhs.uk`, `nhs.net`, and 25 NHS-affiliated partner/supplier domains identified during the pre-crawl analysis. |
+| `ALLOWED_DOMAINS` | A URL is allowed if the hostname **contains** any of these substrings. Configure via the project defaults in the GUI. |
 | `MAX_PAGES_TO_CRAWL` | Maximum number of **HTML pages** to fetch in one run (default 1 000 000). |
 | `REQUEST_DELAY_SECONDS` | Pause between requests — either a single number (fixed) or a `(min, max)` tuple for a random delay in that range (default `(3, 5)`). Keep at least 1 second in production to be polite. |
 | `REQUEST_TIMEOUT_SECONDS` | How long to wait for a response before giving up. |
@@ -116,7 +102,7 @@ Edit `config.py` before you run. You do not need to change Python code elsewhere
 
 | Setting | What it does |
 |--------|----------------|
-| `CAPTURE_READABILITY` | If `True`, computes Flesch–Kincaid grade level per page (requires `pip install textstat`). Disabled by default. |
+| `CAPTURE_READABILITY` | Computes Flesch–Kincaid grade level per page. Enabled by default. |
 | `TRAINING_KEYWORDS` | Tuple of tokens used to flag training/events content in the URL, title, or H1. |
 
 ### Downloads and file types
@@ -182,7 +168,7 @@ If a single row fails to write for any reason, the error is logged and the crawl
 | `link_count_total` | Total `<a>` links (internal + external). |
 | `img_count` | Total `<img>` elements on the page. |
 | `img_missing_alt_count` | `<img>` elements with empty or missing `alt` attribute. |
-| `readability_fk_grade` | Flesch–Kincaid grade level (when `CAPTURE_READABILITY` is enabled). |
+| `readability_fk_grade` | Flesch–Kincaid grade level (pages with ≥ 30 words of visible text). |
 | `privacy_policy_url` | First link matching common privacy/cookie policy URL patterns. |
 | `analytics_signals` | Pipe-separated analytics tokens found in raw HTML (e.g. `googletagmanager.com\|dataLayer`). |
 | `training_related_flag` | Pipe-separated training/events keywords matched in URL, title, or H1. |
@@ -268,7 +254,7 @@ The tool does **not** rely on a single CMS. It collects tags from **several stan
 - **JSON-LD:** `keywords`, `articleSection`, and `genre` inside `application/ld+json` objects (string or list), alongside `@type` values (stored separately in `json_ld_types`).
 - **Links:** `a[rel~=tag]` — the visible link text is stored as a tag.
 - **Category/tag hrefs:** Links whose URL contains `/category/`, `/tag/`, or `/topic/` segments (WordPress convention) — the link text is stored with source `href:category`.
-- **Topic elements:** Elements with a class matching `topics` (england.nhs.uk convention) — child `<a>`, `<span>`, and `<li>` text is stored with source `class:topics`.
+- **Topic elements:** Elements with a class matching `topics` — child `<a>`, `<span>`, and `<li>` text is stored with source `class:topics`.
 
 These are **deduplicated** by `(tag text, source)` for `tags_all` and `tags.csv`.
 
@@ -319,7 +305,6 @@ This prevents the same page being fetched multiple times under cosmetically diff
 |------|---------|
 | `main.py` | Interactive entry point — run from the terminal with Ctrl+C to stop. |
 | `run_background_crawl.py` | Headless entry point for long background runs with file logging. |
-| `run_pre_crawl_analysis.py` | Standalone pre-crawl sampler — 20 pages per domain, tech stack detection, field coverage matrix. |
 | `config.py` | All configuration: seeds, domains, limits, feature toggles, file types. |
 | `scraper.py` | Crawl loop: queue management, robots.txt, fetching, URL normalisation, rate limiting. |
 | `parser.py` | HTML parsing: metadata extraction, tag collection, content classification, date extraction. |
