@@ -90,7 +90,7 @@ Edit `config.py` before you run. You do not need to change Python code elsewhere
 | `MAX_SITEMAP_URLS` | Upper limit on how many page URLs to read from a single sitemap expansion (default 1 000 000). |
 | `ALLOWED_DOMAINS` | A URL is allowed if the hostname **contains** any of these substrings. The default list covers `nhs.uk`, `nhs.net`, and 25 NHS-affiliated partner/supplier domains identified during the pre-crawl analysis. |
 | `MAX_PAGES_TO_CRAWL` | Maximum number of **HTML pages** to fetch in one run (default 1 000 000). |
-| `REQUEST_DELAY_SECONDS` | Pause between requests. Keep this **at least 1 second** in production to be polite to remote servers. |
+| `REQUEST_DELAY_SECONDS` | Pause between requests — either a single number (fixed) or a `(min, max)` tuple for a random delay in that range (default `(3, 5)`). Keep at least 1 second in production to be polite. |
 | `REQUEST_TIMEOUT_SECONDS` | How long to wait for a response before giving up. |
 | `MAX_RETRIES` | Retries after transient network errors. |
 

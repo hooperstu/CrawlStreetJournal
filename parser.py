@@ -528,21 +528,37 @@ def _extract_visible_dates(
 ) -> str:
     """Scan visible text and date-class elements for date patterns.
 
-    Runs the regex against the rendered visible text (not raw HTML) so that
-    labels split across elements like ``<span>Date published</span>: 9 May, 2023``
-    are matched correctly.  Also inspects elements whose CSS classes contain
-    ``date``, ``publish``, ``updat``, ``review``, ``posted``, or ``created``.
+    Runs the regex against rendered visible text so that labels split across
+    elements like ``<span>Date published</span>: 9 May, 2023`` are matched.
+    Also inspects elements whose CSS classes contain ``date``, ``publish``,
+    ``updat``, ``review``, ``posted``, or ``created``.
+
+    When *soup* is provided, all three extraction steps operate on the same
+    complete parse tree — visible text is extracted by walking NavigableString
+    nodes (without mutating the shared tree) so there is no inconsistency
+    between the regex steps and the CSS-class step.
     """
+    _MAX_TEXT = 200_000
+    _SKIP_TAGS = frozenset({"script", "style", "noscript"})
     found: List[str] = []
 
-    # 1. Regex on visible text (tag-stripped)
+    # 1. Regex on visible text (tag-stripped).
+    #    Re-use the caller's soup when available; walk NavigableString nodes
+    #    to skip script/style content without mutating the shared tree.
     if soup is not None:
-        text_soup = BeautifulSoup(html[:200_000], "lxml")
-        for tag in text_soup(["script", "style", "noscript"]):
-            tag.decompose()
-        vis_text = text_soup.get_text(separator=" ", strip=True)
+        from bs4 import Comment, NavigableString
+        parts: List[str] = []
+        for node in soup.descendants:
+            if isinstance(node, NavigableString) and not isinstance(node, Comment):
+                parent = node.parent
+                if parent and getattr(parent, "name", None) in _SKIP_TAGS:
+                    continue
+                t = node.strip()
+                if t:
+                    parts.append(t)
+        vis_text = " ".join(parts)[:_MAX_TEXT]
     else:
-        vis_text = re.sub(r"<[^>]+>", " ", html[:200_000])
+        vis_text = re.sub(r"<[^>]+>", " ", html[:_MAX_TEXT])
 
     for m in _VISIBLE_DATE_RE.finditer(vis_text):
         val = m.group(1).strip()
@@ -550,12 +566,12 @@ def _extract_visible_dates(
             found.append(val)
 
     # 2. Also check raw HTML in case visible-text extraction missed a pattern
-    for m in _VISIBLE_DATE_RE.finditer(html[:200_000]):
+    for m in _VISIBLE_DATE_RE.finditer(html[:_MAX_TEXT]):
         val = m.group(1).strip()
         if val and val not in found:
             found.append(val)
 
-    # 3. Date-bearing CSS class containers
+    # 3. Date-bearing CSS class containers (same soup as step 1)
     if soup is not None:
         _DATE_CLASS_RE = re.compile(
             r"date|publish|updat|review|posted|created|modified", re.IGNORECASE,

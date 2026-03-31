@@ -6,10 +6,11 @@ and polite rate limiting.
 from __future__ import annotations
 
 import logging
+import random
 import time
 from collections import deque
 from datetime import datetime, timezone
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple, Union
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 from urllib.robotparser import RobotFileParser
 
@@ -276,10 +277,17 @@ def _check_outbound_links(
         time.sleep(config.LINK_CHECK_DELAY_SECONDS)
 
 
+def _resolve_delay(value: Union[float, Tuple[float, float]]) -> float:
+    """Return a sleep duration — fixed or random within a (min, max) range."""
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return random.uniform(value[0], value[1])
+    return float(value)
+
+
 def crawl(
     seed_urls: Optional[List[str]] = None,
     max_pages: Optional[int] = None,
-    delay: Optional[float] = None,
+    delay: Optional[Union[float, Tuple[float, float]]] = None,
     on_progress: Optional[Callable[[int, int, str], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> Tuple[int, int]:
@@ -288,7 +296,7 @@ def crawl(
     Returns (pages_crawled, assets_recorded_from_page_links).
     """
     max_pages = max_pages if max_pages is not None else config.MAX_PAGES_TO_CRAWL
-    delay = delay if delay is not None else config.REQUEST_DELAY_SECONDS
+    delay_cfg = delay if delay is not None else config.REQUEST_DELAY_SECONDS
 
     storage.initialise_outputs()
 
@@ -447,6 +455,6 @@ def crawl(
         if on_progress:
             on_progress(pages_crawled, assets_from_pages, final_url)
 
-        time.sleep(delay)
+        time.sleep(_resolve_delay(delay_cfg))
 
     return pages_crawled, assets_from_pages

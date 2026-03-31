@@ -52,10 +52,12 @@ def main() -> int:
 
     import scraper
 
+    delay = config.REQUEST_DELAY_SECONDS
+    delay_str = f"{delay[0]}-{delay[1]}s" if isinstance(delay, (list, tuple)) and len(delay) == 2 else f"{delay}s"
     logging.info(
-        "Background crawl started (max %s pages, delay %ss). Output: %s/",
+        "Background crawl started (max %s pages, delay %s). Output: %s/",
         config.MAX_PAGES_TO_CRAWL,
-        config.REQUEST_DELAY_SECONDS,
+        delay_str,
         config.OUTPUT_DIR,
     )
     logging.info("Log file: %s", LOG_FILE)
