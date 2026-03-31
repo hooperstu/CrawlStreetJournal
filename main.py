@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """
-NHS Collector — crawl allowed NHS-related hosts, record page metadata to CSV,
+Collector — crawl allowed hosts, record page metadata to CSV,
 and write linked files to per-type asset CSVs.
 
 Configure seeds, domains, and limits in config.py.
 """
 
+import argparse
 import logging
 import signal
 import sys
 
 import config
 import scraper
+import storage
 
 _interrupted = False
 
@@ -33,6 +35,22 @@ def _on_progress(crawled: int, assets: int, current_url: str) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Collector crawl")
+    parser.add_argument("--name", default=None, help="Friendly name for a new run")
+    parser.add_argument(
+        "--run", default=None, metavar="FOLDER",
+        help="Start or resume a specific run folder (e.g. run_2026-03-31_…)",
+    )
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Resume an interrupted run (requires --run)",
+    )
+    parser.add_argument(
+        "--project", default=None, metavar="SLUG",
+        help="Project slug to run within (scopes output to projects/<slug>/runs/)",
+    )
+    args = parser.parse_args()
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
@@ -44,10 +62,13 @@ def main() -> int:
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _signal_handler)
 
+    if args.project:
+        storage.activate_project(args.project)
+
     delay = config.REQUEST_DELAY_SECONDS
     delay_str = f"{delay[0]}-{delay[1]}s" if isinstance(delay, (list, tuple)) and len(delay) == 2 else f"{delay}s"
     logger.info(
-        "Starting NHS Collector (max %s HTML pages, delay %s). Output dir: %s",
+        "Starting Collector (max %s HTML pages, delay %s). Output dir: %s",
         config.MAX_PAGES_TO_CRAWL,
         delay_str,
         config.OUTPUT_DIR,
@@ -58,6 +79,9 @@ def main() -> int:
         pages, assets = scraper.crawl(
             on_progress=_on_progress,
             should_stop=lambda: _interrupted,
+            run_name=args.name,
+            run_folder=args.run,
+            resume=args.resume,
         )
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
@@ -71,7 +95,7 @@ def main() -> int:
         "See %s/",
         pages,
         assets,
-        config.OUTPUT_DIR,
+        storage.get_active_run_dir(),
     )
     return 0
 

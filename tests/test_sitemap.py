@@ -12,14 +12,14 @@ URLSET_WITH_LASTMOD = """\
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://www.example.nhs.uk/page-a</loc>
+    <loc>https://www.example.com/page-a</loc>
     <lastmod>2024-11-15</lastmod>
   </url>
   <url>
-    <loc>https://www.example.nhs.uk/page-b</loc>
+    <loc>https://www.example.com/page-b</loc>
   </url>
   <url>
-    <loc>https://www.example.nhs.uk/page-c</loc>
+    <loc>https://www.example.com/page-c</loc>
     <lastmod>2025-01-20T10:30:00+00:00</lastmod>
   </url>
 </urlset>
@@ -29,7 +29,7 @@ SITEMAP_INDEX = """\
 <?xml version="1.0" encoding="UTF-8"?>
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <sitemap>
-    <loc>https://www.example.nhs.uk/sitemap-posts.xml</loc>
+    <loc>https://www.example.com/sitemap-posts.xml</loc>
   </sitemap>
 </sitemapindex>
 """
@@ -37,20 +37,20 @@ SITEMAP_INDEX = """\
 
 def test_parse_urlset_extracts_lastmod():
     children, pages = sitemap.parse_sitemap_xml(
-        URLSET_WITH_LASTMOD, "https://www.example.nhs.uk/sitemap.xml"
+        URLSET_WITH_LASTMOD, "https://www.example.com/sitemap.xml"
     )
     assert len(children) == 0
     assert len(pages) == 3
-    assert pages["https://www.example.nhs.uk/page-a"] == "2024-11-15"
-    assert pages["https://www.example.nhs.uk/page-b"] == ""
-    assert pages["https://www.example.nhs.uk/page-c"] == "2025-01-20T10:30:00+00:00"
+    assert pages["https://www.example.com/page-a"] == "2024-11-15"
+    assert pages["https://www.example.com/page-b"] == ""
+    assert pages["https://www.example.com/page-c"] == "2025-01-20T10:30:00+00:00"
 
 
 def test_parse_sitemap_index():
     children, pages = sitemap.parse_sitemap_xml(
-        SITEMAP_INDEX, "https://www.example.nhs.uk/sitemap.xml"
+        SITEMAP_INDEX, "https://www.example.com/sitemap.xml"
     )
-    assert "https://www.example.nhs.uk/sitemap-posts.xml" in children
+    assert "https://www.example.com/sitemap-posts.xml" in children
     assert len(pages) == 0
 
 

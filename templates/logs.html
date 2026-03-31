@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% set active_tab = 'logs' %}
+{% block title %}Logs — {% if project is defined and project %}{{ project.name }}{% else %}Collector{% endif %}{% endblock %}
+
+{% block content %}
+<div class="flex-between" style="margin-bottom:20px;">
+  <h1 class="page-title" style="margin-bottom:0;">Logs</h1>
+  <div class="gap-8">
+    <select id="level-filter" style="width:auto;padding:6px 10px;font-size:14px;border:1px solid var(--border);border-radius:var(--radius);">
+      <option value="all">All levels</option>
+      <option value="INFO">INFO</option>
+      <option value="WARNING">WARNING</option>
+      <option value="ERROR">ERROR</option>
+    </select>
+    <button class="btn btn-sm btn-secondary" id="btn-clear">Clear</button>
+    <button class="btn btn-sm btn-secondary" id="btn-scroll">Auto-scroll: On</button>
+  </div>
+</div>
+
+<div class="card" style="padding:0;overflow:hidden;">
+  <div class="log-pane" id="log-pane"></div>
+</div>
+
+<script>
+(function() {
+  const pane     = document.getElementById('log-pane');
+  const filter   = document.getElementById('level-filter');
+  const btnClear = document.getElementById('btn-clear');
+  const btnScrl  = document.getElementById('btn-scroll');
+  let autoScroll = true;
+  let allEntries = [];
+
+  function levelClass(lvl) {
+    if (lvl === 'WARNING') return 'log-warn';
+    if (lvl === 'ERROR')   return 'log-err';
+    return 'log-info';
+  }
+
+  function render() {
+    const chosen = filter.value;
+    const visible = chosen === 'all' ? allEntries : allEntries.filter(e => e.level === chosen);
+    pane.innerHTML = visible.map(e =>
+      '<div><span class="log-time">' + e.time + '</span> ' +
+      '<span class="' + levelClass(e.level) + '">' + e.level.padEnd(7) + '</span> ' +
+      escapeHtml(e.message) + '</div>'
+    ).join('');
+    if (autoScroll) pane.scrollTop = pane.scrollHeight;
+  }
+
+  function escapeHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+  filter.addEventListener('change', render);
+  btnClear.addEventListener('click', function() { allEntries = []; render(); });
+  btnScrl.addEventListener('click', function() { autoScroll = !autoScroll; btnScrl.textContent = 'Auto-scroll: ' + (autoScroll ? 'On' : 'Off'); });
+
+  const es = new EventSource('/api/logs');
+  es.onmessage = function(e) {
+    const entry = JSON.parse(e.data);
+    allEntries.push(entry);
+    if (allEntries.length > 2000) allEntries = allEntries.slice(-1500);
+    const chosen = filter.value;
+    if (chosen === 'all' || entry.level === chosen) {
+      const div = document.createElement('div');
+      div.innerHTML = '<span class="log-time">' + entry.time + '</span> ' +
+        '<span class="' + levelClass(entry.level) + '">' + entry.level.padEnd(7) + '</span> ' +
+        escapeHtml(entry.message);
+      pane.appendChild(div);
+      if (autoScroll) pane.scrollTop = pane.scrollHeight;
+    }
+  };
+  es.onerror = function() { es.close(); setTimeout(function() { location.reload(); }, 5000); };
+})();
+</script>
+{% endblock %}

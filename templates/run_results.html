@@ -1,0 +1,273 @@
+{% extends "base.html" %}
+{% set active_tab = 'runs' %}
+{% block title %}Results — {{ friendly_name or run_name }}{% endblock %}
+
+{% block subnav %}
+<div class="sub-nav">
+  <a href="{{ url_for('run_config', slug=project.slug, run_name=run_name) }}">Config</a>
+  <a href="{{ url_for('run_monitor', slug=project.slug, run_name=run_name) }}">Monitor</a>
+  <a href="{{ url_for('run_results', slug=project.slug, run_name=run_name) }}" class="active">Results</a>
+</div>
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{{ url_for('project_runs', slug=project.slug) }}">Runs</a>
+  <span class="sep">/</span>
+  <strong>{{ friendly_name or run_name }}</strong>
+  <span class="sep">/</span>
+  Results
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="flex-between" style="margin-bottom:20px;">
+  <h1 class="page-title" style="margin-bottom:0;">
+    {% if friendly_name %}{{ friendly_name }}{% else %}{{ run_name }}{% endif %} — Results
+  </h1>
+  <a href="{{ url_for('run_download_all', slug=project.slug, run_name=run_name) }}" class="btn btn-sm btn-primary">Download All CSVs</a>
+</div>
+
+{% if m.has_data %}
+<!-- ── Overview stats ───────────────────────────────── -->
+<div class="stats">
+  <div class="stat">
+    <div class="stat-value">{{ "{:,}".format(m.pages) }}</div>
+    <div class="stat-label">Pages</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value">{{ m.domains }}</div>
+    <div class="stat-label">Domains</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value">{{ "{:,}".format(m.total_assets) }}</div>
+    <div class="stat-label">Assets</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value">{{ "{:,}".format(m.total_links) }}</div>
+    <div class="stat-label">Links</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value">{{ "{:,}".format(m.total_tags) }}</div>
+    <div class="stat-label">Tags</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value" {% if m.total_errors > 0 %}style="color:var(--nhs-red);"{% endif %}>{{ "{:,}".format(m.total_errors) }}</div>
+    <div class="stat-label">Errors</div>
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Grouped CSV files ────────────────────────────── -->
+
+{% macro file_table(files, slug, run_name) %}
+<table>
+  <thead><tr><th>File</th><th>Rows</th><th>Size</th><th></th></tr></thead>
+  <tbody>
+    {% for f in files %}
+    <tr>
+      <td><a href="{{ url_for('run_results_detail', slug=slug, run_name=run_name, filename=f.name) }}">{{ f.name }}</a></td>
+      <td>{{ "{:,}".format(f.rows) }}</td>
+      <td>{{ f.size }}</td>
+      <td><a href="{{ url_for('run_download', slug=slug, run_name=run_name, filename=f.name) }}" class="btn btn-sm btn-secondary">Download</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endmacro %}
+
+{% if groups.pages %}
+<div class="result-group">
+  <div class="result-group-title">Pages</div>
+  <div class="result-group-desc">Metadata for every HTML page crawled — titles, descriptions, word counts, dates, accessibility signals.</div>
+  <div class="card mb-0">{{ file_table(groups.pages, project.slug, run_name) }}</div>
+</div>
+{% endif %}
+
+{% if groups.assets %}
+<div class="result-group">
+  <div class="result-group-title">Assets</div>
+  <div class="result-group-desc">Linked files discovered on crawled pages, grouped by type (PDFs, images, Office documents, spreadsheets, etc.).</div>
+  <div class="card mb-0">{{ file_table(groups.assets, project.slug, run_name) }}</div>
+</div>
+{% endif %}
+
+{% if groups.links %}
+<div class="result-group">
+  <div class="result-group-title">Links</div>
+  <div class="result-group-desc">Link graph between crawled pages, navigation links, and outbound link health checks.</div>
+  <div class="card mb-0">{{ file_table(groups.links, project.slug, run_name) }}</div>
+</div>
+{% endif %}
+
+{% if groups.sitemaps %}
+<div class="result-group">
+  <div class="result-group-title">Sitemaps</div>
+  <div class="result-group-desc">All URLs discovered from XML sitemaps, including lastmod dates and source sitemap.</div>
+  <div class="card mb-0">{{ file_table(groups.sitemaps, project.slug, run_name) }}</div>
+</div>
+{% endif %}
+
+{% if groups.metadata %}
+<div class="result-group">
+  <div class="result-group-title">Metadata</div>
+  <div class="result-group-desc">Per-page tags and other structured metadata extracted during the crawl.</div>
+  <div class="card mb-0">{{ file_table(groups.metadata, project.slug, run_name) }}</div>
+</div>
+{% endif %}
+
+{% if groups.errors %}
+<div class="result-group">
+  <div class="result-group-title">Errors</div>
+  <div class="result-group-desc">Pages that failed to load, timed out, or returned error status codes.</div>
+  <div class="card mb-0">{{ file_table(groups.errors, project.slug, run_name) }}</div>
+</div>
+{% endif %}
+
+{% if m.has_data %}
+<!-- ── Analytics ─────────────────────────────────────── -->
+<h2 style="font-size:20px;font-weight:700;color:var(--nhs-dark-blue);margin:28px 0 16px;">Analytics</h2>
+
+<div class="two-col">
+  <div class="card">
+    <div class="card-title">Content Breakdown</div>
+    <table class="list-table">
+      <tbody>
+        {% for kind, count in m.content_breakdown %}
+        <tr>
+          <td>{{ kind }}</td>
+          <td style="width:50%;">
+            <div class="bar-wrap">
+              <div class="bar-track"><div class="bar-fill" style="width:{{ (count / m.pages * 100)|round(1) }}%;"></div></div>
+              <span class="bar-label">{{ count }}</span>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Asset Breakdown</div>
+    {% if m.asset_breakdown %}
+    <table class="list-table">
+      <tbody>
+        {% for cat, count in m.asset_breakdown %}
+        <tr>
+          <td>{{ cat }}</td>
+          <td style="width:50%;">
+            <div class="bar-wrap">
+              <div class="bar-track"><div class="bar-fill" style="width:{{ (count / m.total_assets * 100)|round(1) }}%;background:var(--nhs-bright-blue);"></div></div>
+              <span class="bar-label">{{ count }}</span>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted">No assets recorded.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="two-col">
+  <div class="card">
+    <div class="card-title">Top Domains{% if m.domain_breakdown|length < m.domains %} ({{ m.domain_breakdown|length }} of {{ m.domains }}){% endif %}</div>
+    <table class="list-table">
+      <tbody>
+        {% for domain, count in m.domain_breakdown %}
+        <tr>
+          <td style="font-size:13px;">{{ domain }}</td>
+          <td style="width:45%;">
+            <div class="bar-wrap">
+              <div class="bar-track"><div class="bar-fill" style="width:{{ (count / m.domain_breakdown[0][1] * 100)|round(1) }}%;background:var(--nhs-dark-blue);"></div></div>
+              <span class="bar-label">{{ count }}</span>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Error Summary</div>
+    {% if m.error_breakdown %}
+    <table class="list-table">
+      <tbody>
+        {% for err_type, count in m.error_breakdown %}
+        <tr>
+          <td>{{ err_type }}</td>
+          <td style="width:45%;">
+            <div class="bar-wrap">
+              <div class="bar-track"><div class="bar-fill" style="width:{{ (count / m.total_errors * 100)|round(1) }}%;background:var(--nhs-red);"></div></div>
+              <span class="bar-label">{{ count }}</span>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted">No errors recorded.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">Quality Signals</div>
+  <div class="two-col" style="gap:16px 40px;">
+    <div>
+      <table class="list-table">
+        <tbody>
+          <tr><td>Average word count</td><td>{{ "{:,}".format(m.avg_word_count) }}</td></tr>
+          <tr><td>Total images</td><td>{{ "{:,}".format(m.total_images) }}</td></tr>
+          <tr>
+            <td>Images missing alt text</td>
+            <td {% if m.images_missing_alt > 0 %}style="color:var(--nhs-red);"{% endif %}>
+              {{ "{:,}".format(m.images_missing_alt) }}
+              {% if m.total_images > 0 %}
+              <span class="text-muted" style="font-weight:400;"> ({{ (m.images_missing_alt / m.total_images * 100)|round(1) }}%)</span>
+              {% endif %}
+            </td>
+          </tr>
+          <tr><td>Training-related pages</td><td>{{ m.training_pages }}</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <div style="font-weight:600;font-size:14px;color:var(--nhs-dark-blue);margin-bottom:8px;">Language Distribution</div>
+      <table class="list-table">
+        <tbody>
+          {% for lang, count in m.lang_breakdown %}
+          <tr>
+            <td style="font-size:13px;"><code>{{ lang }}</code></td>
+            <td>
+              <div class="bar-wrap">
+                <div class="bar-track"><div class="bar-fill" style="width:{{ (count / m.pages * 100)|round(1) }}%;background:var(--nhs-green);"></div></div>
+                <span class="bar-label">{{ count }}</span>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">HTTP Status Codes</div>
+  <div class="stats">
+    {% for code, count in m.status_breakdown %}
+    <div class="stat" style="border-left-color:{% if code.startswith('2') %}var(--nhs-green){% elif code.startswith('3') %}var(--nhs-blue){% elif code.startswith('4') %}var(--nhs-orange){% elif code.startswith('5') %}var(--nhs-red){% else %}var(--nhs-grey){% endif %};">
+      <div class="stat-value" style="font-size:22px;">{{ count }}</div>
+      <div class="stat-label">{{ code }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}

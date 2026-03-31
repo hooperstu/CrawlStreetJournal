@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Projects — Collector{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Projects</h1>
+
+{% if projects %}
+<div class="project-grid">
+  {% for p in projects %}
+  <a href="{{ url_for('project_overview', slug=p.slug) }}" class="project-card">
+    <h3>{{ p.name }}</h3>
+    {% if p.description %}<p>{{ p.description }}</p>{% endif %}
+    <div class="meta">
+      <span>{{ p.run_count }} run{{ 's' if p.run_count != 1 }}</span>
+      <span>{{ "{:,}".format(p.total_pages) }} pages</span>
+      {% if p.latest_run_status %}
+      <span>Latest:
+        {% if p.latest_run_status == 'completed' %}
+        <span class="badge badge-idle" style="font-size:11px;">Completed</span>
+        {% elif p.latest_run_status == 'running' %}
+        <span class="badge badge-running" style="font-size:11px;">Running</span>
+        {% elif p.latest_run_status == 'interrupted' %}
+        <span class="badge badge-stopping" style="font-size:11px;">Interrupted</span>
+        {% elif p.latest_run_status == 'new' %}
+        <span class="badge badge-new" style="font-size:11px;">New</span>
+        {% endif %}
+      </span>
+      {% endif %}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card" style="text-align:center;padding:48px 24px;">
+  <p style="font-size:18px;font-weight:600;color:var(--nhs-dark-blue);margin-bottom:8px;">No projects yet</p>
+  <p class="text-muted" style="margin-bottom:24px;">Create your first project to start configuring and running crawls.</p>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-title">Create New Project</div>
+  <form method="post" action="{{ url_for('create_project_route') }}">
+    <div class="form-group" style="max-width:400px;">
+      <label class="form-label">Project name</label>
+      <input type="text" name="name" required placeholder="e.g. Main Website Audit">
+    </div>
+    <div class="form-group" style="max-width:600px;">
+      <label class="form-label">Description <span class="text-muted">(optional)</span></label>
+      <input type="text" name="description" placeholder="Brief description of what this project covers">
+    </div>
+    <button type="submit" class="btn btn-primary">Create Project</button>
+  </form>
+</div>
+{% endblock %}

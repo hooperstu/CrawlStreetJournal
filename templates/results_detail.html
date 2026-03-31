@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% set active_tab = 'runs' %}
+{% block title %}{{ filename }} — {{ friendly_name or run_name }}{% endblock %}
+
+{% block subnav %}
+<div class="sub-nav">
+  <a href="{{ url_for('run_config', slug=project.slug, run_name=run_name) }}">Config</a>
+  <a href="{{ url_for('run_monitor', slug=project.slug, run_name=run_name) }}">Monitor</a>
+  <a href="{{ url_for('run_results', slug=project.slug, run_name=run_name) }}" class="active">Results</a>
+</div>
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{{ url_for('project_runs', slug=project.slug) }}">Runs</a>
+  <span class="sep">/</span>
+  <a href="{{ url_for('run_results', slug=project.slug, run_name=run_name) }}">{{ friendly_name or run_name }}</a>
+  <span class="sep">/</span>
+  <strong>{{ filename }}</strong>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="flex-between" style="margin-bottom:20px;">
+  <h1 class="page-title" style="margin-bottom:0;">{{ filename }}</h1>
+  <div class="gap-8">
+    <a href="{{ url_for('run_results', slug=project.slug, run_name=run_name) }}" class="btn btn-sm btn-secondary">Back</a>
+    <a href="{{ url_for('run_download', slug=project.slug, run_name=run_name, filename=filename) }}" class="btn btn-sm btn-primary">Download CSV</a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="flex-between" style="margin-bottom:12px;">
+    <span class="text-muted">{{ total }} rows total — page {{ page }} of {{ total_pages }}</span>
+    <form method="get" action="{{ url_for('run_results_detail', slug=project.slug, run_name=run_name, filename=filename) }}" class="inline-flex">
+      <label class="form-label" style="margin-bottom:0;font-size:13px;">Rows per page:</label>
+      <select name="per_page" onchange="this.form.submit()" style="width:auto;padding:4px 8px;font-size:13px;">
+        {% for n in [50, 100, 250, 500] %}
+        <option value="{{ n }}" {% if per_page == n %}selected{% endif %}>{{ n }}</option>
+        {% endfor %}
+      </select>
+      <input type="hidden" name="page" value="1">
+    </form>
+  </div>
+
+  {% if rows %}
+  <div class="table-wrap">
+    <table data-sortable>
+      <thead>
+        <tr>
+          <th>#</th>
+          {% for h in headers %}
+          <th>{{ h }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td class="text-muted">{{ (page - 1) * per_page + loop.index }}</td>
+          {% for h in headers %}
+          <td title="{{ row[h] }}">{{ row[h] }}</td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if total_pages > 1 %}
+  <div class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('run_results_detail', slug=project.slug, run_name=run_name, filename=filename, page=page-1, per_page=per_page) }}">Prev</a>
+    {% endif %}
+
+    {% set start_page = [1, page - 3] | max %}
+    {% set end_page = [total_pages, page + 3] | min %}
+
+    {% if start_page > 1 %}
+    <a href="{{ url_for('run_results_detail', slug=project.slug, run_name=run_name, filename=filename, page=1, per_page=per_page) }}">1</a>
+    {% if start_page > 2 %}<span class="text-muted">…</span>{% endif %}
+    {% endif %}
+
+    {% for p in range(start_page, end_page + 1) %}
+      {% if p == page %}
+      <span class="current">{{ p }}</span>
+      {% else %}
+      <a href="{{ url_for('run_results_detail', slug=project.slug, run_name=run_name, filename=filename, page=p, per_page=per_page) }}">{{ p }}</a>
+      {% endif %}
+    {% endfor %}
+
+    {% if end_page < total_pages %}
+    {% if end_page < total_pages - 1 %}<span class="text-muted">…</span>{% endif %}
+    <a href="{{ url_for('run_results_detail', slug=project.slug, run_name=run_name, filename=filename, page=total_pages, per_page=per_page) }}">{{ total_pages }}</a>
+    {% endif %}
+
+    {% if page < total_pages %}
+    <a href="{{ url_for('run_results_detail', slug=project.slug, run_name=run_name, filename=filename, page=page+1, per_page=per_page) }}">Next</a>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% else %}
+  <p class="text-muted">This file is empty (header only).</p>
+  {% endif %}
+</div>
+{% endblock %}
