@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% set active_tab = 'runs' %}
+{% block title %}Runs — {{ project.name }}{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Crawl Runs</h1>
+
+<div class="card">
+  <div class="card-title">Create New Run</div>
+  <p class="form-hint" style="margin-bottom:12px;">
+    Create a run, configure its seeds and settings, then start it when ready.
+    Each run inherits your project defaults and keeps its own config and data.
+  </p>
+  <form method="post" action="{{ url_for('create_run_route', slug=project.slug) }}" class="inline-flex" style="gap:8px;align-items:flex-end;">
+    <div>
+      <label class="form-label" style="font-size:12px;margin-bottom:2px;">Run name</label>
+      <input type="text" name="run_name" placeholder="e.g. Weekly full crawl" style="padding:6px 10px;font-size:14px;width:280px;">
+    </div>
+    <button type="submit" class="btn btn-primary" {% if status.running %}disabled{% endif %}>
+      + Create Run
+    </button>
+  </form>
+</div>
+
+{% if runs %}
+<div class="card">
+  <div class="card-title">All Runs</div>
+  <div class="table-wrap">
+    <table data-sortable>
+      <thead>
+        <tr>
+          <th style="width:1%;"></th>
+          <th>Name</th>
+          <th>Status</th>
+          <th>Pages</th>
+          <th>Created</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in runs %}
+        {% if r.name != '_legacy' %}
+        <tr>
+          <td>
+            {% if r.is_latest %}
+            <span class="badge badge-running" style="font-size:11px;">Latest</span>
+            {% endif %}
+          </td>
+          <td style="font-weight:600;">
+            {% if r.friendly_name %}
+              {{ r.friendly_name }}
+            {% else %}
+              <span class="text-muted" style="font-style:italic;">Unnamed</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if r.status == 'new' %}
+              <span class="badge badge-new">New</span>
+            {% elif r.status == 'running' %}
+              <span class="badge badge-running">Running</span>
+            {% elif r.status == 'interrupted' %}
+              <span class="badge badge-stopping">Interrupted</span>
+            {% elif r.status == 'completed' %}
+              <span class="badge badge-idle">Completed</span>
+            {% else %}
+              <span class="badge badge-idle">{{ r.status }}</span>
+            {% endif %}
+          </td>
+          <td>{{ "{:,}".format(r.page_count|int) }}</td>
+          <td class="text-muted" style="font-size:13px;">{{ r.timestamp_label }}</td>
+          <td>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+              <a href="{{ url_for('run_config', slug=project.slug, run_name=r.name) }}" class="btn btn-sm btn-secondary">Config</a>
+              <a href="{{ url_for('run_monitor', slug=project.slug, run_name=r.name) }}" class="btn btn-sm btn-secondary">Monitor</a>
+
+              {% if r.page_count|int > 0 %}
+              <a href="{{ url_for('run_results', slug=project.slug, run_name=r.name) }}" class="btn btn-sm btn-secondary">Results</a>
+              {% endif %}
+
+              {% if r.status == 'new' %}
+              <form method="post" action="{{ url_for('start_run_route', slug=project.slug, run_name=r.name) }}" style="display:inline;">
+                <button type="submit" class="btn btn-sm btn-primary" {% if status.running %}disabled{% endif %}>Start</button>
+              </form>
+              {% elif r.status == 'interrupted' %}
+              <form method="post" action="{{ url_for('resume_run_route', slug=project.slug, run_name=r.name) }}" style="display:inline;">
+                <button type="submit" class="btn btn-sm btn-primary" {% if status.running %}disabled{% endif %}>Resume</button>
+              </form>
+              {% endif %}
+
+              <form method="post" action="{{ url_for('delete_run_route', slug=project.slug, run_name=r.name) }}" style="display:inline;" onsubmit="return confirm('Delete this run and all its data?');">
+                <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+<div class="card">
+  <p class="text-muted">No crawl runs yet. Create one above to get started.</p>
+</div>
+{% endif %}
+{% endblock %}

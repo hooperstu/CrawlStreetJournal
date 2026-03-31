@@ -1,6 +1,6 @@
 """
 HTML parsing: links (HTML vs downloadable assets), metadata, tags, JSON-LD,
-and URL-based content hints for NHS Collector.
+and URL-based content hints for Collector.
 """
 
 from __future__ import annotations
@@ -202,7 +202,7 @@ def _collect_all_tags(soup: BeautifulSoup, base_url: str) -> List[Tuple[str, str
             if not re.search(r"/page/\d", href):
                 pairs.append((text, "href:category"))
 
-    # Elements with class "topics" (england.nhs.uk convention)
+    # Elements with class "topics"
     for el in soup.find_all(class_=re.compile(r"\btopics?\b", re.IGNORECASE)):
         if el.name in ("nav", "header", "footer", "form"):
             continue
@@ -495,8 +495,7 @@ def _extract_structured_dates(
         if time_tag:
             published = str(time_tag["datetime"]).strip()
 
-    # CSS class date containers (e.g. .article-date__pub on england.nhs.uk,
-    # .date on cptraininghub, .nhsd-m-card__date on digital.nhs.uk)
+    # CSS class date containers (e.g. .article-date__pub, .date, .nhsd-m-card__date)
     if not published or not modified:
         _PUB_CLASS = re.compile(r"date.*pub|publish|posted|created", re.I)
         _MOD_CLASS = re.compile(r"date.*(?:last|updat|modif)|last.*(?:updat|modif)", re.I)

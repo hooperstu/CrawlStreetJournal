@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+{% set active_tab = 'defaults' %}
+{% block title %}Defaults — {{ project.name }}{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Project Defaults</h1>
+<p class="text-muted" style="margin-bottom:20px;">
+  These settings are copied into each new run when it is created. Changing them here does not affect existing runs.
+</p>
+
+<form method="post" action="{{ url_for('save_project_defaults_route', slug=project.slug) }}" id="config-form">
+
+  <div class="card">
+    <div class="card-title">1. Target Sites</div>
+    <p class="form-hint" style="margin-bottom:14px;">
+      Paste the homepage URLs of every site you want to crawl, one per line.
+    </p>
+    <div class="form-group">
+      <label class="form-label">Seed URLs</label>
+      <textarea name="seed_urls" id="seed-urls" rows="10" placeholder="https://www.example.com/&#10;https://docs.example.com/&#10;…">{% for u in cfg.get('SEED_URLS', []) %}{{ u }}
+{% endfor %}</textarea>
+      <div id="seed-count" class="form-hint mt-4"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">2. Allowed Domains</div>
+    <p class="form-hint" style="margin-bottom:12px;">
+      The crawler will <strong>only visit pages</strong> whose hostname contains one of these substrings.
+    </p>
+    <div style="margin-bottom:12px;">
+      <button type="button" class="btn btn-secondary btn-sm" id="btn-extract">
+        Extract domains from seed URLs above
+      </button>
+      <span id="extract-msg" class="text-muted" style="margin-left:8px;"></span>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Allowed domain substrings</label>
+      <div class="form-hint">One per line. Broad entries like <code>example.com</code> cover all subdomains.</div>
+      <textarea name="allowed_domains" id="allowed-domains" rows="10">{% for d in cfg.get('ALLOWED_DOMAINS', []) %}{{ d }}
+{% endfor %}</textarea>
+    </div>
+    <div id="coverage-panel" class="coverage-panel" style="display:none;">
+      <div class="coverage-title">Coverage check</div>
+      <div id="coverage-ok" style="color:var(--nhs-green);display:none;">All seed URL domains are covered by the allowed list.</div>
+      <div id="coverage-warn" style="display:none;">
+        <span style="color:var(--nhs-red);font-weight:600;">Uncovered domains:</span>
+        <span class="text-muted">these seed URLs will be skipped at crawl time.</span>
+        <ul id="coverage-list" style="margin-top:6px;font-size:14px;font-family:monospace;"></ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">3. Sitemaps</div>
+    <p class="form-hint" style="margin-bottom:12px;">
+      Sitemap URLs let the crawler discover pages that aren't linked from the homepage.
+    </p>
+    <div class="form-group">
+      <label class="form-label">Sitemap URLs</label>
+      <textarea name="sitemap_urls" rows="4">{% for u in cfg.get('SITEMAP_URLS', []) %}{{ u }}
+{% endfor %}</textarea>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" name="load_sitemaps_from_robots" id="cb-robots"
+        {% if cfg.get('LOAD_SITEMAPS_FROM_ROBOTS') %}checked{% endif %}>
+      <label for="cb-robots">Also discover sitemaps from each seed's robots.txt</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" name="respect_robots_txt" id="cb-respect-robots"
+        {% if cfg.get('RESPECT_ROBOTS_TXT') %}checked{% endif %}>
+      <label for="cb-respect-robots">Respect robots.txt Disallow rules</label>
+    </div>
+    <div class="form-group" style="max-width:300px;">
+      <label class="form-label">Max sitemap URLs to read</label>
+      <input type="number" name="max_sitemap_urls" value="{{ cfg.get('MAX_SITEMAP_URLS', 1000000) }}" min="1">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">4. Crawl Limits</div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">Max pages to crawl</label>
+        <input type="number" name="max_pages" value="{{ cfg.get('MAX_PAGES_TO_CRAWL', 1000000) }}" min="1">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Request timeout (seconds)</label>
+        <input type="number" name="request_timeout" value="{{ cfg.get('REQUEST_TIMEOUT_SECONDS', 20) }}" min="1">
+      </div>
+      {% set delay = cfg.get('REQUEST_DELAY_SECONDS', [3, 5]) %}
+      <div class="form-group">
+        <label class="form-label">Delay min (seconds)</label>
+        <input type="number" name="delay_min" step="0.1" min="0"
+          value="{{ delay[0] if delay is iterable and delay is not string else delay }}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Delay max (seconds)</label>
+        <input type="number" name="delay_max" step="0.1" min="0"
+          value="{{ delay[1] if delay is iterable and delay is not string else delay }}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Max retries</label>
+        <input type="number" name="max_retries" value="{{ cfg.get('MAX_RETRIES', 1) }}" min="0">
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">5. CSV Outputs</div>
+    <div class="form-grid">
+      <div class="checkbox-row">
+        <input type="checkbox" name="write_edges" id="cb-edges" {% if cfg.get('WRITE_EDGES_CSV') %}checked{% endif %}>
+        <label for="cb-edges">edges.csv — link graph between pages</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="write_tags" id="cb-tags" {% if cfg.get('WRITE_TAGS_CSV') %}checked{% endif %}>
+        <label for="cb-tags">tags.csv — one row per tag per page</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="asset_head" id="cb-head" {% if cfg.get('ASSET_HEAD_METADATA') %}checked{% endif %}>
+        <label for="cb-head">HEAD-check assets for size and content-type</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="capture_headers" id="cb-headers" {% if cfg.get('CAPTURE_RESPONSE_HEADERS') %}checked{% endif %}>
+        <label for="cb-headers">Record Last-Modified / ETag from responses</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="write_sitemap_urls" id="cb-sm" {% if cfg.get('WRITE_SITEMAP_URLS_CSV') %}checked{% endif %}>
+        <label for="cb-sm">sitemap_urls.csv — all locations from sitemaps</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="write_nav_links" id="cb-nav" {% if cfg.get('WRITE_NAV_LINKS_CSV') %}checked{% endif %}>
+        <label for="cb-nav">nav_links.csv — links inside &lt;nav&gt; elements</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="check_outbound" id="cb-outbound" {% if cfg.get('CHECK_OUTBOUND_LINKS') %}checked{% endif %}>
+        <label for="cb-outbound">link_checks.csv — HEAD-check outbound links (slow)</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="capture_readability" id="cb-read" {% if cfg.get('CAPTURE_READABILITY') %}checked{% endif %}>
+        <label for="cb-read">Flesch–Kincaid readability scores (requires textstat)</label>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">6. Logging</div>
+    <div class="form-group" style="max-width:300px;">
+      <label class="form-label">Log level</label>
+      <select name="log_level">
+        {% for lvl in ["DEBUG","INFO","WARNING","ERROR","CRITICAL"] %}
+        <option value="{{ lvl }}" {% if cfg.get('LOG_LEVEL', 'INFO') == lvl %}selected{% endif %}>{{ lvl }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">7. User-Agent</div>
+    <div class="form-group">
+      <label class="form-label">User-Agent string sent with every request</label>
+      <input type="text" name="user_agent" value="{{ cfg.get('USER_AGENT', '') }}">
+    </div>
+  </div>
+
+  <button type="submit" class="btn btn-primary" style="margin-top:4px;">Save Defaults</button>
+</form>
+
+<script>
+(function() {
+  var seedsEl   = document.getElementById('seed-urls');
+  var domainsEl = document.getElementById('allowed-domains');
+  var btnExtract = document.getElementById('btn-extract');
+  var extractMsg = document.getElementById('extract-msg');
+  var panel      = document.getElementById('coverage-panel');
+  var coverOk    = document.getElementById('coverage-ok');
+  var coverWarn  = document.getElementById('coverage-warn');
+  var coverList  = document.getElementById('coverage-list');
+  var seedCount  = document.getElementById('seed-count');
+
+  function getHostname(url) { try { return new URL(url.trim()).hostname.toLowerCase(); } catch(e) { return ''; } }
+  function getSeeds() { return seedsEl.value.split('\n').map(function(s){ return s.trim(); }).filter(Boolean); }
+  function getDomains() { return domainsEl.value.split('\n').map(function(s){ return s.trim().toLowerCase(); }).filter(Boolean); }
+  function isCovered(hostname, allowed) { for (var i = 0; i < allowed.length; i++) { if (hostname.indexOf(allowed[i]) !== -1) return true; } return false; }
+
+  function updateSeedCount() { var seeds = getSeeds(); seedCount.textContent = seeds.length + ' URL' + (seeds.length !== 1 ? 's' : ''); }
+
+  function checkCoverage() {
+    var seeds = getSeeds(), allowed = getDomains();
+    if (!seeds.length || !allowed.length) { panel.style.display = 'none'; return; }
+    var uncovered = {};
+    seeds.forEach(function(u) { var h = getHostname(u); if (h && !isCovered(h, allowed)) uncovered[h] = true; });
+    var missing = Object.keys(uncovered).sort();
+    panel.style.display = '';
+    if (missing.length === 0) { coverOk.style.display = ''; coverWarn.style.display = 'none'; }
+    else { coverOk.style.display = 'none'; coverWarn.style.display = ''; coverList.innerHTML = missing.map(function(d) { return '<li>' + d + '</li>'; }).join(''); }
+  }
+
+  btnExtract.addEventListener('click', function() {
+    var seeds = getSeeds(), existing = getDomains();
+    var existSet = {}; existing.forEach(function(d) { existSet[d] = true; });
+    var newDomains = {};
+    seeds.forEach(function(u) { var h = getHostname(u); if (!h) return; if (isCovered(h, existing)) return; newDomains[h] = true; });
+    var added = Object.keys(newDomains).sort();
+    if (added.length === 0) { extractMsg.textContent = 'All seed domains are already covered.'; extractMsg.style.color = 'var(--nhs-green)'; }
+    else { domainsEl.value = existing.concat(added).join('\n') + '\n'; extractMsg.textContent = 'Added ' + added.length + ' domain' + (added.length !== 1 ? 's' : '') + '.'; extractMsg.style.color = 'var(--nhs-green)'; }
+    setTimeout(function() { extractMsg.textContent = ''; }, 4000);
+    checkCoverage();
+  });
+
+  seedsEl.addEventListener('input', function() { updateSeedCount(); checkCoverage(); });
+  domainsEl.addEventListener('input', checkCoverage);
+  updateSeedCount();
+  checkCoverage();
+})();
+</script>
+{% endblock %}

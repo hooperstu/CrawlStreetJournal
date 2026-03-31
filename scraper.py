@@ -1,16 +1,17 @@
 """
-NHS Collector crawler: robots.txt, fetch, sitemap seeding, inventory rows,
+Collector crawler: robots.txt, fetch, sitemap seeding, inventory rows,
 and polite rate limiting.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import random
 import time
 from collections import deque
 from datetime import datetime, timezone
-from typing import Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 from urllib.robotparser import RobotFileParser
 
@@ -66,6 +67,8 @@ def _robots_for_url(url: str) -> RobotFileParser:
 
 
 def can_fetch(url: str) -> bool:
+    if not config.RESPECT_ROBOTS_TXT:
+        return True
     rp = _robots_for_url(url)
     try:
         return rp.can_fetch(config.USER_AGENT, url)
@@ -290,56 +293,125 @@ def crawl(
     delay: Optional[Union[float, Tuple[float, float]]] = None,
     on_progress: Optional[Callable[[int, int, str], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    run_name: Optional[str] = None,
+    run_folder: Optional[str] = None,
+    resume: bool = False,
 ) -> Tuple[int, int]:
     """
     Crawl HTML pages up to max_pages; record inventory and linked assets.
     Returns (pages_crawled, assets_recorded_from_page_links).
+
+    When *run_folder* is supplied with *resume=True*, the crawl picks up
+    from where it left off: visited URLs are rebuilt from existing CSVs,
+    the queue is restored from saved state, and no headers are rewritten.
+
+    When *run_folder* is supplied without resume, a fresh crawl is started
+    inside that pre-created run folder (overwriting any previous data).
     """
     max_pages = max_pages if max_pages is not None else config.MAX_PAGES_TO_CRAWL
     delay_cfg = delay if delay is not None else config.REQUEST_DELAY_SECONDS
 
-    storage.initialise_outputs()
+    run_dir = None
+
+    if resume and run_folder:
+        run_dir = os.path.join(config.OUTPUT_DIR, run_folder)
+        saved_cfg = storage.load_run_config(run_dir)
+        if saved_cfg:
+            storage.apply_run_config(saved_cfg)
+            max_pages = saved_cfg.get("MAX_PAGES_TO_CRAWL", max_pages)
+            delay_cfg = saved_cfg.get("REQUEST_DELAY_SECONDS", delay_cfg)
+            if isinstance(delay_cfg, list) and len(delay_cfg) == 2:
+                delay_cfg = tuple(delay_cfg)
+        storage.resume_outputs(run_folder)
+    elif run_folder:
+        run_dir = os.path.join(config.OUTPUT_DIR, run_folder)
+        saved_cfg = storage.load_run_config(run_dir)
+        if saved_cfg:
+            storage.apply_run_config(saved_cfg)
+            max_pages = saved_cfg.get("MAX_PAGES_TO_CRAWL", max_pages)
+            delay_cfg = saved_cfg.get("REQUEST_DELAY_SECONDS", delay_cfg)
+            if isinstance(delay_cfg, list) and len(delay_cfg) == 2:
+                delay_cfg = tuple(delay_cfg)
+        storage.initialise_outputs(run_folder=run_folder, run_name=run_name)
+    else:
+        storage.initialise_outputs(run_name=run_name)
+
+    run_dir = storage.get_active_run_dir()
 
     queue: deque[Tuple[str, str, int]] = deque()
     queued: Set[str] = set()
     visited: Set[str] = set()
     sitemap_meta: Dict[str, Dict[str, str]] = {}
-
-    if seed_urls is not None:
-        start_items = [(normalise_url(u.strip()), "seed") for u in seed_urls if u.strip()]
-    else:
-        start_items, sitemap_meta = collect_start_items()
-
-    now0 = _now_iso()
-    for u, ref in start_items:
-        if not is_allowed_domain(u):
-            continue
-        cat = parser_module.asset_category_for_url(u)
-        if cat is not None:
-            row = {
-                "referrer_page_url": ref,
-                "asset_url": u,
-                "link_text": "",
-                "category": cat,
-                "head_content_type": "",
-                "head_content_length": "",
-                "discovered_at": now0,
-            }
-            if config.ASSET_HEAD_METADATA:
-                ct, cl = head_asset(u)
-                row["head_content_type"] = ct
-                row["head_content_length"] = cl
-            storage.write_asset(row, cat)
-            continue
-        if u not in queued:
-            queue.append((u, ref, 0))
-            queued.add(u)
-
     pages_crawled = 0
     assets_from_pages = 0
+    saved_state: Optional[Dict[str, Any]] = None
+
+    if resume and run_folder:
+        visited = storage.rebuild_visited_from_csvs(run_dir)
+        sitemap_meta = storage.rebuild_sitemap_meta_from_csv(run_dir)
+        saved_state = storage.load_crawl_state(run_dir)
+        if saved_state:
+            pages_crawled = saved_state.get("pages_crawled", 0)
+            assets_from_pages = saved_state.get("assets_from_pages", 0)
+            for item in saved_state.get("queue", []):
+                if isinstance(item, (list, tuple)) and len(item) == 3:
+                    u, ref, depth = item
+                    if u not in visited and u not in queued:
+                        queue.append((u, ref, int(depth)))
+                        queued.add(u)
+        logger.info(
+            "Resumed: %d visited, %d in queue, %d pages already crawled",
+            len(visited), len(queue), pages_crawled,
+        )
+    else:
+        if seed_urls is not None:
+            start_items = [(normalise_url(u.strip()), "seed") for u in seed_urls if u.strip()]
+        else:
+            start_items, sitemap_meta = collect_start_items()
+
+        now0 = _now_iso()
+        for u, ref in start_items:
+            if not is_allowed_domain(u):
+                continue
+            cat = parser_module.asset_category_for_url(u)
+            if cat is not None:
+                row = {
+                    "referrer_page_url": ref,
+                    "asset_url": u,
+                    "link_text": "",
+                    "category": cat,
+                    "head_content_type": "",
+                    "head_content_length": "",
+                    "discovered_at": now0,
+                }
+                if config.ASSET_HEAD_METADATA:
+                    ct, cl = head_asset(u)
+                    row["head_content_type"] = ct
+                    row["head_content_length"] = cl
+                storage.write_asset(row, cat)
+                continue
+            if u not in queued:
+                queue.append((u, ref, 0))
+                queued.add(u)
+
+    if resume and run_folder and saved_state and saved_state.get("started_at"):
+        started_at = saved_state["started_at"]
+    else:
+        started_at = _now_iso()
+    storage.save_crawl_state(
+        run_dir,
+        status="running",
+        pages_crawled=pages_crawled,
+        assets_from_pages=assets_from_pages,
+        queue=list(queue),
+        started_at=started_at,
+    )
+
+    interrupted = False
 
     while queue and pages_crawled < max_pages:
         if should_stop and should_stop():
+            interrupted = True
             break
         url, referrer, depth = queue.popleft()
         url_key = normalise_url(url)
@@ -456,5 +528,16 @@ def crawl(
             on_progress(pages_crawled, assets_from_pages, final_url)
 
         time.sleep(_resolve_delay(delay_cfg))
+
+    final_status = "interrupted" if interrupted else "completed"
+    storage.save_crawl_state(
+        run_dir,
+        status=final_status,
+        pages_crawled=pages_crawled,
+        assets_from_pages=assets_from_pages,
+        queue=list(queue),
+        started_at=started_at,
+        stopped_at=_now_iso(),
+    )
 
     return pages_crawled, assets_from_pages
