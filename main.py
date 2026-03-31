@@ -44,10 +44,12 @@ def main() -> int:
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _signal_handler)
 
+    delay = config.REQUEST_DELAY_SECONDS
+    delay_str = f"{delay[0]}-{delay[1]}s" if isinstance(delay, (list, tuple)) and len(delay) == 2 else f"{delay}s"
     logger.info(
-        "Starting NHS Collector (max %s HTML pages, delay %ss). Output dir: %s",
+        "Starting NHS Collector (max %s HTML pages, delay %s). Output dir: %s",
         config.MAX_PAGES_TO_CRAWL,
-        config.REQUEST_DELAY_SECONDS,
+        delay_str,
         config.OUTPUT_DIR,
     )
     logger.info("Allowed domain substrings: %s", ", ".join(config.ALLOWED_DOMAINS))
