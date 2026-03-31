@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent
 LOG_FILE = ROOT / "crawl_background.log"
 
 # Raise cap so the job can run for hours (still stops early if the queue is exhausted).
-BACKGROUND_MAX_PAGES = 20_000
+BACKGROUND_MAX_PAGES = 1_000_000
 
 _interrupted = False
 
