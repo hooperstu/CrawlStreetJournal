@@ -65,6 +65,15 @@ def _meta_content(soup: BeautifulSoup, attrs: dict) -> str:
     tag = soup.find("meta", attrs=attrs)
     if tag and tag.get("content"):
         return str(tag["content"]).strip()
+    # Retry with case-insensitive value matching (covers ASP.NET
+    # sites that emit e.g. NAME="DESCRIPTION" instead of name="description").
+    ci_attrs = {
+        k: re.compile(re.escape(v), re.IGNORECASE) if isinstance(v, str) else v
+        for k, v in attrs.items()
+    }
+    tag = soup.find("meta", attrs=ci_attrs)
+    if tag and tag.get("content"):
+        return str(tag["content"]).strip()
     return ""
 
 
@@ -91,9 +100,17 @@ def _collect_json_ld_nodes(obj: Any) -> List[dict]:
     return nodes
 
 
-def _extract_json_ld(soup: BeautifulSoup) -> Tuple[List[str], List[str]]:
+def _extract_json_ld(
+    soup: BeautifulSoup,
+) -> Tuple[List[str], List[str], List[str]]:
+    """Return ``(types, keywords, sections)`` from JSON-LD blocks.
+
+    *sections* collects ``articleSection`` and ``genre`` values which many
+    WordPress + Yoast sites emit as categorisation signals.
+    """
     types: List[str] = []
     keywords: List[str] = []
+    sections: List[str] = []
     for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
         raw = script.string or script.get_text() or ""
         raw = raw.strip()
@@ -116,7 +133,13 @@ def _extract_json_ld(soup: BeautifulSoup) -> Tuple[List[str], List[str]]:
                 keywords.extend(str(x).strip() for x in kw if str(x).strip())
             elif isinstance(kw, str) and kw.strip():
                 keywords.append(kw.strip())
-    # De-duplicate preserving order
+            for field in ("articleSection", "genre"):
+                val = node.get(field)
+                if isinstance(val, list):
+                    sections.extend(str(x).strip() for x in val if str(x).strip())
+                elif isinstance(val, str) and val.strip():
+                    sections.append(val.strip())
+
     def dedupe(seq: List[str]) -> List[str]:
         seen: Set[str] = set()
         out: List[str] = []
@@ -127,7 +150,7 @@ def _extract_json_ld(soup: BeautifulSoup) -> Tuple[List[str], List[str]]:
                 out.append(x)
         return out
 
-    return dedupe(types), dedupe(keywords)
+    return dedupe(types), dedupe(keywords), dedupe(sections)
 
 
 def _rel_tag_hrefs(soup: BeautifulSoup, base_url: str) -> List[str]:
@@ -161,12 +184,32 @@ def _collect_all_tags(soup: BeautifulSoup, base_url: str) -> List[Tuple[str, str
             if val:
                 pairs.append((val, f"og:{prop}"))
 
-    _, jld_kw = _extract_json_ld(soup)
+    _, jld_kw, jld_sections = _extract_json_ld(soup)
     for k in jld_kw:
         pairs.append((k, "json_ld:keywords"))
+    for s in jld_sections:
+        pairs.append((s, "json_ld:articleSection"))
 
     for t in _rel_tag_hrefs(soup, base_url):
         pairs.append((t, "rel:tag"))
+
+    # /category/ and /tag/ href links (WordPress convention)
+    _TAG_HREF_RE = re.compile(r"/(?:tag|category|topic)/([^/?#]+)", re.IGNORECASE)
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        text = (a.get_text() or "").strip()
+        if text and len(text) < 60 and _TAG_HREF_RE.search(href):
+            if not re.search(r"/page/\d", href):
+                pairs.append((text, "href:category"))
+
+    # Elements with class "topics" (england.nhs.uk convention)
+    for el in soup.find_all(class_=re.compile(r"\btopics?\b", re.IGNORECASE)):
+        if el.name in ("nav", "header", "footer", "form"):
+            continue
+        for child in el.find_all(["a", "span", "li"]):
+            t = child.get_text(strip=True)
+            if t and len(t) < 60:
+                pairs.append((t, "class:topics"))
 
     seen: Set[Tuple[str, str]] = set()
     unique: List[Tuple[str, str]] = []
@@ -196,6 +239,15 @@ def url_content_hint(url: str) -> str:
         ("/contact", "contact_path"),
         ("/jobs", "jobs_path"),
         ("/careers", "careers_path"),
+        ("/events", "events_path"),
+        ("/event/", "events_path"),
+        ("/patients", "patients_path"),
+        ("/patient-", "patients_path"),
+        ("/explore-roles", "careers_path"),
+        ("/working-health", "careers_path"),
+        ("/training", "training_path"),
+        ("/guidance", "guidance_path"),
+        ("/statistics", "statistics_path"),
     ):
         if token in path:
             hints.append(label)
@@ -207,10 +259,15 @@ def guess_content_kind(
     json_ld_types: List[str],
     og_type: str,
     path: str,
+    breadcrumb: str = "",
+    body_classes: str = "",
 ) -> str:
     types_lower = " ".join(json_ld_types).lower()
     og_l = (og_type or "").lower()
     path_l = path.lower()
+    bc_lower = breadcrumb.lower()
+    body_lower = body_classes.lower()
+
     if "blogposting" in types_lower or "blog_path" in url_hint:
         return "blog"
     if "newsarticle" in types_lower or "news_path" in url_hint:
@@ -229,6 +286,67 @@ def guess_content_kind(
         return "contact"
     if "about_path" in url_hint:
         return "about"
+
+    # Fallback: breadcrumb and body class signals
+    if any(w in bc_lower for w in ("blog", "blogs")):
+        return "blog"
+    if any(w in bc_lower for w in ("news", "newsroom")):
+        return "news"
+    if any(w in bc_lower for w in ("publication", "publications")):
+        return "publication"
+    if any(w in bc_lower for w in ("event", "events")):
+        return "event"
+    if "about" in bc_lower:
+        return "about"
+    if any(w in bc_lower for w in ("contact", "get in touch")):
+        return "contact"
+    if any(w in bc_lower for w in ("service", "services")):
+        return "service"
+
+    if "single-post" in body_lower or "post-template" in body_lower:
+        return "blog"
+    if "page-template" in body_lower or "page-id" in body_lower:
+        return "webpage"
+    if "archive" in body_lower:
+        return "listing"
+
+    # SilverStripe page-type body classes (e.g. AboutOverviewPage,
+    # NewsItemListingPage, HomePage, ContactPage)
+    _SS_BODY_MAP = (
+        ("homepage", "homepage"),
+        ("aboutoverviewpage", "about"),
+        ("newsitemlistingpage", "news"),
+        ("newsitempage", "news"),
+        ("contactpage", "contact"),
+        ("eventpage", "event"),
+        ("resourcepage", "resource"),
+        ("staffpage", "staff"),
+        ("blogentry", "blog"),
+    )
+    for token, kind in _SS_BODY_MAP:
+        if token in body_lower:
+            return kind
+
+    # Drupal body class patterns (e.g. page-node-type-section-page)
+    _DRUPAL_BODY_RE = re.compile(r"page-node-type-(\S+)")
+    drupal_match = _DRUPAL_BODY_RE.search(body_lower)
+    if drupal_match:
+        node_type = drupal_match.group(1)
+        if "article" in node_type or "blog" in node_type:
+            return "blog"
+        if "news" in node_type:
+            return "news"
+        if "event" in node_type:
+            return "event"
+        if "page" in node_type or "section" in node_type:
+            return "webpage"
+
+    if "home" in body_lower and path_l in ("/", ""):
+        return "homepage"
+
+    if path_l in ("/", ""):
+        return "homepage"
+
     return "unknown"
 
 
@@ -290,6 +408,323 @@ def _document_title_from_soup(soup: BeautifulSoup) -> str:
     return text.strip()
 
 
+_VISIBLE_DATE_RE = re.compile(
+    r"(?:"
+    r"(?:date\s+)?last\s+(?:updated|reviewed|modified)"
+    r"|(?:date\s+)?published"
+    r"|(?:page\s+)?last\s+(?:reviewed|updated)"
+    r"|review\s+date"
+    r"|posted(?:\s+on)?"
+    r"|created(?:\s+on)?"
+    r")"
+    r"\s*[:\-–]?\s*"
+    r"("
+    r"\d{1,2}(?:st|nd|rd|th)?\s+\w+,?\s+\d{4}"
+    r"|\w+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}"
+    r"|\d{4}-\d{2}-\d{2}"
+    r"|\w+\s+\d{4}"
+    r")",
+    re.IGNORECASE,
+)
+
+_ANALYTICS_TOKENS = (
+    "googletagmanager.com",
+    "google-analytics.com",
+    "gtag/js",
+    "dataLayer",
+    "analytics.js",
+    "ga.js",
+)
+
+_PRIVACY_HREF_PATTERNS = (
+    "/privacy-policy",
+    "/privacy",
+    "/legal/privacy",
+    "/cookies",
+    "/cookie-policy",
+)
+
+
+def _extract_heading_outline(soup: BeautifulSoup, max_items: int = 40) -> str:
+    """Pipe-separated ``H2:text|H3:text|…`` outline (H2–H6)."""
+    parts: List[str] = []
+    for tag in soup.find_all(re.compile(r"^h[2-6]$"), limit=max_items):
+        level = tag.name.upper()
+        text = tag.get_text(separator=" ", strip=True)[:120]
+        if text:
+            parts.append(f"{level}:{text}")
+    return "|".join(parts)
+
+
+def _extract_structured_dates(
+    soup: BeautifulSoup,
+) -> Tuple[str, str]:
+    """
+    Return ``(date_published, date_modified)`` from structured markup:
+    JSON-LD ``datePublished`` / ``dateModified``, Open Graph
+    ``article:published_time``, and ``<time datetime>``.
+    """
+    published = ""
+    modified = ""
+
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = (script.string or script.get_text() or "").strip()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        for node in _collect_json_ld_nodes(data):
+            if not isinstance(node, dict):
+                continue
+            if not published:
+                published = str(node.get("datePublished") or "").strip()
+            if not modified:
+                modified = str(node.get("dateModified") or "").strip()
+
+    if not published:
+        published = _meta_content(soup, {"property": "article:published_time"})
+    if not modified:
+        modified = _meta_content(soup, {"property": "article:modified_time"})
+        if not modified:
+            modified = _meta_content(soup, {"property": "og:updated_time"})
+
+    if not published:
+        time_tag = soup.find("time", attrs={"datetime": True})
+        if time_tag:
+            published = str(time_tag["datetime"]).strip()
+
+    # CSS class date containers (e.g. .article-date__pub on england.nhs.uk,
+    # .date on cptraininghub, .nhsd-m-card__date on digital.nhs.uk)
+    if not published or not modified:
+        _PUB_CLASS = re.compile(r"date.*pub|publish|posted|created", re.I)
+        _MOD_CLASS = re.compile(r"date.*(?:last|updat|modif)|last.*(?:updat|modif)", re.I)
+        _DATE_IN_TEXT = re.compile(
+            r"\d{1,2}(?:st|nd|rd|th)?\s+\w+,?\s+\d{4}"
+            r"|\w+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}"
+            r"|\d{4}-\d{2}-\d{2}",
+        )
+        for el in soup.find_all(class_=_PUB_CLASS):
+            if published:
+                break
+            t = el.get_text(strip=True)
+            m = _DATE_IN_TEXT.search(t)
+            if m:
+                published = m.group().strip()
+        for el in soup.find_all(class_=_MOD_CLASS):
+            if modified:
+                break
+            t = el.get_text(strip=True)
+            m = _DATE_IN_TEXT.search(t)
+            if m:
+                modified = m.group().strip()
+
+    return published, modified
+
+
+def _extract_visible_dates(
+    html: str, max_matches: int = 3, soup: Optional[BeautifulSoup] = None,
+) -> str:
+    """Scan visible text and date-class elements for date patterns.
+
+    Runs the regex against the rendered visible text (not raw HTML) so that
+    labels split across elements like ``<span>Date published</span>: 9 May, 2023``
+    are matched correctly.  Also inspects elements whose CSS classes contain
+    ``date``, ``publish``, ``updat``, ``review``, ``posted``, or ``created``.
+    """
+    found: List[str] = []
+
+    # 1. Regex on visible text (tag-stripped)
+    if soup is not None:
+        text_soup = BeautifulSoup(html[:200_000], "lxml")
+        for tag in text_soup(["script", "style", "noscript"]):
+            tag.decompose()
+        vis_text = text_soup.get_text(separator=" ", strip=True)
+    else:
+        vis_text = re.sub(r"<[^>]+>", " ", html[:200_000])
+
+    for m in _VISIBLE_DATE_RE.finditer(vis_text):
+        val = m.group(1).strip()
+        if val and val not in found:
+            found.append(val)
+
+    # 2. Also check raw HTML in case visible-text extraction missed a pattern
+    for m in _VISIBLE_DATE_RE.finditer(html[:200_000]):
+        val = m.group(1).strip()
+        if val and val not in found:
+            found.append(val)
+
+    # 3. Date-bearing CSS class containers
+    if soup is not None:
+        _DATE_CLASS_RE = re.compile(
+            r"date|publish|updat|review|posted|created|modified", re.IGNORECASE,
+        )
+        _DATE_VAL_RE = re.compile(
+            r"\d{1,2}(?:st|nd|rd|th)?\s+\w+,?\s+\d{4}"
+            r"|\w+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}"
+            r"|\d{4}-\d{2}-\d{2}",
+        )
+        for el in soup.find_all(class_=_DATE_CLASS_RE):
+            t = el.get_text(strip=True)
+            if not t or len(t) > 200:
+                continue
+            for dm in _DATE_VAL_RE.finditer(t):
+                val = dm.group().strip()
+                if val and val not in found:
+                    found.append(val)
+
+    return "|".join(found[:max_matches])
+
+
+def _count_links(
+    soup: BeautifulSoup, page_url: str,
+) -> Tuple[int, int, int]:
+    """Return ``(internal, external, total)`` link counts."""
+    page_host = urlparse(page_url).netloc.lower()
+    internal = 0
+    external = 0
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if not href or href.startswith("#") or href.startswith("mailto:") or href.startswith("javascript:"):
+            continue
+        full = _normalise_url(href, page_url)
+        if not full:
+            continue
+        target_host = urlparse(full).netloc.lower()
+        if target_host == page_host:
+            internal += 1
+        else:
+            external += 1
+    return internal, external, internal + external
+
+
+def _count_images(soup: BeautifulSoup) -> Tuple[int, int]:
+    """Return ``(total_images, missing_alt_count)``."""
+    imgs = soup.find_all("img")
+    total = len(imgs)
+    missing_alt = sum(1 for i in imgs if not (i.get("alt") or "").strip())
+    return total, missing_alt
+
+
+def _compute_readability(visible_text: str) -> str:
+    """Flesch–Kincaid grade level if enabled and text is long enough."""
+    if not config.CAPTURE_READABILITY:
+        return ""
+    if not visible_text or len(visible_text.split()) < 30:
+        return ""
+    try:
+        import textstat  # optional dependency
+        score = textstat.flesch_kincaid_grade(visible_text)
+        return str(round(score, 1))
+    except Exception:
+        return ""
+
+
+def _find_privacy_policy_url(soup: BeautifulSoup, page_url: str) -> str:
+    """Best-effort privacy/cookie policy link from the page."""
+    for a in soup.find_all("a", href=True):
+        href_lower = a["href"].strip().lower()
+        for pattern in _PRIVACY_HREF_PATTERNS:
+            if pattern in href_lower:
+                resolved = _normalise_url(a["href"].strip(), page_url)
+                if resolved:
+                    return resolved
+    return ""
+
+
+def _detect_analytics(html: str) -> str:
+    """Return pipe-separated analytics tokens found in raw HTML."""
+    found: List[str] = []
+    html_lower = html[:500_000].lower()
+    for token in _ANALYTICS_TOKENS:
+        if token.lower() in html_lower:
+            found.append(token)
+    return "|".join(found)
+
+
+def _detect_training_keywords(url: str, title: str, h1: str) -> str:
+    """Return pipe-separated training/events keywords matched in URL, title, or H1."""
+    combined = f"{url} {title} {h1}".lower()
+    hits: List[str] = []
+    for kw in config.TRAINING_KEYWORDS:
+        if kw.lower() in combined:
+            hits.append(kw)
+    return "|".join(hits)
+
+
+def _count_nav_links(soup: BeautifulSoup) -> int:
+    """Count distinct links inside ``<nav>`` or ``[role=navigation]``."""
+    seen: Set[str] = set()
+    for nav in soup.find_all(["nav"]) + soup.find_all(attrs={"role": "navigation"}):
+        for a in nav.find_all("a", href=True):
+            seen.add(a["href"].strip())
+    return len(seen)
+
+
+def extract_nav_links(
+    soup: BeautifulSoup, page_url: str, discovered_at: str,
+) -> List[Dict[str, str]]:
+    """Return one dict per distinct nav link, ready for ``storage.write_nav_link``."""
+    seen: Set[str] = set()
+    rows: List[Dict[str, str]] = []
+    for nav in soup.find_all(["nav"]) + soup.find_all(attrs={"role": "navigation"}):
+        for a in nav.find_all("a", href=True):
+            href = a["href"].strip()
+            if href in seen:
+                continue
+            seen.add(href)
+            resolved = _normalise_url(href, page_url) or href
+            rows.append({
+                "page_url": page_url,
+                "nav_href": resolved,
+                "nav_text": (a.get_text() or "").strip()[:200],
+                "discovered_at": discovered_at,
+            })
+    return rows
+
+
+def _extract_first_paragraph(soup: BeautifulSoup, min_len: int = 50) -> str:
+    """Best-effort description from the first substantial ``<p>`` inside
+    ``<main>``, ``<article>``, ``#content``, or ``[role=main]``."""
+    container = (
+        soup.find("main")
+        or soup.find("article")
+        or soup.find(id="content")
+        or soup.find(attrs={"role": "main"})
+        or soup.find(class_=re.compile(
+            r"main-content|page-content|entry-content|content-area", re.I,
+        ))
+    )
+    if not container:
+        return ""
+    for p in container.find_all("p"):
+        text = p.get_text(separator=" ", strip=True)
+        if len(text) >= min_len:
+            return text[:300]
+    return ""
+
+
+def _extract_breadcrumb_text(soup: BeautifulSoup) -> str:
+    """Return pipe-separated breadcrumb trail text, or empty string."""
+    bc = soup.find(class_=re.compile(r"breadcrumb", re.I))
+    if not bc:
+        bc = soup.find(attrs={"aria-label": re.compile(r"breadcrumb", re.I)})
+    if not bc:
+        for nav in soup.find_all("nav"):
+            if "breadcrumb" in (nav.get("aria-label") or "").lower():
+                bc = nav
+                break
+    if not bc:
+        return ""
+    parts: List[str] = []
+    for a_or_span in bc.find_all(["a", "span", "li"]):
+        t = a_or_span.get_text(strip=True)
+        if t and t not in parts and len(t) < 80:
+            parts.append(t)
+    return "|".join(parts[:8])
+
+
 def build_page_inventory_row(
     html: str,
     requested_url: str,
@@ -299,15 +734,23 @@ def build_page_inventory_row(
     referrer_url: str,
     depth: int,
     discovered_at: str,
+    response_meta: Optional[Dict[str, str]] = None,
+    sitemap_meta: Optional[Dict[str, str]] = None,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """
     Returns the pages.csv row and tag detail rows for tags.csv.
     """
+    response_meta = response_meta or {}
+    sitemap_meta = sitemap_meta or {}
     soup = BeautifulSoup(html, "lxml")
 
     desc = _meta_content(soup, attrs={"name": "description"})
     if not desc:
         desc = _meta_content(soup, attrs={"property": "og:description"})
+    if not desc:
+        desc = _meta_content(soup, attrs={"name": "twitter:description"})
+    if not desc:
+        desc = _extract_first_paragraph(soup)
 
     lang = ""
     html_tag = soup.find("html")
@@ -324,7 +767,7 @@ def build_page_inventory_row(
     og_description = _meta_content(soup, attrs={"property": "og:description"})
     twitter_card = _meta_content(soup, attrs={"name": "twitter:card"})
 
-    json_types, _ = _extract_json_ld(soup)
+    json_types, _, _ = _extract_json_ld(soup)
     json_ld_types_str = "|".join(json_types)
 
     tag_pairs = _collect_all_tags(soup, final_url)
@@ -332,7 +775,13 @@ def build_page_inventory_row(
 
     hint = url_content_hint(final_url)
     path = urlparse(final_url).path
-    kind = guess_content_kind(hint, json_types, og_type, path)
+    breadcrumb = _extract_breadcrumb_text(soup)
+    body_tag = soup.find("body")
+    body_classes = " ".join(body_tag.get("class", [])) if body_tag else ""
+    kind = guess_content_kind(
+        hint, json_types, og_type, path,
+        breadcrumb=breadcrumb, body_classes=body_classes,
+    )
 
     h1_texts: List[str] = []
     for h in soup.find_all("h1", limit=5):
@@ -348,6 +797,18 @@ def build_page_inventory_row(
     word_count = len(visible.split()) if visible else 0
 
     domain = urlparse(final_url).netloc.lower()
+
+    # Phase 2 — structured headings, dates, quality, trust signals
+    heading_outline = _extract_heading_outline(soup)
+    date_published, date_modified = _extract_structured_dates(soup)
+    visible_dates = _extract_visible_dates(html, soup=soup)
+    link_int, link_ext, link_total = _count_links(soup, final_url)
+    img_count, img_no_alt = _count_images(soup)
+    readability = _compute_readability(visible)
+    privacy_url = _find_privacy_policy_url(soup, final_url)
+    analytics = _detect_analytics(html)
+    training_flag = _detect_training_keywords(final_url, title, h1_joined)
+    nav_count = _count_nav_links(soup)
 
     page_row = {
         "requested_url": requested_url,
@@ -369,6 +830,28 @@ def build_page_inventory_row(
         "content_kind_guess": kind,
         "h1_joined": h1_joined,
         "word_count": word_count,
+        # Phase 1 — freshness / provenance
+        "http_last_modified": response_meta.get("last_modified", ""),
+        "etag": response_meta.get("etag", ""),
+        "sitemap_lastmod": sitemap_meta.get("sitemap_lastmod", ""),
+        "referrer_sitemap_url": sitemap_meta.get("source_sitemap", ""),
+        # Phase 2 — on-page quality / trust
+        "heading_outline": heading_outline,
+        "date_published": date_published,
+        "date_modified": date_modified,
+        "visible_dates": visible_dates,
+        "link_count_internal": link_int,
+        "link_count_external": link_ext,
+        "link_count_total": link_total,
+        "img_count": img_count,
+        "img_missing_alt_count": img_no_alt,
+        "readability_fk_grade": readability,
+        "privacy_policy_url": privacy_url,
+        "analytics_signals": analytics,
+        "training_related_flag": training_flag,
+        # Phase 3
+        "nav_link_count": nav_count,
+        # common
         "referrer_url": referrer_url,
         "depth": depth,
         "discovered_at": discovered_at,

@@ -10,7 +10,7 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Set, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 from urllib.robotparser import RobotFileParser
 
 import requests
@@ -21,6 +21,31 @@ import sitemap as sitemap_module
 import storage
 
 logger = logging.getLogger(__name__)
+
+
+def normalise_url(url: str) -> str:
+    """Canonicalise a URL for deduplication.
+
+    Handles: fragment removal, trailing-slash stripping, empty query
+    stripping, scheme normalisation (http→https), default port removal,
+    and sorted query parameters.
+    """
+    try:
+        p = urlparse(url)
+        scheme = "https" if p.scheme in ("http", "https") else p.scheme
+        netloc = p.netloc.lower()
+        # Strip default ports (80 and 443 are never meaningful)
+        if netloc.endswith(":443"):
+            netloc = netloc[:-4]
+        elif netloc.endswith(":80"):
+            netloc = netloc[:-3]
+        path = p.path or "/"
+        # Sort query parameters for consistent ordering
+        query = urlencode(sorted(parse_qsl(p.query, keep_blank_values=True)))
+        normalised = urlunparse((scheme, netloc, path, p.params, query, ""))
+        return normalised.rstrip("/") or normalised
+    except Exception:
+        return url.rstrip("/") or url
 
 _robots_cache: Dict[str, RobotFileParser] = {}
 
@@ -66,12 +91,16 @@ def _is_probably_html(content_type: str) -> bool:
     return "text/html" in ct or "application/xhtml" in ct
 
 
-def fetch_page(url: str) -> Tuple[Optional[str], int, str, str]:
+def fetch_page(url: str) -> Tuple[Optional[str], int, str, str, Dict[str, str]]:
     """
-    GET url. Returns (body, status_code, final_url, content_type).
-    On failure body is None; final_url and content_type may be empty.
+    GET *url*.  Returns ``(body, status_code, final_url, content_type, response_meta)``.
+
+    *response_meta* carries selected headers (``Last-Modified``, ``ETag``)
+    when ``CAPTURE_RESPONSE_HEADERS`` is enabled; otherwise an empty dict.
+    On failure *body* is ``None``; *final_url* and *content_type* may be empty.
     """
     headers = {"User-Agent": config.USER_AGENT}
+    empty_meta: Dict[str, str] = {}
     for attempt in range(config.MAX_RETRIES + 1):
         try:
             resp = requests.get(
@@ -83,25 +112,31 @@ def fetch_page(url: str) -> Tuple[Optional[str], int, str, str]:
             final = resp.url
             ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
             status = resp.status_code
+            meta = empty_meta
+            if config.CAPTURE_RESPONSE_HEADERS:
+                meta = {
+                    "last_modified": (resp.headers.get("Last-Modified") or "").strip(),
+                    "etag": (resp.headers.get("ETag") or "").strip(),
+                }
             if status >= 400:
-                return None, status, final, ctype
-            return resp.text, status, final, ctype
+                return None, status, final, ctype, meta
+            return resp.text, status, final, ctype, meta
         except requests.exceptions.Timeout:
             logger.warning("Timeout fetching %s (attempt %s)", url, attempt + 1)
             if attempt == config.MAX_RETRIES:
-                return None, 0, url, ""
+                return None, 0, url, "", empty_meta
         except requests.exceptions.RequestException as e:
             status = getattr(e.response, "status_code", None) if hasattr(e, "response") else None
             logger.warning("Request failed for %s: %s (status=%s)", url, e, status)
             if status == 429:
                 time.sleep(5)
             if attempt == config.MAX_RETRIES:
-                return None, status or 0, url, ""
+                return None, status or 0, url, "", empty_meta
         except Exception as e:
             logger.warning("Error fetching %s: %s", url, e)
             if attempt == config.MAX_RETRIES:
-                return None, 0, url, ""
-    return None, 0, url, ""
+                return None, 0, url, "", empty_meta
+    return None, 0, url, "", empty_meta
 
 
 def head_asset(url: str) -> Tuple[str, str]:
@@ -140,38 +175,55 @@ def _sitemaps_from_robots(origin: str) -> List[str]:
     return found
 
 
-def collect_start_items() -> List[Tuple[str, str]]:
+def collect_start_items() -> Tuple[List[Tuple[str, str]], Dict[str, Dict[str, str]]]:
     """
-    Return (url, referrer_label) for every seed and sitemap location,
-    de-duplicated by URL.
+    Return ``(items, sitemap_meta)`` where *items* is a de-duplicated list
+    of ``(url, referrer_label)`` and *sitemap_meta* maps normalised URL →
+    ``{"sitemap_lastmod": ..., "source_sitemap": ...}``.
     """
     items: List[Tuple[str, str]] = []
     seen: Set[str] = set()
+    sitemap_meta: Dict[str, Dict[str, str]] = {}
 
     def add(u: str, ref: str) -> None:
         u = (u or "").strip()
         if not u:
             return
-        key = u.rstrip("/") or u
+        key = normalise_url(u)
         if key in seen:
             return
         seen.add(key)
         items.append((key, ref))
 
+    def _process_sitemap(sm_url: str) -> None:
+        try:
+            entries = sitemap_module.collect_urls_from_sitemap(
+                sm_url, max_urls=config.MAX_SITEMAP_URLS
+            )
+        except Exception as e:
+            logger.warning("Sitemap crawl failed for %s: %s", sm_url, e)
+            return
+        label = f"sitemap:{sm_url}"
+        now = _now_iso()
+        for loc, lastmod in entries:
+            loc = loc.strip()
+            norm = normalise_url(loc)
+            meta = {"sitemap_lastmod": lastmod, "source_sitemap": sm_url}
+            if norm not in sitemap_meta:
+                sitemap_meta[norm] = meta
+            storage.write_sitemap_url({
+                "url": loc,
+                "lastmod": lastmod,
+                "source_sitemap": sm_url,
+                "discovered_at": now,
+            })
+            add(loc, label)
+
     for u in config.SEED_URLS:
         add(u.strip(), "seed")
 
     for sm in config.SITEMAP_URLS:
-        try:
-            locs = sitemap_module.collect_urls_from_sitemap(
-                sm, max_urls=config.MAX_SITEMAP_URLS
-            )
-        except Exception as e:
-            logger.warning("Sitemap crawl failed for %s: %s", sm, e)
-            locs = []
-        label = f"sitemap:{sm}"
-        for loc in locs:
-            add(loc.strip(), label)
+        _process_sitemap(sm)
 
     if config.LOAD_SITEMAPS_FROM_ROBOTS:
         origins: Set[str] = set()
@@ -183,18 +235,45 @@ def collect_start_items() -> List[Tuple[str, str]]:
                 continue
         for origin in origins:
             for sm in _sitemaps_from_robots(origin):
-                try:
-                    locs = sitemap_module.collect_urls_from_sitemap(
-                        sm, max_urls=config.MAX_SITEMAP_URLS
-                    )
-                except Exception as e:
-                    logger.warning("Sitemap from robots failed %s: %s", sm, e)
-                    continue
-                label = f"sitemap:{sm}"
-                for loc in locs:
-                    add(loc.strip(), label)
+                _process_sitemap(sm)
 
-    return items
+    return items, sitemap_meta
+
+
+def _check_outbound_links(
+    edge_rows: List[Dict[str, str]], discovered_at: str,
+) -> None:
+    """HEAD-check a sample of outbound link targets and write results."""
+    seen: Set[str] = set()
+    checked = 0
+    for row in edge_rows:
+        target = row["to_url"]
+        if target in seen:
+            continue
+        seen.add(target)
+        if checked >= config.MAX_LINK_CHECKS_PER_PAGE:
+            break
+        try:
+            resp = requests.head(
+                target,
+                headers={"User-Agent": config.USER_AGENT},
+                timeout=config.HEAD_TIMEOUT_SECONDS,
+                allow_redirects=True,
+            )
+            check_status = resp.status_code
+            check_final = resp.url
+        except Exception:
+            check_status = 0
+            check_final = target
+        storage.write_link_check({
+            "from_url": row["from_url"],
+            "to_url": target,
+            "check_status": check_status,
+            "check_final_url": check_final,
+            "discovered_at": discovered_at,
+        })
+        checked += 1
+        time.sleep(config.LINK_CHECK_DELAY_SECONDS)
 
 
 def crawl(
@@ -216,11 +295,12 @@ def crawl(
     queue: deque[Tuple[str, str, int]] = deque()
     queued: Set[str] = set()
     visited: Set[str] = set()
+    sitemap_meta: Dict[str, Dict[str, str]] = {}
 
     if seed_urls is not None:
-        start_items = [(u.strip().rstrip("/") or u.strip(), "seed") for u in seed_urls if u.strip()]
+        start_items = [(normalise_url(u.strip()), "seed") for u in seed_urls if u.strip()]
     else:
-        start_items = collect_start_items()
+        start_items, sitemap_meta = collect_start_items()
 
     now0 = _now_iso()
     for u, ref in start_items:
@@ -254,9 +334,10 @@ def crawl(
         if should_stop and should_stop():
             break
         url, referrer, depth = queue.popleft()
-        if url in visited:
+        url_key = normalise_url(url)
+        if url_key in visited:
             continue
-        visited.add(url)
+        visited.add(url_key)
 
         if not can_fetch(url):
             storage.write_error({
@@ -268,7 +349,7 @@ def crawl(
             })
             continue
 
-        html, status, final_url, ctype = fetch_page(url)
+        html, status, final_url, ctype, resp_meta = fetch_page(url)
         if html is None:
             storage.write_error({
                 "url": url,
@@ -289,6 +370,8 @@ def crawl(
             })
             continue
 
+        sm = sitemap_meta.get(normalise_url(url)) or sitemap_meta.get(normalise_url(final_url)) or {}
+
         pages_crawled += 1
         now = _now_iso()
         try:
@@ -301,10 +384,22 @@ def crawl(
                 referrer_url=referrer,
                 depth=depth,
                 discovered_at=now,
+                response_meta=resp_meta,
+                sitemap_meta=sm,
             )
             storage.write_page(page_row)
             for tr in tag_rows:
                 storage.write_tag_row(tr)
+            if config.WRITE_NAV_LINKS_CSV:
+                try:
+                    from bs4 import BeautifulSoup as _BS
+                    nav_rows = parser_module.extract_nav_links(
+                        _BS(html, "lxml"), final_url, now,
+                    )
+                    for nr in nav_rows:
+                        storage.write_nav_link(nr)
+                except Exception as nav_err:
+                    logger.debug("Nav extraction failed for %s: %s", final_url, nav_err)
         except Exception as e:
             logger.exception("Inventory parse failed for %s: %s", final_url, e)
             storage.write_error({
@@ -327,6 +422,9 @@ def crawl(
         for e_row in edge_rows:
             storage.write_edge(e_row)
 
+        if config.CHECK_OUTBOUND_LINKS and edge_rows:
+            _check_outbound_links(edge_rows, now)
+
         for ar in asset_rows:
             if config.ASSET_HEAD_METADATA:
                 ct, cl = head_asset(ar["asset_url"])
@@ -336,10 +434,8 @@ def crawl(
             assets_from_pages += 1
 
         for link in html_links:
-            if link in visited:
-                continue
-            norm = link.rstrip("/") or link
-            if norm in queued:
+            norm = normalise_url(link)
+            if norm in visited or norm in queued:
                 continue
             if not is_allowed_domain(link):
                 continue
