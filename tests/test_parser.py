@@ -42,7 +42,7 @@ SAMPLE_HTML = """\
   <img src="/img/icon.png">
   <a href="/privacy-policy">Privacy Policy</a>
   <a href="/some-page">Internal link</a>
-  <a href="https://other.nhs.uk/ext">External link</a>
+  <a href="https://other.example.com/ext">External link</a>
   <p>Review date: 15 January 2026</p>
   <footer>
     <a href="/privacy-policy">Privacy</a>
@@ -78,7 +78,7 @@ def test_visible_dates():
 
 def test_count_links():
     internal, external, total = parser_module._count_links(
-        _soup(), "https://www.example.nhs.uk/test"
+        _soup(), "https://www.example.com/test"
     )
     assert internal >= 4
     assert external >= 1
@@ -93,7 +93,7 @@ def test_count_images():
 
 def test_privacy_policy_url():
     url = parser_module._find_privacy_policy_url(
-        _soup(), "https://www.example.nhs.uk/test"
+        _soup(), "https://www.example.com/test"
     )
     assert "/privacy-policy" in url
 
@@ -110,7 +110,7 @@ def test_detect_analytics_absent():
 
 def test_training_keywords():
     flag = parser_module._detect_training_keywords(
-        "https://example.nhs.uk/training/cpd-courses",
+        "https://example.com/training/cpd-courses",
         "CPD Training Portal",
         "Training Courses",
     )
@@ -120,7 +120,7 @@ def test_training_keywords():
 
 def test_training_keywords_absent():
     flag = parser_module._detect_training_keywords(
-        "https://example.nhs.uk/about",
+        "https://example.com/about",
         "About Us",
         "Who we are",
     )
@@ -134,31 +134,31 @@ def test_count_nav_links():
 
 def test_extract_nav_links():
     rows = parser_module.extract_nav_links(
-        _soup(), "https://www.example.nhs.uk/test", "2025-01-01 00:00:00"
+        _soup(), "https://www.example.com/test", "2025-01-01 00:00:00"
     )
     assert len(rows) == 3
     hrefs = {r["nav_href"] for r in rows}
     assert any("/about" in h for h in hrefs)
-    assert all(r["page_url"] == "https://www.example.nhs.uk/test" for r in rows)
+    assert all(r["page_url"] == "https://www.example.com/test" for r in rows)
 
 
 def test_build_page_row_includes_new_fields():
     row, tags = parser_module.build_page_inventory_row(
         SAMPLE_HTML,
-        requested_url="https://www.example.nhs.uk/test",
-        final_url="https://www.example.nhs.uk/test",
+        requested_url="https://www.example.com/test",
+        final_url="https://www.example.com/test",
         http_status=200,
         content_type="text/html",
         referrer_url="seed",
         depth=0,
         discovered_at="2025-01-01 00:00:00",
         response_meta={"last_modified": "Tue, 14 Feb 2025 12:00:00 GMT", "etag": '"abc123"'},
-        sitemap_meta={"sitemap_lastmod": "2025-02-14", "source_sitemap": "https://example.nhs.uk/sitemap.xml"},
+        sitemap_meta={"sitemap_lastmod": "2025-02-14", "source_sitemap": "https://example.com/sitemap.xml"},
     )
     assert row["http_last_modified"] == "Tue, 14 Feb 2025 12:00:00 GMT"
     assert row["etag"] == '"abc123"'
     assert row["sitemap_lastmod"] == "2025-02-14"
-    assert row["referrer_sitemap_url"] == "https://example.nhs.uk/sitemap.xml"
+    assert row["referrer_sitemap_url"] == "https://example.com/sitemap.xml"
     assert "H2:" in row["heading_outline"]
     assert row["date_published"]
     assert row["date_modified"]

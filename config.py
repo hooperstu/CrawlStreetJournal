@@ -1,6 +1,6 @@
 """
 ========================================================================
-  NHS COLLECTOR — CONFIGURATION
+  COLLECTOR — CONFIGURATION
 ========================================================================
   Edit this file to set seeds, allowed domains, crawl limits, and output
   paths. Run with: python main.py
@@ -15,20 +15,20 @@
 # ── SEEDS ─────────────────────────────────────────────────────────────
 # Starting pages for link following (must sit under ALLOWED_DOMAINS).
 SEED_URLS = [
-    "https://www.england.nhs.uk/",
-    "https://digital.nhs.uk/",
 ]
 
 # Extra sitemap URLs (sitemap index or urlset). URLs discovered here are
-# enqueued like seeds. Add ICS, trust, or GP site sitemaps as needed.
+# enqueued like seeds.
 SITEMAP_URLS = [
-    "https://www.england.nhs.uk/sitemap_index.xml",
-    "https://digital.nhs.uk/sitemap.xml",
 ]
 
 # If True, fetch each seed origin's robots.txt and enqueue any Sitemap:
 # lines found (in addition to SITEMAP_URLS).
-LOAD_SITEMAPS_FROM_ROBOTS = False
+LOAD_SITEMAPS_FROM_ROBOTS = True
+
+# If True, the crawler obeys robots.txt Disallow rules. Set to False to
+# ignore robots.txt restrictions (e.g. for internal auditing purposes).
+RESPECT_ROBOTS_TXT = True
 
 # Cap how many locations to read from sitemaps (per run), to bound memory.
 MAX_SITEMAP_URLS = 1_000_000
@@ -39,8 +39,11 @@ REQUEST_DELAY_SECONDS = (3, 5)
 REQUEST_TIMEOUT_SECONDS = 20
 MAX_RETRIES = 1
 
-# ── OUTPUT DIRECTORY ─────────────────────────────────────────────────
-# All CSVs are written under this folder (created if missing).
+# ── OUTPUT / PROJECTS ────────────────────────────────────────────────
+# Per-project runs are stored under PROJECTS_DIR/<slug>/runs/.
+# OUTPUT_DIR is set dynamically by activate_project(); the default below
+# is only used for backwards-compatible CLI invocations without --project.
+PROJECTS_DIR = "projects"
 OUTPUT_DIR = "output"
 
 PAGES_CSV = "pages.csv"
@@ -76,37 +79,8 @@ LINK_CHECK_DELAY_SECONDS = 0.5
 
 # ── DOMAIN SCOPE ─────────────────────────────────────────────────────
 # A URL is allowed if its host matches any of these substrings.
-# The first two cover the core NHS estate; the rest are NHS-affiliated
-# partner/supplier domains identified during the pre-crawl analysis.
+# Configure via the project defaults in the GUI, or edit directly here.
 ALLOWED_DOMAINS = (
-    "nhs.uk",
-    "nhs.net",
-    # NHS-affiliated partner & supplier domains
-    "beta.digitisingsocialcare.co.uk",
-    "careersinpharmacy.uk",
-    "curriculumlibrary.nshcs.org.uk",
-    "ftp.nshcs.org.uk",
-    "gettingitrightfirsttime.co.uk",
-    "girft-hubtoolkit.org.uk",
-    "girft-interactivepathways.org.uk",
-    "gpinsomerset.com",
-    "hub.seschoolofpas.org",
-    "londonpaediatrics.co.uk",
-    "schoolofanaesthesia.co.uk",
-    "seschoolofpas.org",
-    "stage.digitisingsocialcare.co.uk",
-    "stokeanaesthesia.org.uk",
-    "studyinghealthcare.ac.uk",
-    "thcepn.com",
-    "webzang.gpinsomerset.com",
-    "work-learn-live-blmk.co.uk",
-    "www.autismcentral.org.uk",
-    "www.capitalnurselondon.co.uk",
-    "www.e-lfh.org.uk",
-    "www.eintegrity.org",
-    "www.nhsfindyourplace.co.uk",
-    "www.oxsph.org",
-    "www.skillsforhealth.org.uk",
 )
 
 # Extensions treated as non-HTML for crawling: we record the link in an
@@ -151,9 +125,8 @@ ASSET_CATEGORY_BY_EXT = {
 }
 
 # ── CONTENT ANALYSIS ──────────────────────────────────────────────────
-# Compute Flesch–Kincaid grade level via textstat (requires pip install
-# textstat). Disabled by default because the dependency is optional.
-CAPTURE_READABILITY = False
+# Compute Flesch–Kincaid grade level via textstat.
+CAPTURE_READABILITY = True
 
 # URL path or title tokens that flag a page as training/events-related.
 TRAINING_KEYWORDS = (
@@ -171,8 +144,12 @@ TRAINING_KEYWORDS = (
     "masterclass",
 )
 
+# ── LOGGING ───────────────────────────────────────────────────────────
+# Python log-level name: DEBUG, INFO, WARNING, ERROR, CRITICAL.
+LOG_LEVEL = "INFO"
+
 # ── IDENTITY ──────────────────────────────────────────────────────────
 USER_AGENT = (
-    "NHSInventoryCrawler/1.0 "
+    "Collector/1.0 "
     "(research; public page metadata inventory; contact: configure in config)"
 )

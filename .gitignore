@@ -7,4 +7,3 @@ output/
 .cursor-push-debug.txt
 crawl_background.log
 crawl_background.pid
-pre_crawl_analysis/
