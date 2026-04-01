@@ -3,67 +3,77 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Collector{% endblock %}</title>
+  <title>{% block title %}The Crawl Street Journal{% endblock %}</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='img/favicon.svg') }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --nhs-blue: #005eb8;
-      --nhs-dark-blue: #003087;
-      --nhs-bright-blue: #0072ce;
-      --nhs-white: #ffffff;
-      --nhs-pale-grey: #f0f4f5;
-      --nhs-grey: #4c6272;
-      --nhs-dark-grey: #232b2b;
-      --nhs-green: #007f3b;
-      --nhs-red: #d5281b;
-      --nhs-warm-yellow: #ffeb3b;
-      --nhs-orange: #ed8b00;
-      --border: #d8dde0;
+      --csj-ink: #1A1A1A;
+      --csj-headline: #1A1A1A;
+      --csj-accent: #C4841D;
+      --csj-paper: #FAF8F5;
+      --csj-newsprint: #F2EFEB;
+      --csj-body: #4A4A4A;
+      --csj-success: #2D6A4F;
+      --csj-error: #A4243B;
+      --csj-highlight: #F5E6CC;
+      --csj-amber: #C4841D;
+      --border: #D5CEC4;
       --radius: 4px;
-      --shadow: 0 1px 4px rgba(0,0,0,.08);
+      --shadow: 0 1px 4px rgba(0,0,0,.06);
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      font-family: "Frutiger", Arial, sans-serif;
+      font-family: "Source Sans 3", "Source Sans Pro", sans-serif;
       font-size: 16px;
       line-height: 1.5;
-      color: var(--nhs-dark-grey);
-      background: var(--nhs-pale-grey);
+      color: var(--csj-ink);
+      background: var(--csj-newsprint);
     }
 
-    /* ── Header ──────────────────────────────────────── */
+    h1, h2, h3, .topbar-logo, .card-title, .page-title, .result-group-title, .coverage-title {
+      font-family: "Libre Baskerville", Georgia, serif;
+    }
+
+    /* ── Masthead ─────────────────────────────────────── */
     .topbar {
-      background: var(--nhs-blue);
-      color: var(--nhs-white);
+      background: var(--csj-paper);
+      color: var(--csj-ink);
       padding: 0 24px;
       display: flex;
       align-items: center;
-      height: 56px;
-      box-shadow: 0 2px 4px rgba(0,0,0,.12);
+      height: 60px;
+      border-bottom: 3px double var(--csj-ink);
     }
     .topbar-logo {
+      font-family: "Libre Baskerville", Georgia, serif;
       font-size: 20px;
       font-weight: 700;
+      font-style: italic;
       letter-spacing: -.3px;
-      color: var(--nhs-white);
+      color: var(--csj-ink);
       text-decoration: none;
       margin-right: 32px;
     }
+    .topbar-logo:hover { color: var(--csj-accent); }
     .topbar-project {
       font-size: 15px;
       font-weight: 500;
-      color: rgba(255,255,255,.85);
+      color: var(--csj-body);
       text-decoration: none;
       margin-right: 24px;
       padding: 4px 12px;
-      border: 1px solid rgba(255,255,255,.3);
+      border: 1px solid var(--border);
       border-radius: var(--radius);
     }
     .topbar-project { cursor: default; }
 
     /* ── Navigation ──────────────────────────────────── */
     .nav-bar {
-      background: var(--nhs-dark-blue);
+      background: var(--csj-ink);
       padding: 0 24px;
       display: flex;
       align-items: center;
@@ -82,21 +92,9 @@
     .nav-bar a:hover { color: #fff; background: rgba(255,255,255,.1); }
     .nav-bar a.active { color: #fff; background: rgba(255,255,255,.18); }
 
-    /* ── Breadcrumbs ─────────────────────────────────── */
-    .breadcrumbs {
-      padding: 10px 24px;
-      font-size: 13px;
-      color: var(--nhs-grey);
-      max-width: 1200px;
-      margin: 0 auto;
-    }
-    .breadcrumbs a { color: var(--nhs-blue); text-decoration: none; }
-    .breadcrumbs a:hover { text-decoration: underline; }
-    .breadcrumbs .sep { margin: 0 6px; color: #aab; }
-
     /* ── Sub-navigation (run tabs) ───────────────────── */
     .sub-nav {
-      background: var(--nhs-white);
+      background: var(--csj-paper);
       border-bottom: 1px solid var(--border);
       padding: 0 24px;
       display: flex;
@@ -105,7 +103,7 @@
       margin: 0 auto;
     }
     .sub-nav a {
-      color: var(--nhs-grey);
+      color: var(--csj-body);
       text-decoration: none;
       padding: 10px 16px;
       font-size: 14px;
@@ -113,16 +111,16 @@
       border-bottom: 3px solid transparent;
       transition: border-color .15s, color .15s;
     }
-    .sub-nav a:hover { color: var(--nhs-dark-blue); border-bottom-color: var(--border); }
-    .sub-nav a.active { color: var(--nhs-dark-blue); border-bottom-color: var(--nhs-blue); }
+    .sub-nav a:hover { color: var(--csj-headline); border-bottom-color: var(--border); }
+    .sub-nav a.active { color: var(--csj-headline); border-bottom-color: var(--csj-accent); }
 
     /* ── Page shell ──────────────────────────────────── */
     .page { max-width: 1200px; margin: 0 auto; padding: 24px; }
-    .page-title { font-size: 26px; font-weight: 700; margin-bottom: 20px; color: var(--nhs-dark-blue); }
+    .page-title { font-size: 26px; font-weight: 700; margin-bottom: 20px; color: var(--csj-headline); }
 
     /* ── Cards ───────────────────────────────────────── */
     .card {
-      background: var(--nhs-white);
+      background: var(--csj-paper);
       border-radius: var(--radius);
       box-shadow: var(--shadow);
       border: 1px solid var(--border);
@@ -133,8 +131,8 @@
       font-size: 17px;
       font-weight: 700;
       margin-bottom: 12px;
-      color: var(--nhs-dark-blue);
-      border-bottom: 2px solid var(--nhs-blue);
+      color: var(--csj-headline);
+      border-bottom: 2px solid var(--csj-accent);
       padding-bottom: 8px;
     }
 
@@ -144,20 +142,23 @@
       align-items: center;
       gap: 6px;
       padding: 10px 20px;
+      font-family: inherit;
       font-size: 15px;
       font-weight: 600;
+      line-height: 1.4;
       border: none;
       border-radius: var(--radius);
+      box-sizing: border-box;
       cursor: pointer;
       text-decoration: none;
       transition: background .15s, box-shadow .15s;
     }
-    .btn-primary { background: var(--nhs-green); color: #fff; }
-    .btn-primary:hover { background: #00662f; }
-    .btn-danger { background: var(--nhs-red); color: #fff; }
-    .btn-danger:hover { background: #b02018; }
-    .btn-secondary { background: #425563; color: #fff; }
-    .btn-secondary:hover { background: #313f49; }
+    .btn-primary { background: var(--csj-success); color: #fff; }
+    .btn-primary:hover { background: #225640; }
+    .btn-danger { background: var(--csj-error); color: #fff; }
+    .btn-danger:hover { background: #871D30; }
+    .btn-secondary { background: #5A5246; color: #fff; }
+    .btn-secondary:hover { background: #44403A; }
     .btn-sm { padding: 6px 14px; font-size: 13px; }
     .btn:disabled { opacity: .5; cursor: not-allowed; }
 
@@ -168,11 +169,11 @@
       font-weight: 600;
       font-size: 14px;
       margin-bottom: 4px;
-      color: var(--nhs-grey);
+      color: var(--csj-body);
     }
     .form-hint {
       font-size: 13px;
-      color: #768692;
+      color: #78716C;
       margin-bottom: 4px;
     }
     input[type="text"],
@@ -189,9 +190,9 @@
     }
     textarea { resize: vertical; min-height: 80px; }
     input:focus, textarea:focus, select:focus {
-      outline: 3px solid var(--nhs-bright-blue);
+      outline: 3px solid var(--csj-accent);
       outline-offset: 0;
-      border-color: var(--nhs-bright-blue);
+      border-color: var(--csj-accent);
     }
     .checkbox-row {
       display: flex;
@@ -200,7 +201,7 @@
       margin-bottom: 8px;
     }
     .checkbox-row input[type="checkbox"] {
-      width: 20px; height: 20px; accent-color: var(--nhs-blue);
+      width: 20px; height: 20px; accent-color: var(--csj-accent);
     }
     .form-grid {
       display: grid;
@@ -222,14 +223,14 @@
       border-bottom: 1px solid var(--border);
     }
     th {
-      background: var(--nhs-pale-grey);
+      background: var(--csj-newsprint);
       font-weight: 600;
       position: sticky;
       top: 0;
-      color: var(--nhs-dark-blue);
+      color: var(--csj-headline);
       white-space: nowrap;
     }
-    tr:hover td { background: #f7fafe; }
+    tr:hover td { background: #FAF8F5; }
     td { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     /* ── Status badges ───────────────────────────────── */
@@ -240,10 +241,10 @@
       font-weight: 600;
       border-radius: 12px;
     }
-    .badge-idle { background: #e8edee; color: var(--nhs-grey); }
-    .badge-running { background: #cce5ff; color: var(--nhs-dark-blue); }
+    .badge-idle { background: #E8E4DE; color: var(--csj-body); }
+    .badge-running { background: #F5E6CC; color: #7A5B1E; }
     .badge-stopping { background: #fff3cd; color: #856404; }
-    .badge-new { background: #e8f5e9; color: #2e7d32; }
+    .badge-new { background: #E4EFEA; color: #2D6A4F; }
 
     /* ── Stats row ───────────────────────────────────── */
     .stats {
@@ -255,13 +256,13 @@
     .stat {
       flex: 1;
       min-width: 140px;
-      background: var(--nhs-pale-grey);
+      background: var(--csj-newsprint);
       padding: 14px 18px;
       border-radius: var(--radius);
-      border-left: 4px solid var(--nhs-blue);
+      border-left: 4px solid var(--csj-accent);
     }
-    .stat-value { font-size: 28px; font-weight: 700; color: var(--nhs-dark-blue); }
-    .stat-label { font-size: 13px; color: var(--nhs-grey); }
+    .stat-value { font-size: 28px; font-weight: 700; color: var(--csj-headline); }
+    .stat-label { font-size: 13px; color: var(--csj-body); }
 
     /* ── Log viewer ──────────────────────────────────── */
     .log-pane {
@@ -276,8 +277,8 @@
       overflow-y: auto;
     }
     .log-pane .log-time { color: #6e7681; }
-    .log-pane .log-warn { color: var(--nhs-orange); }
-    .log-pane .log-err { color: var(--nhs-red); }
+    .log-pane .log-warn { color: var(--csj-amber); }
+    .log-pane .log-err { color: var(--csj-error); }
     .log-pane .log-info { color: #58a6ff; }
 
     /* ── Pagination ──────────────────────────────────── */
@@ -293,12 +294,12 @@
       border: 1px solid var(--border);
       border-radius: var(--radius);
       text-decoration: none;
-      color: var(--nhs-blue);
+      color: var(--csj-accent);
     }
-    .pagination a:hover { background: var(--nhs-pale-grey); }
+    .pagination a:hover { background: var(--csj-newsprint); }
     .pagination .current {
       padding: 6px 12px;
-      background: var(--nhs-blue);
+      background: var(--csj-ink);
       color: #fff;
       border-radius: var(--radius);
     }
@@ -307,12 +308,12 @@
     .coverage-panel {
       margin-top: 12px;
       padding: 12px 16px;
-      background: var(--nhs-pale-grey);
+      background: var(--csj-newsprint);
       border-radius: var(--radius);
-      border-left: 4px solid var(--nhs-blue);
+      border-left: 4px solid var(--csj-accent);
       font-size: 14px;
     }
-    .coverage-title { font-weight: 600; margin-bottom: 4px; color: var(--nhs-dark-blue); }
+    .coverage-title { font-weight: 600; margin-bottom: 4px; color: var(--csj-headline); }
     .coverage-panel ul { padding-left: 20px; margin: 0; }
     .coverage-panel li { margin-bottom: 2px; }
 
@@ -333,7 +334,7 @@
     .bar-track {
       flex: 1;
       height: 8px;
-      background: var(--nhs-pale-grey);
+      background: var(--csj-newsprint);
       border-radius: 4px;
       overflow: hidden;
       min-width: 60px;
@@ -341,12 +342,12 @@
     .bar-fill {
       height: 100%;
       border-radius: 4px;
-      background: var(--nhs-blue);
+      background: var(--csj-accent);
       transition: width .3s;
     }
     .bar-label {
       font-size: 12px;
-      color: var(--nhs-grey);
+      color: var(--csj-body);
       min-width: 36px;
       text-align: right;
     }
@@ -355,12 +356,16 @@
     .list-table td:first-child { font-weight: 600; }
     .list-table td:last-child { text-align: right; }
 
+    /* ── Column alignment helpers ──────────────────── */
+    .col-num { text-align: right !important; }
+    .col-center { text-align: center !important; }
+
     /* ── Sortable table headers ──────────────────────── */
     th[data-sort] { cursor: pointer; user-select: none; transition: background .15s; }
-    th[data-sort]:hover { background: #e3eaed; }
+    th[data-sort]:hover { background: #E8E4DE; }
     th[data-sort]::after { content: ' \21C5'; font-size: 11px; opacity: .35; margin-left: 4px; }
-    th[data-sort="asc"]::after { content: ' \25B2'; opacity: 1; color: var(--nhs-blue); }
-    th[data-sort="desc"]::after { content: ' \25BC'; opacity: 1; color: var(--nhs-blue); }
+    th[data-sort="asc"]::after { content: ' \25B2'; opacity: 1; color: var(--csj-accent); }
+    th[data-sort="desc"]::after { content: ' \25BC'; opacity: 1; color: var(--csj-accent); }
 
     /* ── Project cards ───────────────────────────────── */
     .project-grid {
@@ -370,7 +375,7 @@
       margin-bottom: 24px;
     }
     .project-card {
-      background: var(--nhs-white);
+      background: var(--csj-paper);
       border: 1px solid var(--border);
       border-radius: var(--radius);
       box-shadow: var(--shadow);
@@ -380,22 +385,22 @@
       color: inherit;
       display: block;
     }
-    .project-card:hover { border-color: var(--nhs-blue); box-shadow: 0 2px 8px rgba(0,0,0,.12); }
-    .project-card h3 { font-size: 18px; font-weight: 700; color: var(--nhs-dark-blue); margin-bottom: 6px; }
-    .project-card p { font-size: 14px; color: var(--nhs-grey); margin-bottom: 12px; }
-    .project-card .meta { font-size: 13px; color: var(--nhs-grey); display: flex; gap: 16px; }
+    .project-card:hover { border-color: var(--csj-accent); box-shadow: 0 2px 8px rgba(0,0,0,.10); }
+    .project-card h3 { font-size: 18px; font-weight: 700; color: var(--csj-headline); margin-bottom: 6px; }
+    .project-card p { font-size: 14px; color: var(--csj-body); margin-bottom: 12px; }
+    .project-card .meta { font-size: 13px; color: var(--csj-body); display: flex; gap: 16px; }
 
     /* ── Results group section ────────────────────────── */
     .result-group { margin-bottom: 24px; }
     .result-group-title {
       font-size: 16px;
       font-weight: 700;
-      color: var(--nhs-dark-blue);
+      color: var(--csj-headline);
       margin-bottom: 4px;
     }
     .result-group-desc {
       font-size: 13px;
-      color: var(--nhs-grey);
+      color: var(--csj-body);
       margin-bottom: 10px;
     }
 
@@ -404,11 +409,11 @@
     .mt-4 { margin-top: 4px; }
     .mt-12 { margin-top: 12px; }
     .mt-16 { margin-top: 16px; }
-    .text-muted { color: var(--nhs-grey); font-size: 14px; }
+    .text-muted { color: var(--csj-body); font-size: 14px; }
     .flex-between { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
     .gap-8 { gap: 8px; display: flex; }
-    a { color: var(--nhs-blue); }
-    a:hover { color: var(--nhs-dark-blue); }
+    a { color: var(--csj-accent); }
+    a:hover { color: #A36B15; }
     .inline-flex { display: inline-flex; align-items: center; gap: 6px; }
     .mono { font-family: "SF Mono", "Menlo", "Consolas", monospace; font-size: 13px; }
     .truncate { max-width: 500px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
@@ -416,7 +421,7 @@
 </head>
 <body>
   <div class="topbar">
-    <a href="/" class="topbar-logo">Collector</a>
+    <a href="/" class="topbar-logo">The Crawl Street Journal</a>
     {% if project is defined and project %}
     <span class="topbar-project">{{ project.name }}</span>
     {% endif %}
@@ -435,22 +440,34 @@
   {% block subnav %}{% endblock %}
 
   <div class="page">
-    {% block breadcrumbs %}{% endblock %}
     {% block content %}{% endblock %}
   </div>
 
-  <footer style="text-align:center;padding:16px 24px;font-size:13px;color:var(--nhs-grey);">
-    Built by <a href="https://github.com/hooperstu" style="color:var(--nhs-blue);text-decoration:none;">github.com/hooperstu</a> &amp; <a href="https://github.com/clooky" style="color:var(--nhs-blue);text-decoration:none;">github.com/clooky</a>
+  <footer style="text-align:center;padding:16px 24px;font-size:13px;color:var(--csj-body);">
+    Built by <a href="https://github.com/hooperstu" style="color:var(--csj-accent);text-decoration:none;">github.com/hooperstu</a> &amp; <a href="https://github.com/clooky" style="color:var(--csj-accent);text-decoration:none;">github.com/clooky</a>
   </footer>
   <script>
   (function() {
+    var SIZE_UNITS = {B:1,KB:1024,MB:1048576,GB:1073741824,TB:1099511627776};
+    function parseSize(s) {
+      var m = s.match(/^([\d,.]+)\s*(B|KB|MB|GB|TB)$/i);
+      if (!m) return NaN;
+      return parseFloat(m[1].replace(/,/g, '')) * (SIZE_UNITS[m[2].toUpperCase()] || 1);
+    }
+    function sortVal(s) {
+      var sz = parseSize(s);
+      if (!isNaN(sz)) return sz;
+      var n = parseFloat(s.replace(/,/g, ''));
+      if (s !== '' && !isNaN(n)) return n;
+      return null;
+    }
     document.querySelectorAll('table[data-sortable]').forEach(function(table) {
       var thead = table.querySelector('thead');
       if (!thead) return;
       var ths = Array.from(thead.querySelectorAll('th'));
       ths.forEach(function(th, colIdx) {
         var text = th.textContent.trim();
-        if (!text || text === '#') return;
+        if (!text || text === '#' || th.hasAttribute('data-no-sort')) return;
         th.setAttribute('data-sort', '');
         th.addEventListener('click', function() {
           var asc = th.getAttribute('data-sort') !== 'asc';
@@ -462,11 +479,10 @@
             var aCell = a.cells[colIdx], bCell = b.cells[colIdx];
             var aVal = aCell ? aCell.textContent.trim() : '';
             var bVal = bCell ? bCell.textContent.trim() : '';
-            var aNum = parseFloat(aVal.replace(/,/g, ''));
-            var bNum = parseFloat(bVal.replace(/,/g, ''));
-            if (aVal !== '' && bVal !== '' && !isNaN(aNum) && !isNaN(bNum))
+            var aNum = sortVal(aVal), bNum = sortVal(bVal);
+            if (aNum !== null && bNum !== null)
               return asc ? aNum - bNum : bNum - aNum;
-            return asc ? aVal.localeCompare(bVal, undefined, {sensitivity: 'base'}) : bVal.localeCompare(aVal, undefined, {sensitivity: 'base'});
+            return asc ? aVal.localeCompare(bVal, undefined, {sensitivity:'base'}) : bVal.localeCompare(aVal, undefined, {sensitivity:'base'});
           });
           rows.forEach(function(row) { tbody.appendChild(row); });
         });

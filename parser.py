@@ -1,6 +1,6 @@
 """
 HTML parsing: links (HTML vs downloadable assets), metadata, tags, JSON-LD,
-and URL-based content hints for Collector.
+and URL-based content hints for CSJ.
 """
 
 from __future__ import annotations
@@ -27,8 +27,11 @@ def _normalise_url(url: str, base_url: str) -> Optional[str]:
 
 def _is_allowed_domain(url: str) -> bool:
     try:
-        netloc = urlparse(url).netloc.lower()
-        return any(domain in netloc for domain in config.ALLOWED_DOMAINS)
+        host = (urlparse(url).hostname or "").lower()
+        return any(
+            host == d or host.endswith("." + d)
+            for d in config.ALLOWED_DOMAINS
+        )
     except Exception:
         return False
 
@@ -495,7 +498,7 @@ def _extract_structured_dates(
         if time_tag:
             published = str(time_tag["datetime"]).strip()
 
-    # CSS class date containers (e.g. .article-date__pub, .date, .nhsd-m-card__date)
+    # CSS class date containers (e.g. .article-date__pub, .date)
     if not published or not modified:
         _PUB_CLASS = re.compile(r"date.*pub|publish|posted|created", re.I)
         _MOD_CLASS = re.compile(r"date.*(?:last|updat|modif)|last.*(?:updat|modif)", re.I)
@@ -883,3 +886,84 @@ def build_page_inventory_row(
     ]
 
     return page_row, tag_rows
+
+
+def extract_inline_assets(
+    html: str,
+    base_url: str,
+    discovered_at: str,
+) -> List[dict]:
+    """Extract assets from ``<img>``, ``<link>``, ``<script>``, ``<video>``,
+    ``<audio>``, and ``<source>`` elements — i.e. resources embedded in the
+    page that are not discovered via ``<a href>`` links.
+
+    Returns dicts matching the ``ASSET_FIELDS`` schema (with empty
+    ``head_content_type`` / ``head_content_length``; HEAD is skipped for
+    inline assets to avoid excessive requests).
+    """
+    soup = BeautifulSoup(html, "lxml")
+    assets: List[dict] = []
+    seen: Set[str] = set()
+
+    def _add(url: Optional[str], text: str, category: str) -> None:
+        if not url or url in seen:
+            return
+        seen.add(url)
+        assets.append({
+            "referrer_page_url": base_url,
+            "asset_url": url,
+            "link_text": text,
+            "category": category,
+            "head_content_type": "",
+            "head_content_length": "",
+            "discovered_at": discovered_at,
+        })
+
+    for img in soup.find_all("img", src=True):
+        src = _normalise_url(img["src"].strip(), base_url)
+        if src:
+            _add(src, (img.get("alt") or "").strip()[:200], "image")
+
+    for link in soup.find_all("link", href=True):
+        rel = link.get("rel", [])
+        if isinstance(rel, str):
+            rel = rel.split()
+        href = _normalise_url(link["href"].strip(), base_url)
+        if not href:
+            continue
+        if "stylesheet" in rel:
+            _add(href, "", "stylesheet")
+        elif any(r in rel for r in ("icon", "apple-touch-icon", "shortcut")):
+            _add(href, "", "image")
+        else:
+            ext = _path_extension_lower(urlparse(href).path)
+            cat = config.ASSET_CATEGORY_BY_EXT.get(ext)
+            if cat:
+                _add(href, "", cat)
+
+    for script in soup.find_all("script", src=True):
+        src = _normalise_url(script["src"].strip(), base_url)
+        if src:
+            _add(src, "", "script")
+
+    for video in soup.find_all("video"):
+        if video.get("src"):
+            src = _normalise_url(video["src"].strip(), base_url)
+            if src:
+                _add(src, "", "video")
+        for source in video.find_all("source", src=True):
+            src = _normalise_url(source["src"].strip(), base_url)
+            if src:
+                _add(src, "", "video")
+
+    for audio in soup.find_all("audio"):
+        if audio.get("src"):
+            src = _normalise_url(audio["src"].strip(), base_url)
+            if src:
+                _add(src, "", "audio")
+        for source in audio.find_all("source", src=True):
+            src = _normalise_url(source["src"].strip(), base_url)
+            if src:
+                _add(src, "", "audio")
+
+    return assets

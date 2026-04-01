@@ -1,24 +1,16 @@
 {% extends "base.html" %}
 {% set active_tab = 'runs' %}
-{% block title %}Config — {{ friendly_name or run_name }}{% endblock %}
+{% block title %}Config — {{ friendly_name or run_name }} | CSJ{% endblock %}
 
 {% block subnav %}
 <div class="sub-nav">
   <a href="{{ url_for('run_config', slug=project.slug, run_name=run_name) }}" class="active">Config</a>
   <a href="{{ url_for('run_monitor', slug=project.slug, run_name=run_name) }}">Monitor</a>
   <a href="{{ url_for('run_results', slug=project.slug, run_name=run_name) }}">Results</a>
+  <a href="{{ url_for('ecosystem.ecosystem_dashboard', slug=project.slug, run_name=run_name) }}">Ecosystem</a>
 </div>
 {% endblock %}
 
-{% block breadcrumbs %}
-<div class="breadcrumbs">
-  <a href="{{ url_for('project_runs', slug=project.slug) }}">Runs</a>
-  <span class="sep">/</span>
-  <strong>{{ friendly_name or run_name }}</strong>
-  <span class="sep">/</span>
-  Config
-</div>
-{% endblock %}
 
 {% block content %}
 <div class="flex-between" style="margin-bottom:20px;">
@@ -39,7 +31,7 @@
 </div>
 
 {% if run_status not in ('new',) %}
-<div class="card" style="padding:10px 18px;background:#fff3cd;border-left:4px solid var(--nhs-orange);">
+<div class="card" style="padding:10px 18px;background:#fff3cd;border-left:4px solid var(--csj-amber);">
   <strong>Note:</strong> This run has status <strong>{{ run_status }}</strong>.
   {% if run_status == 'completed' %}
   Config changes won't affect the completed data.
@@ -125,7 +117,15 @@
       </div>
       <div class="form-group">
         <label class="form-label">Max retries</label>
-        <input type="number" name="max_retries" value="{{ cfg.get('MAX_RETRIES', 1) }}" min="0">
+        <input type="number" name="max_retries" value="{{ cfg.get('MAX_RETRIES', 3) }}" min="0">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Max depth (blank = unlimited)</label>
+        <input type="number" name="max_depth" value="{{ cfg.get('MAX_DEPTH', '') if cfg.get('MAX_DEPTH') is not none else '' }}" min="0" placeholder="unlimited">
+      </div>
+      <div class="form-group">
+        <label class="form-label">State save interval (pages)</label>
+        <input type="number" name="state_save_interval" value="{{ cfg.get('STATE_SAVE_INTERVAL', 10) }}" min="1">
       </div>
     </div>
   </div>
