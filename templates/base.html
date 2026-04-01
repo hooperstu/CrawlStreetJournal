@@ -417,6 +417,21 @@
     .inline-flex { display: inline-flex; align-items: center; gap: 6px; }
     .mono { font-family: "SF Mono", "Menlo", "Consolas", monospace; font-size: 13px; }
     .truncate { max-width: 500px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
+
+    /* ── Crawl-active banner ──────────────────────────── */
+    .crawl-banner {
+      background: var(--csj-highlight);
+      border: 1px solid #D4B87C;
+      border-left: 4px solid var(--csj-amber);
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      font-size: 14px;
+      color: #5C4A1E;
+      line-height: 1.5;
+    }
+    .crawl-banner strong { color: #4A3A14; }
+    .crawl-banner a { color: var(--csj-accent); font-weight: 600; }
   </style>
 </head>
 <body>
@@ -433,7 +448,6 @@
     <a href="{{ url_for('project_overview', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'overview' %}active{% endif %}">Overview</a>
     <a href="{{ url_for('project_defaults', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'defaults' %}active{% endif %}">Defaults</a>
     <a href="{{ url_for('project_runs', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'runs' %}active{% endif %}">Runs</a>
-    <a href="{{ url_for('project_logs', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'logs' %}active{% endif %}">Logs</a>
   </div>
   {% endif %}
 
@@ -445,6 +459,9 @@
 
   <footer style="text-align:center;padding:16px 24px;font-size:13px;color:var(--csj-body);">
     Built by <a href="https://github.com/hooperstu" style="color:var(--csj-accent);text-decoration:none;">github.com/hooperstu</a> &amp; <a href="https://github.com/clooky" style="color:var(--csj-accent);text-decoration:none;">github.com/clooky</a>
+    <div style="margin-top:8px;">
+      <a href="https://buymeacoffee.com/hooperstu" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;font-size:12px;font-family:inherit;font-weight:600;color:#000;background:#40b04d;border:1px solid #000;border-radius:3px;text-decoration:none;">🤗 Support my work</a>
+    </div>
   </footer>
   <script>
   (function() {

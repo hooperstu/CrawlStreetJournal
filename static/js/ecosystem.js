@@ -1126,22 +1126,34 @@
           ? (new Date() - new Date(d.latest_date)) / 86400000
           : 730;
         d._q = {
-          readability:   grade > 0 ? Math.max(0, Math.min(1, (20 - grade) / 14)) : 0,
-          accessibility: d.total_images > 0 ? (100 - d.alt_missing_pct) / 100 : 1,
-          depth:         Math.min(1, d.avg_word_count / maxWords),
-          connectivity:  Math.min(1, d.avg_internal_links / maxLinks),
-          health:        Math.max(0, 1 - (d.error_count || 0) / Math.max(d.page_count, 1)),
-          freshness:     Math.max(0, Math.min(1, 1 - daysSince / 730))
+          fkReadability: grade > 0 ? Math.max(0, Math.min(1, (20 - grade) / 14)) : 0,
+          altText:       d.total_images > 0 ? (100 - d.alt_missing_pct) / 100 : 1,
+          wordCount:     Math.min(1, d.avg_word_count / maxWords),
+          internalLinks: Math.min(1, d.avg_internal_links / maxLinks),
+          httpHealth:    Math.max(0, 1 - (d.error_count || 0) / Math.max(d.page_count, 1)),
+          freshness:     Math.max(0, Math.min(1, 1 - daysSince / 730)),
+          langAttr:      (d.wcag_lang_pct || 0) / 100,
+          headingOrder:  (d.wcag_heading_order_pct || 0) / 100,
+          pageTitle:     (d.wcag_title_pct || 0) / 100,
+          formLabels:    (d.wcag_form_labels_pct != null ? d.wcag_form_labels_pct : 100) / 100,
+          landmarks:     (d.wcag_landmarks_pct || 0) / 100,
+          linkPurpose:   Math.max(0, 1 - (d.wcag_vague_link_pct || 0) / 100)
         };
       });
 
       var axes = [
-        { key: "readability",   label: "Readability",      tip: function (d) { return "FK grade " + (d.avg_readability || "–") + " (lower = easier)"; } },
-        { key: "accessibility", label: "Accessibility",    tip: function (d) { return d.total_images > 0 ? d.alt_compliance.toFixed(0) + "% images have alt text" : "No images on site"; } },
-        { key: "depth",         label: "Content Depth",    tip: function (d) { return fmt(d.avg_word_count) + " avg words per page"; } },
-        { key: "connectivity",  label: "Connectivity",     tip: function (d) { return d.avg_internal_links.toFixed(1) + " internal links per page"; } },
-        { key: "health",        label: "Technical Health", tip: function (d) { return d.error_count + " errors across " + fmt(d.page_count) + " pages"; } },
-        { key: "freshness",     label: "Freshness",        tip: function (d) { return d.latest_date ? "Last updated " + d.latest_date : "No date metadata found"; } }
+        { key: "fkReadability",  label: "FK Reading Ease",   tip: function (d) { return "FK grade " + (d.avg_readability || "\u2013") + " (lower = easier)"; } },
+        { key: "altText",        label: "Image Alt Text",    tip: function (d) { return d.total_images > 0 ? d.alt_compliance.toFixed(0) + "% images have alt text" : "No images on site"; } },
+        { key: "wordCount",      label: "Content Depth",     tip: function (d) { return fmt(d.avg_word_count) + " avg words/page"; } },
+        { key: "internalLinks",  label: "Internal Linking",  tip: function (d) { return d.avg_internal_links.toFixed(1) + " internal links/page"; } },
+        { key: "httpHealth",     label: "HTTP Health",       tip: function (d) { return d.error_count + " errors across " + fmt(d.page_count) + " pages"; } },
+        { key: "freshness",      label: "Content Freshness", tip: function (d) { return d.latest_date ? "Last updated " + d.latest_date : "No date metadata"; } },
+        { key: "langAttr",       label: "Language Declared", tip: function (d) { return (d.wcag_lang_pct || 0).toFixed(0) + "% of pages declare lang"; } },
+        { key: "headingOrder",   label: "Heading Hierarchy", tip: function (d) { return (d.wcag_heading_order_pct || 0).toFixed(0) + "% of pages have valid heading order"; } },
+        { key: "pageTitle",      label: "Page Titled",       tip: function (d) { return (d.wcag_title_pct || 0).toFixed(0) + "% of pages have a title"; } },
+        { key: "formLabels",     label: "Form Labels",       tip: function (d) { return (d.wcag_form_labels_pct != null ? d.wcag_form_labels_pct : 100).toFixed(0) + "% of form inputs labelled"; } },
+        { key: "landmarks",      label: "Landmark Regions",  tip: function (d) { return (d.wcag_landmarks_pct || 0).toFixed(0) + "% of pages have main landmark or skip link"; } },
+        { key: "linkPurpose",    label: "Link Purpose",      tip: function (d) { return (100 - (d.wcag_vague_link_pct || 0)).toFixed(0) + "% of links have descriptive text"; } }
       ];
 
       var stableColour = d3.scaleOrdinal(CSJ_PALETTE);
@@ -1175,8 +1187,8 @@
         if (!chosen.length) return;
 
         var sz = vizSize("viz-radar");
-        var W = Math.min(sz.w, 650), H = W;
-        var R = W / 2 - 70;
+        var W = Math.min(sz.w, 720), H = W;
+        var R = W / 2 - 90;
         var angleSlice = 2 * Math.PI / axes.length;
 
         var svg = d3.select("#viz-radar").append("svg")
@@ -1202,10 +1214,10 @@
             .attr("x2", R * cx).attr("y2", R * cy)
             .attr("stroke", "#d0d5d8");
           svg.append("text")
-            .attr("x", (R + 22) * cx).attr("y", (R + 22) * cy)
+            .attr("x", (R + 28) * cx).attr("y", (R + 28) * cy)
             .attr("text-anchor", "middle")
             .attr("dominant-baseline", "central")
-            .attr("font-size", 11).attr("font-weight", 600).attr("fill", "#34495e")
+            .attr("font-size", 10).attr("font-weight", 600).attr("fill", "#34495e")
             .text(ax.label);
         });
 
