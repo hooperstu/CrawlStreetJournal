@@ -49,6 +49,10 @@
     </div>
   </div>
 
+  <div id="phase-detail" class="text-muted" style="margin-bottom:10px;font-weight:500;">
+    {% if status.run_folder == run_name and status.phase_detail %}{{ status.phase_detail }}{% endif %}
+  </div>
+
   <div id="current-url" class="text-muted mono truncate" style="margin-bottom:14px;">
     {% if status.run_folder == run_name and status.current_url %}{{ status.current_url }}{% endif %}
   </div>
@@ -57,14 +61,21 @@
     {% if status.run_folder == run_name and status.finished_message %}{{ status.finished_message }}{% endif %}
   </div>
 
+  {% if status.running and status.run_folder != run_name %}
+  <div class="crawl-banner" style="margin-bottom:14px;">
+    <strong>Another run is currently crawling in this project.</strong>
+    You cannot start a second crawl until it finishes.
+  </div>
+  {% endif %}
+
   <div class="gap-8">
     {% if run_status == 'new' %}
     <form method="post" action="{{ url_for('start_run_route', slug=project.slug, run_name=run_name) }}" style="display:inline;">
-      <button class="btn btn-primary" id="btn-start" {% if status.running %}disabled{% endif %}>Start Crawl</button>
+      <button class="btn btn-primary" id="btn-start" {% if status.running %}disabled title="A crawl is already running in this project"{% endif %}>Start Crawl</button>
     </form>
     {% elif run_status == 'interrupted' %}
     <form method="post" action="{{ url_for('resume_run_route', slug=project.slug, run_name=run_name) }}" style="display:inline;">
-      <button class="btn btn-primary" id="btn-start" {% if status.running %}disabled{% endif %}>Resume Crawl</button>
+      <button class="btn btn-primary" id="btn-start" {% if status.running %}disabled title="A crawl is already running in this project"{% endif %}>Resume Crawl</button>
     </form>
     {% endif %}
     <form method="post" action="{{ url_for('stop_run_route', slug=project.slug, run_name=run_name) }}" style="display:inline;">
@@ -74,20 +85,38 @@
   </div>
 </div>
 
+<div class="card" style="padding:0;overflow:hidden;">
+  <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px 8px;border-bottom:1px solid var(--border);background:var(--csj-paper);">
+    <span style="font-family:'Libre Baskerville',Georgia,serif;font-size:15px;font-weight:700;color:var(--csj-headline);">Logs</span>
+    <div class="gap-8">
+      <select id="level-filter" style="width:auto;padding:4px 8px;font-size:13px;border:1px solid var(--border);border-radius:var(--radius);">
+        <option value="all">All levels</option>
+        <option value="INFO">INFO</option>
+        <option value="WARNING">WARNING</option>
+        <option value="ERROR">ERROR</option>
+      </select>
+      <button class="btn btn-sm btn-secondary" id="btn-clear" style="padding:4px 10px;font-size:12px;">Clear</button>
+      <button class="btn btn-sm btn-secondary" id="btn-scroll" style="padding:4px 10px;font-size:12px;">Auto-scroll: On</button>
+    </div>
+  </div>
+  <div class="log-pane" id="log-pane" style="height:360px;border-radius:0;"></div>
+</div>
+
 <script>
 (function() {
-  const badge    = document.getElementById('badge');
-  const sPages   = document.getElementById('s-pages');
-  const sAssets  = document.getElementById('s-assets');
-  const sElapsed = document.getElementById('s-elapsed');
-  const curUrl   = document.getElementById('current-url');
-  const finished = document.getElementById('finished-msg');
-  const btnStart = document.getElementById('btn-start');
-  const btnStop  = document.getElementById('btn-stop');
-  const runFolder = '{{ run_name }}';
+  var badge      = document.getElementById('badge');
+  var sPages     = document.getElementById('s-pages');
+  var sAssets    = document.getElementById('s-assets');
+  var sElapsed   = document.getElementById('s-elapsed');
+  var phaseEl    = document.getElementById('phase-detail');
+  var curUrl     = document.getElementById('current-url');
+  var finished   = document.getElementById('finished-msg');
+  var btnStart   = document.getElementById('btn-start');
+  var btnStop    = document.getElementById('btn-stop');
+  var runFolder  = '{{ run_name }}';
 
-  let es = null;
-  let reconnectTimer = null;
+  var progressEs = null;
+  var reconnectTimer = null;
 
   function update(d) {
     if (d.run_folder !== runFolder && d.running) return;
@@ -95,6 +124,7 @@
     sPages.textContent   = d.pages;
     sAssets.textContent  = d.assets;
     sElapsed.textContent = d.elapsed || '—';
+    phaseEl.textContent  = d.phase_detail || '';
     curUrl.textContent   = d.current_url || '';
     finished.textContent = d.finished_message || '';
 
@@ -116,19 +146,73 @@
     }
   }
 
-  function connect() {
-    if (es) { es.close(); es = null; }
+  function connectProgress() {
+    if (progressEs) { progressEs.close(); progressEs = null; }
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    es = new EventSource('/api/progress');
-    es.onmessage = function(e) {
+    progressEs = new EventSource('/api/progress/{{ project.slug }}');
+    progressEs.onmessage = function(e) {
       var d = JSON.parse(e.data);
       update(d);
-      if (!d.running) { es.close(); es = null; reconnectTimer = setTimeout(connect, 10000); }
+      if (!d.running) { progressEs.close(); progressEs = null; reconnectTimer = setTimeout(connectProgress, 10000); }
     };
-    es.onerror = function() { if (es) { es.close(); es = null; } reconnectTimer = setTimeout(connect, 10000); };
+    progressEs.onerror = function() { if (progressEs) { progressEs.close(); progressEs = null; } reconnectTimer = setTimeout(connectProgress, 10000); };
   }
 
-  connect();
+  connectProgress();
+
+  /* ── Log viewer ─────────────────────────────────────── */
+  var logPane    = document.getElementById('log-pane');
+  var logFilter  = document.getElementById('level-filter');
+  var btnClear   = document.getElementById('btn-clear');
+  var btnScrl    = document.getElementById('btn-scroll');
+  var autoScroll = true;
+  var allEntries = [];
+
+  function levelClass(lvl) {
+    if (lvl === 'WARNING') return 'log-warn';
+    if (lvl === 'ERROR')   return 'log-err';
+    return 'log-info';
+  }
+
+  function escapeHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+  function renderLogs() {
+    var chosen = logFilter.value;
+    var visible = chosen === 'all' ? allEntries : allEntries.filter(function(e) { return e.level === chosen; });
+    logPane.innerHTML = visible.map(function(e) {
+      return '<div><span class="log-time">' + e.time + '</span> ' +
+        '<span class="' + levelClass(e.level) + '">' + e.level.padEnd(7) + '</span> ' +
+        escapeHtml(e.message) + '</div>';
+    }).join('');
+    if (autoScroll) logPane.scrollTop = logPane.scrollHeight;
+  }
+
+  logFilter.addEventListener('change', renderLogs);
+  btnClear.addEventListener('click', function() { allEntries = []; renderLogs(); });
+  btnScrl.addEventListener('click', function() {
+    autoScroll = !autoScroll;
+    btnScrl.textContent = 'Auto-scroll: ' + (autoScroll ? 'On' : 'Off');
+  });
+
+  var logEs = new EventSource('/api/logs');
+  logEs.onmessage = function(e) {
+    var entry = JSON.parse(e.data);
+    allEntries.push(entry);
+    if (allEntries.length > 2000) allEntries = allEntries.slice(-1500);
+    var chosen = logFilter.value;
+    if (chosen === 'all' || entry.level === chosen) {
+      var div = document.createElement('div');
+      div.innerHTML = '<span class="log-time">' + entry.time + '</span> ' +
+        '<span class="' + levelClass(entry.level) + '">' + entry.level.padEnd(7) + '</span> ' +
+        escapeHtml(entry.message);
+      logPane.appendChild(div);
+      if (autoScroll) logPane.scrollTop = logPane.scrollHeight;
+    }
+  };
+  logEs.onerror = function() {
+    logEs.close();
+    setTimeout(function() { location.reload(); }, 5000);
+  };
 })();
 </script>
 {% endblock %}

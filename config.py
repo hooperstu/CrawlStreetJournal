@@ -12,8 +12,13 @@
 ========================================================================
 """
 
+from __future__ import annotations
+
+import copy
 import os
 import sys
+from dataclasses import dataclass, field, fields as dc_fields
+from typing import Any, Dict, Optional
 
 # ── Path resolution ───────────────────────────────────────────────────
 # When running inside a PyInstaller bundle the source tree is extracted
@@ -151,11 +156,7 @@ ASSET_CATEGORY_BY_EXT = {
 # Rules for classifying crawled domains into ownership categories
 # (used in ecosystem visualisations). Each rule is a (domain_suffix, label)
 # tuple — first match wins. Populate via project defaults or edit here.
-DOMAIN_OWNERSHIP_RULES = [
-    # ("england.nhs.uk", "NHS England"),
-    # ("hee.nhs.uk", "HEE"),
-    # (".nhs.uk", "NHS (other)"),
-]
+DOMAIN_OWNERSHIP_RULES = []
 DOMAIN_OWNERSHIP_DEFAULT = "Uncategorised"
 
 # ── CONTENT ANALYSIS ──────────────────────────────────────────────────
@@ -187,3 +188,79 @@ USER_AGENT = (
     "CSJ/1.0 "
     "(research; public page metadata inventory; contact: configure in config)"
 )
+
+
+# ── Per-crawl configuration dataclass ─────────────────────────────────
+
+@dataclass
+class CrawlConfig:
+    """Per-crawl configuration snapshot.
+
+    Each concurrent crawl gets its own instance, isolating settings that
+    were previously stored as mutable module-level globals.
+    """
+    OUTPUT_DIR: str = ""
+    SEED_URLS: list = field(default_factory=list)
+    SITEMAP_URLS: list = field(default_factory=list)
+    LOAD_SITEMAPS_FROM_ROBOTS: bool = True
+    RESPECT_ROBOTS_TXT: bool = True
+    MAX_SITEMAP_URLS: int = 1_000_000
+    MAX_PAGES_TO_CRAWL: int = 1_000_000
+    MAX_DEPTH: Optional[int] = None
+    REQUEST_DELAY_SECONDS: Any = (3, 5)
+    REQUEST_TIMEOUT_SECONDS: int = 20
+    MAX_RETRIES: int = 3
+    STATE_SAVE_INTERVAL: int = 10
+    WRITE_EDGES_CSV: bool = True
+    WRITE_TAGS_CSV: bool = True
+    ASSET_HEAD_METADATA: bool = True
+    HEAD_TIMEOUT_SECONDS: int = 10
+    CAPTURE_RESPONSE_HEADERS: bool = True
+    WRITE_SITEMAP_URLS_CSV: bool = True
+    WRITE_NAV_LINKS_CSV: bool = True
+    CHECK_OUTBOUND_LINKS: bool = False
+    MAX_LINK_CHECKS_PER_PAGE: int = 50
+    LINK_CHECK_DELAY_SECONDS: float = 0.5
+    CAPTURE_READABILITY: bool = True
+    ALLOWED_DOMAINS: Any = ()
+    USER_AGENT: str = ""
+    LOG_LEVEL: str = "INFO"
+
+    @classmethod
+    def from_module(cls) -> CrawlConfig:
+        """Snapshot current module-level globals into a new instance."""
+        import config as _cfg
+        kwargs: Dict[str, Any] = {}
+        for f in dc_fields(cls):
+            val = getattr(_cfg, f.name, f.default)
+            if isinstance(val, list):
+                val = list(val)
+            kwargs[f.name] = val
+        return cls(**kwargs)
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any],
+                  base: Optional[CrawlConfig] = None) -> CrawlConfig:
+        """Create from a JSON config dict, optionally layered on a base."""
+        inst = copy.copy(base) if base else cls.from_module()
+        for key, val in d.items():
+            if not hasattr(inst, key):
+                continue
+            if key == "ALLOWED_DOMAINS" and isinstance(val, list):
+                val = tuple(val)
+            if key == "REQUEST_DELAY_SECONDS" and isinstance(val, list) and len(val) == 2:
+                val = tuple(val)
+            setattr(inst, key, val)
+        return inst
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-safe dict (matches the shape of _config.json)."""
+        d: Dict[str, Any] = {}
+        for f in dc_fields(self):
+            if f.name == "OUTPUT_DIR":
+                continue
+            val = getattr(self, f.name)
+            if isinstance(val, tuple):
+                val = list(val)
+            d[f.name] = val
+        return d

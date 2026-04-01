@@ -31,14 +31,15 @@ if [[ -z "${VIRTUAL_ENV:-}" ]]; then
 fi
 
 # ── Dependencies ─────────────────────────────────────────────────────
+PIP="$ROOT/.venv/bin/python3 -m pip"
 echo "📥  Installing dependencies…"
-pip install --quiet --upgrade pip
-pip install --quiet -r requirements.txt
-pip install --quiet pyinstaller
+$PIP install --quiet --upgrade pip
+$PIP install --quiet -r requirements.txt
+$PIP install --quiet pyinstaller
 
 # ── Build ────────────────────────────────────────────────────────────
 echo "🔨  Building The Crawl Street Journal.app…"
-pyinstaller collector.spec --noconfirm
+"$ROOT/.venv/bin/pyinstaller" collector.spec --noconfirm
 
 # ── Post-build ───────────────────────────────────────────────────────
 APP_PATH="dist/The Crawl Street Journal.app"

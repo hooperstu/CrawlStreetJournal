@@ -15,6 +15,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+import tldextract
+
 import config
 
 
@@ -74,13 +76,40 @@ def _parse_date(raw: str) -> Optional[str]:
     return None
 
 
-def _ownership_category(domain: str) -> str:
-    """Classify a domain into an ownership bucket using configurable rules."""
+def _build_ownership_map(all_domains: List[str]) -> Dict[str, str]:
+    """Derive ownership categories from the crawl's domain set.
+
+    Priority order:
+    1. Manual ``DOMAIN_OWNERSHIP_RULES`` (first match wins).
+    2. Registered domain via ``tldextract`` — groups subdomains of the
+       same organisation together (e.g. ``www.nhsbsa.nhs.uk`` and
+       ``learning.nhsbsa.nhs.uk`` both map to ``nhsbsa.nhs.uk``) while
+       keeping distinct organisations separate.
+    """
+    ownership: Dict[str, str] = {}
+
+    for dom in all_domains:
+        d = dom.lower()
+        matched = False
+        for suffix, label in config.DOMAIN_OWNERSHIP_RULES:
+            if d.endswith(suffix.lower()) or d == suffix.lower():
+                ownership[dom] = label
+                matched = True
+                break
+        if not matched:
+            ext = tldextract.extract(dom)
+            ownership[dom] = ext.registered_domain or dom
+
+    return ownership
+
+
+def _ownership_fallback(domain: str) -> str:
+    """Single-domain ownership lookup for domains outside the pre-built map."""
     d = domain.lower()
     for suffix, label in config.DOMAIN_OWNERSHIP_RULES:
         if d.endswith(suffix.lower()) or d == suffix.lower():
             return label
-    return config.DOMAIN_OWNERSHIP_DEFAULT
+    return tldextract.extract(domain).registered_domain or domain
 
 
 # ── Aggregate: per-domain summary ────────────────────────────────────────
@@ -94,6 +123,9 @@ def aggregate_domains(run_dir: str) -> List[Dict[str, Any]]:
     if not pages:
         return []
 
+    all_doms = list({r.get("domain", "unknown") for r in pages})
+    ownership_map = _build_ownership_map(all_doms)
+
     domains: Dict[str, Dict[str, Any]] = {}
 
     for r in pages:
@@ -101,7 +133,7 @@ def aggregate_domains(run_dir: str) -> List[Dict[str, Any]]:
         if dom not in domains:
             domains[dom] = {
                 "domain": dom,
-                "ownership": _ownership_category(dom),
+                "ownership": ownership_map.get(dom, config.DOMAIN_OWNERSHIP_DEFAULT),
                 "page_count": 0,
                 "total_words": 0,
                 "total_images": 0,
@@ -121,6 +153,14 @@ def aggregate_domains(run_dir: str) -> List[Dict[str, Any]]:
                 "link_internal_sum": 0,
                 "link_external_sum": 0,
                 "titles": [],
+                "wcag_lang_valid_count": 0,
+                "wcag_heading_order_valid_count": 0,
+                "wcag_title_present_count": 0,
+                "wcag_form_labels_sum": 0.0,
+                "wcag_form_labels_n": 0,
+                "wcag_landmarks_present_count": 0,
+                "wcag_vague_link_sum": 0.0,
+                "wcag_vague_link_n": 0,
             }
         d = domains[dom]
         d["page_count"] += 1
@@ -171,6 +211,23 @@ def aggregate_domains(run_dir: str) -> List[Dict[str, Any]]:
         title = r.get("title", "").strip()
         if title and len(d["titles"]) < 3:
             d["titles"].append(title)
+
+        if r.get("wcag_lang_valid", "") == "1":
+            d["wcag_lang_valid_count"] += 1
+        if r.get("wcag_heading_order_valid", "") == "1":
+            d["wcag_heading_order_valid_count"] += 1
+        if r.get("wcag_title_present", "") == "1":
+            d["wcag_title_present_count"] += 1
+        fl = _safe_float(r.get("wcag_form_labels_pct", ""))
+        if fl >= 0:
+            d["wcag_form_labels_sum"] += fl
+            d["wcag_form_labels_n"] += 1
+        if r.get("wcag_landmarks_present", "") == "1":
+            d["wcag_landmarks_present_count"] += 1
+        vl = _safe_float(r.get("wcag_vague_link_pct", ""))
+        if vl >= 0:
+            d["wcag_vague_link_sum"] += vl
+            d["wcag_vague_link_n"] += 1
 
     errors = _read_csv(os.path.join(run_dir, config.ERRORS_CSV))
     error_ctr: Dict[str, int] = Counter()
@@ -231,6 +288,12 @@ def aggregate_domains(run_dir: str) -> List[Dict[str, Any]]:
             "titles": d["titles"],
             "assets": dict(asset_counts.get(dom, {})),
             "total_assets": sum(asset_counts.get(dom, {}).values()),
+            "wcag_lang_pct": round(d["wcag_lang_valid_count"] / pc * 100, 1) if pc else 0,
+            "wcag_heading_order_pct": round(d["wcag_heading_order_valid_count"] / pc * 100, 1) if pc else 0,
+            "wcag_title_pct": round(d["wcag_title_present_count"] / pc * 100, 1) if pc else 0,
+            "wcag_form_labels_pct": round(d["wcag_form_labels_sum"] / d["wcag_form_labels_n"] * 100, 1) if d["wcag_form_labels_n"] else 100.0,
+            "wcag_landmarks_pct": round(d["wcag_landmarks_present_count"] / pc * 100, 1) if pc else 0,
+            "wcag_vague_link_pct": round(d["wcag_vague_link_sum"] / d["wcag_vague_link_n"] * 100, 1) if d["wcag_vague_link_n"] else 0.0,
         })
 
     result.sort(key=lambda x: -x["page_count"])
@@ -246,13 +309,13 @@ def aggregate_domain_graph(run_dir: str) -> Dict[str, Any]:
     weights. Self-links (intra-domain) are excluded.
     """
     pages = _read_csv(os.path.join(run_dir, config.PAGES_CSV))
+    all_doms = list({r.get("domain", "unknown") for r in pages})
+    ownership_map = _build_ownership_map(all_doms)
+
     domain_pages: Counter[str] = Counter()
-    domain_ownership: Dict[str, str] = {}
     for r in pages:
         dom = r.get("domain", "unknown")
         domain_pages[dom] += 1
-        if dom not in domain_ownership:
-            domain_ownership[dom] = _ownership_category(dom)
 
     edge_weights: Counter[Tuple[str, str]] = Counter()
     edges_path = os.path.join(run_dir, config.EDGES_CSV)
@@ -281,7 +344,7 @@ def aggregate_domain_graph(run_dir: str) -> Dict[str, Any]:
             "id": dom,
             "index": domain_idx[dom],
             "pages": domain_pages.get(dom, 0),
-            "ownership": domain_ownership.get(dom, _ownership_category(dom)),
+            "ownership": ownership_map.get(dom, _ownership_fallback(dom)),
         })
 
     links = []

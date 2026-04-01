@@ -5,6 +5,13 @@
 {% block content %}
 <h1 class="page-title">Crawl Runs</h1>
 
+{% if status.running %}
+<div class="crawl-banner">
+  <strong>A crawl is running in this project.</strong>
+  You can still create and configure runs, but cannot start another crawl until the current one finishes.
+</div>
+{% endif %}
+
 <div class="card">
   <div class="card-title">Create New Run</div>
   <p class="form-hint" style="margin-bottom:12px;">
@@ -16,7 +23,7 @@
       <label class="form-label" style="font-size:12px;margin-bottom:2px;">Run name</label>
       <input type="text" name="run_name" placeholder="e.g. Weekly full crawl" style="padding:6px 10px;font-size:14px;width:280px;">
     </div>
-    <button type="submit" class="btn btn-primary" {% if status.running %}disabled{% endif %}>
+    <button type="submit" class="btn btn-primary">
       + Create Run
     </button>
   </form>
@@ -79,11 +86,11 @@
 
               {% if r.status == 'new' %}
               <form method="post" action="{{ url_for('start_run_route', slug=project.slug, run_name=r.name) }}" style="display:inline;">
-                <button type="submit" class="btn btn-sm btn-primary" {% if status.running %}disabled{% endif %}>Start</button>
+                <button type="submit" class="btn btn-sm btn-primary" {% if status.running %}disabled title="A crawl is already running in this project"{% endif %}>Start</button>
               </form>
               {% elif r.status == 'interrupted' %}
               <form method="post" action="{{ url_for('resume_run_route', slug=project.slug, run_name=r.name) }}" style="display:inline;">
-                <button type="submit" class="btn btn-sm btn-primary" {% if status.running %}disabled{% endif %}>Resume</button>
+                <button type="submit" class="btn btn-sm btn-primary" {% if status.running %}disabled title="A crawl is already running in this project"{% endif %}>Resume</button>
               </form>
               {% endif %}
 

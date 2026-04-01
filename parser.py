@@ -680,6 +680,63 @@ def _count_nav_links(soup: BeautifulSoup) -> int:
     return len(seen)
 
 
+_VAGUE_LINK_TEXTS = frozenset({
+    "click here", "read more", "more", "here", "link", "this", "learn more",
+})
+
+
+def _assess_wcag_static(soup: BeautifulSoup, lang: str, title: str) -> dict:
+    """Static-HTML WCAG checks per page, returned as string values for CSV."""
+    # 3.1.1 — language of page declared and plausible
+    lang_valid = bool(lang and len(lang) >= 2)
+
+    # 1.3.1 — heading hierarchy: no skipped levels
+    levels = [int(h.name[1]) for h in soup.find_all(re.compile(r"^h[1-6]$"))]
+    heading_ok = True
+    for i in range(1, len(levels)):
+        if levels[i] > levels[i - 1] + 1:
+            heading_ok = False
+            break
+
+    # 2.4.2 — page has a non-empty title
+    title_present = bool(title.strip())
+
+    # 1.3.1 — form inputs have associated labels
+    inputs = soup.find_all("input", attrs={
+        "type": lambda t: t not in (None, "hidden", "submit", "button", "reset", "image"),
+    })
+    labelled = 0
+    for inp in inputs:
+        inp_id = inp.get("id", "")
+        has_for = bool(inp_id and soup.find("label", attrs={"for": inp_id}))
+        has_wrap = bool(inp.find_parent("label"))
+        has_aria = bool(inp.get("aria-label") or inp.get("aria-labelledby"))
+        if has_for or has_wrap or has_aria:
+            labelled += 1
+    form_labels_pct = labelled / len(inputs) if inputs else 1.0
+
+    # 2.4.1 — bypass blocks (landmarks or skip link)
+    has_main = bool(soup.find("main") or soup.find(attrs={"role": "main"}))
+    has_skip = bool(soup.find("a", href=re.compile(r"^#(main|content|skip)", re.I)))
+    landmarks_present = has_main or has_skip
+
+    # 2.4.4 — vague link text
+    links = soup.find_all("a", href=True)
+    vague_count = sum(
+        1 for a in links if a.get_text(strip=True).lower() in _VAGUE_LINK_TEXTS
+    )
+    vague_link_pct = vague_count / len(links) if links else 0.0
+
+    return {
+        "wcag_lang_valid": "1" if lang_valid else "0",
+        "wcag_heading_order_valid": "1" if heading_ok else "0",
+        "wcag_title_present": "1" if title_present else "0",
+        "wcag_form_labels_pct": str(round(form_labels_pct, 3)),
+        "wcag_landmarks_present": "1" if landmarks_present else "0",
+        "wcag_vague_link_pct": str(round(vague_link_pct, 3)),
+    }
+
+
 def extract_nav_links(
     soup: BeautifulSoup, page_url: str, discovered_at: str,
 ) -> List[Dict[str, str]]:
@@ -827,6 +884,7 @@ def build_page_inventory_row(
     analytics = _detect_analytics(html)
     training_flag = _detect_training_keywords(final_url, title, h1_joined)
     nav_count = _count_nav_links(soup)
+    wcag = _assess_wcag_static(soup, lang, title)
 
     page_row = {
         "requested_url": requested_url,
@@ -869,6 +927,8 @@ def build_page_inventory_row(
         "training_related_flag": training_flag,
         # Phase 3
         "nav_link_count": nav_count,
+        # WCAG static checks
+        **wcag,
         # common
         "referrer_url": referrer_url,
         "depth": depth,
