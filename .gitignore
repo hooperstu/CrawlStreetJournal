@@ -3,7 +3,14 @@ venv/
 __pycache__/
 *.py[cod]
 output/
+projects/
 .DS_Store
 .hooperstu-push-debug.txt
 crawl_background.log
 crawl_background.pid
+
+# PyInstaller build artefacts
+build/
+dist/
+*.app
+assets/icon.iconset/

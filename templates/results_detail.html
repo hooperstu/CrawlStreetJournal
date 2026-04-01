@@ -1,24 +1,16 @@
 {% extends "base.html" %}
 {% set active_tab = 'runs' %}
-{% block title %}{{ filename }} — {{ friendly_name or run_name }}{% endblock %}
+{% block title %}{{ filename }} — {{ friendly_name or run_name }} | CSJ{% endblock %}
 
 {% block subnav %}
 <div class="sub-nav">
   <a href="{{ url_for('run_config', slug=project.slug, run_name=run_name) }}">Config</a>
   <a href="{{ url_for('run_monitor', slug=project.slug, run_name=run_name) }}">Monitor</a>
   <a href="{{ url_for('run_results', slug=project.slug, run_name=run_name) }}" class="active">Results</a>
+  <a href="{{ url_for('ecosystem.ecosystem_dashboard', slug=project.slug, run_name=run_name) }}">Ecosystem</a>
 </div>
 {% endblock %}
 
-{% block breadcrumbs %}
-<div class="breadcrumbs">
-  <a href="{{ url_for('project_runs', slug=project.slug) }}">Runs</a>
-  <span class="sep">/</span>
-  <a href="{{ url_for('run_results', slug=project.slug, run_name=run_name) }}">{{ friendly_name or run_name }}</a>
-  <span class="sep">/</span>
-  <strong>{{ filename }}</strong>
-</div>
-{% endblock %}
 
 {% block content %}
 <div class="flex-between" style="margin-bottom:20px;">
@@ -48,7 +40,7 @@
     <table data-sortable>
       <thead>
         <tr>
-          <th>#</th>
+          <th class="col-num" data-no-sort>#</th>
           {% for h in headers %}
           <th>{{ h }}</th>
           {% endfor %}
@@ -57,7 +49,7 @@
       <tbody>
         {% for row in rows %}
         <tr>
-          <td class="text-muted">{{ (page - 1) * per_page + loop.index }}</td>
+          <td class="text-muted col-num">{{ (page - 1) * per_page + loop.index }}</td>
           {% for h in headers %}
           <td title="{{ row[h] }}">{{ row[h] }}</td>
           {% endfor %}

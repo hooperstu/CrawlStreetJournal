@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Collector — crawl allowed hosts, record page metadata to CSV,
+The Crawl Street Journal — crawl allowed hosts, record page metadata to CSV,
 and write linked files to per-type asset CSVs.
 
 Configure seeds, domains, and limits in config.py.
@@ -35,7 +35,7 @@ def _on_progress(crawled: int, assets: int, current_url: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Collector crawl")
+    parser = argparse.ArgumentParser(description="CSJ crawl")
     parser.add_argument("--name", default=None, help="Friendly name for a new run")
     parser.add_argument(
         "--run", default=None, metavar="FOLDER",
@@ -68,7 +68,7 @@ def main() -> int:
     delay = config.REQUEST_DELAY_SECONDS
     delay_str = f"{delay[0]}-{delay[1]}s" if isinstance(delay, (list, tuple)) and len(delay) == 2 else f"{delay}s"
     logger.info(
-        "Starting Collector (max %s HTML pages, delay %s). Output dir: %s",
+        "Starting CSJ (max %s HTML pages, delay %s). Output dir: %s",
         config.MAX_PAGES_TO_CRAWL,
         delay_str,
         config.OUTPUT_DIR,

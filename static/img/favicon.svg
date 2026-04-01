@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="4" fill="#1A1A1A"/>
+  <text x="16" y="22" font-family="Georgia, serif" font-size="16" font-weight="700" font-style="italic" fill="#FAF8F5" text-anchor="middle">CSJ</text>
+  <rect x="4" y="25" width="24" height="1.5" rx=".75" fill="#C4841D"/>
+</svg>

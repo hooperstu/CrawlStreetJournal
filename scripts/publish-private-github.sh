@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create a private GitHub repo "NHSE-Collector" and push the current branch.
+# Create a private GitHub repo "CrawlStreetJournal" and push the current branch.
 # Requires: GitHub CLI (gh) and `gh auth login` completed once.
 set -euo pipefail
 
@@ -17,13 +17,13 @@ if ! gh auth status >/dev/null 2>&1; then
 fi
 
 USER_LOGIN="$(gh api user -q .login)"
-REPO_NAME="NHSE-Collector"
+REPO_NAME="CrawlStreetJournal"
 DEFAULT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
 # Remove stale remote from the old project name if present
 if git remote get-url origin >/dev/null 2>&1; then
   OLD_URL="$(git remote get-url origin)"
-  if echo "$OLD_URL" | grep -qi 'cabinet-collector'; then
+  if echo "$OLD_URL" | grep -qiE 'cabinet-collector|NHSE-Collector'; then
     echo "Removing old remote origin ($OLD_URL)"
     git remote remove origin
   fi
@@ -42,6 +42,6 @@ gh repo create "$REPO_NAME" \
   --source=. \
   --remote=origin \
   --push \
-  --description "NHS web inventory crawler (NHSE Collector)"
+  --description "The Crawl Street Journal — web inventory crawler"
 
 echo "Done. Remote: https://github.com/$USER_LOGIN/$REPO_NAME"

@@ -1,6 +1,6 @@
-# Collector
+# The Crawl Street Journal
 
-Collector is a **Python crawler** that builds a **structured inventory** of public web pages across any set of domains you configure. It is designed for **analysis and visualisation**: one row per HTML page with rich metadata, plus **separate CSV files** for linked downloads (PDF, Office, images, and so on), optional link edges, optional tag detail rows, and an error log.
+The Crawl Street Journal (CSJ) is a **Python crawler** that builds a **structured inventory** of public web pages across any set of domains you configure. It is designed for **analysis and visualisation**: one row per HTML page with rich metadata, plus **separate CSV files** for linked downloads (PDF, Office, images, and so on), optional link edges, optional tag detail rows, and an error log.
 
 It does **not** filter pages by keywords. Every HTML page the crawler successfully fetches is recorded in `pages.csv`.
 
@@ -32,7 +32,7 @@ It does **not** filter pages by keywords. Every HTML page the crawler successful
 **Requirements:** Python 3.9 or newer.
 
 ```bash
-cd /path/to/Collector
+cd /path/to/CrawlStreetJournal
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
@@ -46,7 +46,7 @@ python3 main.py
 Use **`run_background_crawl.py`** when you want a high page cap (default **1 000 000** HTML pages in that script, matching `config.py`) and a single log file to review later. It still respects `REQUEST_DELAY_SECONDS` and `robots.txt`.
 
 ```bash
-cd /path/to/Collector
+cd /path/to/CrawlStreetJournal
 source .venv/bin/activate    # if you use a venv
 pip install -r requirements.txt   # once
 

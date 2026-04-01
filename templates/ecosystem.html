@@ -1,0 +1,766 @@
+{% extends "base.html" %}
+{% set active_tab = 'runs' %}
+{% block title %}Ecosystem — {{ friendly_name or run_name }} | CSJ{% endblock %}
+
+{% block subnav %}
+<div class="sub-nav">
+  <a href="{{ url_for('run_config', slug=project.slug, run_name=run_name) }}">Config</a>
+  <a href="{{ url_for('run_monitor', slug=project.slug, run_name=run_name) }}">Monitor</a>
+  <a href="{{ url_for('run_results', slug=project.slug, run_name=run_name) }}">Results</a>
+  <a href="{{ url_for('ecosystem.ecosystem_dashboard', slug=project.slug, run_name=run_name) }}" class="active">Ecosystem</a>
+</div>
+{% endblock %}
+
+
+{% block content %}
+<style>
+  .eco-page { max-width: 1400px; }
+  .viz-tab-groups { margin-bottom: 20px; }
+  .viz-tab-group {
+    border-bottom: 2px solid var(--border);
+    padding: 0 0 0;
+    margin-bottom: 0;
+  }
+  .viz-tab-group:first-child { border-radius: var(--radius) var(--radius) 0 0; }
+  .viz-tab-group-header {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 8px 12px 4px;
+  }
+  .viz-tab-group-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .4px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .vtg-governance .viz-tab-group-title { color: #e65100; }
+  .vtg-trust .viz-tab-group-title { color: #1565c0; }
+  .vtg-findability .viz-tab-group-title { color: #2e7d32; }
+  .viz-tab-group-desc {
+    font-size: 11px;
+    color: var(--csj-body);
+    opacity: .75;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .viz-tab-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding-bottom: 0;
+  }
+  .viz-tab {
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--csj-body);
+    background: none;
+    border: none;
+    cursor: pointer;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    transition: color .15s, border-color .15s;
+    white-space: nowrap;
+  }
+  .viz-tab:hover { color: var(--csj-headline); border-bottom-color: var(--border); }
+  .viz-tab.active { color: var(--csj-headline); border-bottom-color: var(--csj-accent); background: rgba(196,132,29,.06); }
+
+  .radar-domain-picker {
+    max-height: 200px;
+    overflow-y: auto;
+    min-width: 220px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px;
+    background: #fff;
+    font-size: 12px;
+  }
+  .radar-pick {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 6px;
+    cursor: pointer;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+  .radar-pick:hover { background: rgba(196,132,29,.06); }
+  .radar-pick input[type="checkbox"] { margin: 0; flex-shrink: 0; }
+  .radar-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  .viz-panel { display: none; }
+  .viz-panel.active { display: block; }
+
+  .viz-container {
+    background: var(--csj-paper);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 20px;
+    min-height: 500px;
+    position: relative;
+  }
+  .viz-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 16px;
+    gap: 16px;
+  }
+  .viz-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--csj-headline);
+    margin: 0;
+  }
+  .viz-desc {
+    font-size: 13px;
+    color: var(--csj-body);
+    margin: 4px 0 0;
+    max-width: 700px;
+  }
+  .viz-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .viz-controls select, .viz-controls input {
+    padding: 4px 8px;
+    font-size: 13px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    width: auto;
+  }
+  .viz-loading {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255,255,255,.85);
+    z-index: 10;
+    font-size: 14px;
+    color: var(--csj-body);
+  }
+  .viz-loading.hidden { display: none; }
+  .viz-canvas { width: 100%; overflow-x: auto; }
+  .viz-canvas svg { display: block; }
+
+  .viz-tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: rgba(35,43,43,.92);
+    color: #fff;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    line-height: 1.5;
+    max-width: 320px;
+    z-index: 100;
+    box-shadow: 0 2px 8px rgba(0,0,0,.25);
+    opacity: 0;
+    transition: opacity .15s;
+  }
+  .viz-tooltip.visible { opacity: 1; }
+  .viz-tooltip strong { color: #8cc4ff; }
+
+  .viz-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--csj-body);
+  }
+  .viz-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .viz-legend-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  /* Sunburst-specific styles */
+  .sunburst-breadcrumbs {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
+    min-height: 28px;
+    padding: 6px 0 10px;
+    font-size: 12px;
+    color: var(--csj-body);
+  }
+  .sb-crumb {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    background: var(--csj-newsprint);
+    border-radius: 3px;
+    cursor: pointer;
+    font-weight: 500;
+    color: var(--csj-ink);
+    transition: background .12s;
+    white-space: nowrap;
+  }
+  .sb-crumb:hover { background: var(--csj-highlight); }
+  .sb-crumb.sb-crumb-current {
+    background: var(--csj-ink);
+    color: #fff;
+    cursor: default;
+  }
+  .sb-crumb-sep {
+    color: #aeb7bd;
+    font-size: 11px;
+    user-select: none;
+  }
+  .sunburst-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: center;
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--csj-body);
+  }
+  .sb-leg {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .sb-leg-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+  .sb-leg-hint {
+    margin-left: auto;
+    font-style: italic;
+    opacity: .65;
+  }
+
+  #viz-sunburst { display: flex; justify-content: center; }
+  #viz-sunburst svg { cursor: pointer; }
+
+  #viz-bubble svg { cursor: pointer; }
+  .bubble-breadcrumb {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
+    min-height: 28px;
+    padding: 0 0 10px;
+    font-size: 12px;
+    color: var(--csj-body);
+  }
+  .bubble-crumb {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    background: var(--csj-newsprint);
+    border-radius: 3px;
+    cursor: pointer;
+    font-weight: 500;
+    color: var(--csj-ink);
+    transition: background .12s;
+    white-space: nowrap;
+  }
+  .bubble-crumb:hover { background: var(--csj-highlight); }
+  .bubble-crumb.current {
+    background: var(--csj-ink);
+    color: #fff;
+    cursor: default;
+  }
+  .bubble-crumb-sep {
+    color: #aeb7bd;
+    font-size: 11px;
+    user-select: none;
+  }
+
+  /* ── Network node-detail overlay ──────────────────────────── */
+  .network-detail-overlay {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 340px;
+    height: 100%;
+    background: #fff;
+    border-left: 1px solid var(--border);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    box-shadow: -4px 0 16px rgba(0,0,0,.07);
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    transform: translateX(100%);
+    opacity: 0;
+    transition: transform .25s ease, opacity .2s ease;
+    pointer-events: none;
+    overflow: hidden;
+  }
+  .network-detail-overlay.open {
+    transform: translateX(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .ndo-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: 16px 16px 12px;
+    border-bottom: 1px solid var(--border);
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .ndo-domain {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--csj-headline);
+    word-break: break-all;
+    line-height: 1.3;
+  }
+  .ndo-owner {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-top: 4px;
+  }
+  .ndo-close {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 2px 6px;
+    font-size: 18px;
+    line-height: 1;
+    color: var(--csj-body);
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+  .ndo-close:hover { background: var(--csj-newsprint); color: var(--csj-error); }
+  .ndo-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px 16px;
+    font-size: 13px;
+    color: var(--csj-ink);
+  }
+  .ndo-section {
+    margin-bottom: 16px;
+  }
+  .ndo-section-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .4px;
+    color: var(--csj-body);
+    margin: 0 0 6px;
+  }
+  .ndo-stat-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  .ndo-stat {
+    background: var(--csj-newsprint);
+    border-radius: 4px;
+    padding: 8px 10px;
+  }
+  .ndo-stat-val {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--csj-headline);
+    line-height: 1.2;
+  }
+  .ndo-stat-label {
+    font-size: 11px;
+    color: var(--csj-body);
+    margin-top: 1px;
+  }
+  .ndo-conn-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .ndo-conn-list li {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--csj-newsprint);
+    font-size: 12px;
+  }
+  .ndo-conn-list li:last-child { border-bottom: none; }
+  .ndo-conn-swatch {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .ndo-conn-weight {
+    margin-left: auto;
+    font-weight: 600;
+    color: var(--csj-body);
+    font-size: 11px;
+  }
+  .ndo-conn-primary { font-weight: 600; }
+  .ndo-conn-secondary { opacity: .7; }
+  .ndo-badge-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .ndo-badge {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 7px;
+    border-radius: 3px;
+    background: #e8f5e9;
+    color: #2e7d32;
+  }
+  .ndo-badge.ndo-badge-warn { background: #fff3e0; color: #e65100; }
+</style>
+
+<div class="eco-page">
+  <h1 class="page-title">
+    {% if friendly_name %}{{ friendly_name }}{% else %}{{ run_name }}{% endif %} — Ecosystem Map
+  </h1>
+
+  <div class="viz-tab-groups" id="vizTabs">
+    <div class="viz-tab-group vtg-governance">
+      <div class="viz-tab-group-header">
+        <span class="viz-tab-group-title">Governance</span>
+        <span class="viz-tab-group-desc">Ownership, structure, and oversight of the crawled estate</span>
+      </div>
+      <div class="viz-tab-row">
+        <button class="viz-tab active" data-panel="network">Network Graph</button>
+        <button class="viz-tab" data-panel="treemap">Treemap</button>
+        <button class="viz-tab" data-panel="analytics">Analytics Matrix</button>
+        <button class="viz-tab" data-panel="chord">Chord</button>
+        <button class="viz-tab" data-panel="bubble">Bubble Chart</button>
+        <button class="viz-tab" data-panel="contenttypes">Content Types</button>
+      </div>
+    </div>
+    <div class="viz-tab-group vtg-trust">
+      <div class="viz-tab-group-header">
+        <span class="viz-tab-group-title">Trust</span>
+        <span class="viz-tab-group-desc">Quality, reliability, errors, and content freshness</span>
+      </div>
+      <div class="viz-tab-row">
+        <button class="viz-tab" data-panel="status">Status &amp; Errors</button>
+        <button class="viz-tab" data-panel="freshness">Freshness</button>
+        <button class="viz-tab" data-panel="radar">Quality Radar</button>
+        <button class="viz-tab" data-panel="parallel">Parallel Coords</button>
+      </div>
+    </div>
+    <div class="viz-tab-group vtg-findability">
+      <div class="viz-tab-group-header">
+        <span class="viz-tab-group-title">Findability</span>
+        <span class="viz-tab-group-desc">Navigation, content themes, and user journeys</span>
+      </div>
+      <div class="viz-tab-row">
+        <button class="viz-tab" data-panel="sunburst">Navigation</button>
+        <button class="viz-tab" data-panel="wordcloud">Themes</button>
+        <button class="viz-tab" data-panel="sankey">Journeys</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 1. Force-Directed Network Graph -->
+  <div class="viz-panel active" id="panel-network">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Domain Network Graph</h2>
+          <p class="viz-desc">Force-directed layout showing cross-domain linking relationships. Node size = page count, colour = ownership. Drag nodes to explore clusters.</p>
+        </div>
+      </div>
+      <div class="viz-loading" id="loading-network">Loading network data&hellip;</div>
+      <div class="viz-canvas" id="viz-network"></div>
+      <div class="viz-legend" id="legend-network"></div>
+
+      <!-- Node-detail overlay -->
+      <div class="network-detail-overlay" id="networkDetailOverlay">
+        <div class="ndo-header">
+          <div>
+            <div class="ndo-domain" id="ndo-domain"></div>
+            <span class="ndo-owner" id="ndo-owner"></span>
+          </div>
+          <button class="ndo-close" id="ndo-close" title="Close">&times;</button>
+        </div>
+        <div class="ndo-body">
+          <div class="ndo-section">
+            <div class="ndo-section-title">Overview</div>
+            <div class="ndo-stat-grid" id="ndo-stats"></div>
+          </div>
+          <div class="ndo-section" id="ndo-signals-section" style="display:none;">
+            <div class="ndo-section-title">Signals</div>
+            <div class="ndo-badge-row" id="ndo-signals"></div>
+          </div>
+          <div class="ndo-section">
+            <div class="ndo-section-title">Primary Connections</div>
+            <ul class="ndo-conn-list" id="ndo-primary"></ul>
+          </div>
+          <div class="ndo-section" id="ndo-secondary-section">
+            <div class="ndo-section-title">Secondary Connections</div>
+            <ul class="ndo-conn-list" id="ndo-secondary"></ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. Zoomable Treemap -->
+  <div class="viz-panel" id="panel-treemap">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Site Size Treemap</h2>
+          <p class="viz-desc">Rectangle area = page count per domain, grouped by ownership category. Click to zoom into a group.</p>
+        </div>
+      </div>
+      <div class="viz-loading" id="loading-treemap">Loading domain data&hellip;</div>
+      <div class="viz-canvas" id="viz-treemap"></div>
+    </div>
+  </div>
+
+  <!-- 3. Stacked Bar Chart — Status & Errors -->
+  <div class="viz-panel" id="panel-status">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">HTTP Status &amp; Errors by Domain</h2>
+          <p class="viz-desc">Stacked bars showing HTTP status code distribution per domain. Sorted by total error rate.</p>
+        </div>
+        <div class="viz-controls">
+          <select id="status-sort">
+            <option value="errors">Sort: Error rate</option>
+            <option value="pages">Sort: Page count</option>
+            <option value="alpha">Sort: Alphabetical</option>
+          </select>
+        </div>
+      </div>
+      <div class="viz-loading" id="loading-status">Loading status data&hellip;</div>
+      <div class="viz-canvas" id="viz-status"></div>
+    </div>
+  </div>
+
+  <!-- 4. Analytics Matrix Heatmap -->
+  <div class="viz-panel" id="panel-analytics">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Analytics &amp; Governance Matrix</h2>
+          <p class="viz-desc">Domain &times; signal heatmap showing which analytics tools, privacy policies, and governance markers are present. Colour intensity reflects the proportion of pages on that domain where the signal was detected.</p>
+        </div>
+      </div>
+      <div class="viz-loading" id="loading-analytics">Loading analytics data&hellip;</div>
+      <div class="viz-canvas" id="viz-analytics"></div>
+      <div class="viz-legend" id="legend-analytics"></div>
+    </div>
+  </div>
+
+  <!-- 5. Freshness Calendar/Timeline -->
+  <div class="viz-panel" id="panel-freshness">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Content Freshness Timeline</h2>
+          <p class="viz-desc">Shows the latest and oldest content dates per domain. Red = stale, green = recently updated.</p>
+        </div>
+      </div>
+      <div class="viz-loading" id="loading-freshness">Loading freshness data&hellip;</div>
+      <div class="viz-canvas" id="viz-freshness"></div>
+    </div>
+  </div>
+
+  <!-- 6. Chord Diagram -->
+  <div class="viz-panel" id="panel-chord">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Cross-Domain Link Chord</h2>
+          <p class="viz-desc">Chord diagram showing bidirectional link flow between the top domains. Ribbon width = link count.</p>
+        </div>
+        <div class="viz-controls">
+          <select id="chord-top">
+            <option value="15">Top 15 domains</option>
+            <option value="20" selected>Top 20 domains</option>
+            <option value="30">Top 30 domains</option>
+          </select>
+        </div>
+      </div>
+      <div class="viz-loading" id="loading-chord">Loading chord data&hellip;</div>
+      <div class="viz-canvas" id="viz-chord"></div>
+    </div>
+  </div>
+
+  <!-- 7. Sunburst — Navigation -->
+  <div class="viz-panel" id="panel-sunburst">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Navigation Structure</h2>
+          <p class="viz-desc">Click any segment to zoom in; click the centre to zoom back out. Internal links are grouped by path prefix; external links are grouped by target domain.</p>
+        </div>
+        <div class="viz-controls">
+          <select id="sunburst-domain"><option value="">Select domain&hellip;</option></select>
+        </div>
+      </div>
+      <div class="sunburst-breadcrumbs" id="sunburst-breadcrumbs"></div>
+      <div class="viz-loading" id="loading-sunburst">Loading navigation data&hellip;</div>
+      <div class="viz-canvas" id="viz-sunburst"></div>
+      <div class="sunburst-legend" id="sunburst-legend">
+        <span class="sb-leg"><span class="sb-leg-swatch" style="background:var(--csj-ink);"></span>Internal sections</span>
+        <span class="sb-leg"><span class="sb-leg-swatch" style="background:var(--csj-accent);"></span>External domains</span>
+        <span class="sb-leg sb-leg-hint">Click to zoom &middot; Centre to go back</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 8. Radar / Spider Chart — Quality -->
+  <div class="viz-panel" id="panel-radar">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Content Quality Radar</h2>
+          <p class="viz-desc">Multi-axis radar comparing quality dimensions across domains. Outward = better. Hover each vertex for the underlying value.</p>
+        </div>
+        <div class="viz-controls">
+          <div id="radar-domains" class="radar-domain-picker"></div>
+        </div>
+      </div>
+      <div class="viz-loading" id="loading-radar">Loading quality data&hellip;</div>
+      <div class="viz-canvas" id="viz-radar"></div>
+      <div class="viz-legend" id="legend-radar"></div>
+    </div>
+  </div>
+
+  <!-- 9. Word Cloud / Tag Network -->
+  <div class="viz-panel" id="panel-wordcloud">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Content Themes</h2>
+          <p class="viz-desc">Tag frequency word cloud showing the dominant content themes across the crawled estate.</p>
+        </div>
+      </div>
+      <div class="viz-loading" id="loading-wordcloud">Loading tag data&hellip;</div>
+      <div class="viz-canvas" id="viz-wordcloud"></div>
+    </div>
+  </div>
+
+  <!-- 10. Sankey — Journeys -->
+  <div class="viz-panel" id="panel-sankey">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Cross-Domain Journey Flow</h2>
+          <p class="viz-desc">Sankey diagram showing how link traffic flows between the most connected domains. Width = link volume.</p>
+        </div>
+        <div class="viz-controls">
+          <select id="sankey-count">
+            <option value="15">Top 15 flows</option>
+            <option value="25" selected>Top 25 flows</option>
+            <option value="40">Top 40 flows</option>
+          </select>
+        </div>
+      </div>
+      <div class="viz-loading" id="loading-sankey">Loading journey data&hellip;</div>
+      <div class="viz-canvas" id="viz-sankey"></div>
+    </div>
+  </div>
+
+  <!-- 11. Parallel Coordinates -->
+  <div class="viz-panel" id="panel-parallel">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Multi-Dimensional Domain Comparison</h2>
+          <p class="viz-desc">Each line is a domain threading through multiple quality/size axes. Brush an axis to filter.</p>
+        </div>
+      </div>
+      <div class="viz-loading" id="loading-parallel">Loading domain data&hellip;</div>
+      <div class="viz-canvas" id="viz-parallel"></div>
+      <div class="viz-legend" id="legend-parallel"></div>
+    </div>
+  </div>
+
+  <!-- 12. Bubble Chart -->
+  <div class="viz-panel" id="panel-bubble">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Domain Size Overview</h2>
+          <p class="viz-desc">Nested circle packing — bubble area = page count. Click a group to zoom in, click the background to zoom out.</p>
+        </div>
+        <div class="viz-controls">
+          <select id="bubble-grouping">
+            <option value="domain">Domains → Content Types</option>
+            <option value="content">Content Types → Domains</option>
+          </select>
+        </div>
+      </div>
+      <div class="viz-loading" id="loading-bubble">Loading domain data&hellip;</div>
+      <div class="viz-canvas" id="viz-bubble"></div>
+      <div class="viz-legend" id="legend-bubble"></div>
+    </div>
+  </div>
+  <!-- 13. Content Types by Domain -->
+  <div class="viz-panel" id="panel-contenttypes">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Content Types by Domain</h2>
+          <p class="viz-desc">Stacked bars showing the mix of content types per domain. Each colour represents a different content classification.</p>
+        </div>
+        <div class="viz-controls">
+          <select id="contenttypes-sort">
+            <option value="pages">Sort: Page count</option>
+            <option value="diversity">Sort: Type diversity</option>
+            <option value="alpha">Sort: Alphabetical</option>
+          </select>
+        </div>
+      </div>
+      <div class="viz-loading" id="loading-contenttypes">Loading content type data&hellip;</div>
+      <div class="viz-canvas" id="viz-contenttypes"></div>
+      <div class="viz-legend" id="legend-contenttypes"></div>
+    </div>
+  </div>
+</div>
+
+<div class="viz-tooltip" id="vizTooltip"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3-cloud@1"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3-sankey@0.12"></script>
+<script>
+  window.ECO_API = {
+    domains:    "{{ url_for('ecosystem.api_domains',    slug=project.slug, run_name=run_name) }}",
+    graph:      "{{ url_for('ecosystem.api_graph',      slug=project.slug, run_name=run_name) }}",
+    tags:       "{{ url_for('ecosystem.api_tags',       slug=project.slug, run_name=run_name) }}",
+    navigation: "{{ url_for('ecosystem.api_navigation', slug=project.slug, run_name=run_name) }}",
+    freshness:  "{{ url_for('ecosystem.api_freshness',  slug=project.slug, run_name=run_name) }}",
+    chord:      "{{ url_for('ecosystem.api_chord',      slug=project.slug, run_name=run_name) }}"
+  };
+</script>
+<script src="{{ url_for('static', filename='js/ecosystem.js') }}"></script>
+{% endblock %}

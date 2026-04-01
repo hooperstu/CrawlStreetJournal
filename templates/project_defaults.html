@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set active_tab = 'defaults' %}
-{% block title %}Defaults — {{ project.name }}{% endblock %}
+{% block title %}Defaults — {{ project.name }} | CSJ{% endblock %}
 
 {% block content %}
 <h1 class="page-title">Project Defaults</h1>
@@ -42,9 +42,9 @@
     </div>
     <div id="coverage-panel" class="coverage-panel" style="display:none;">
       <div class="coverage-title">Coverage check</div>
-      <div id="coverage-ok" style="color:var(--nhs-green);display:none;">All seed URL domains are covered by the allowed list.</div>
+      <div id="coverage-ok" style="color:var(--csj-success);display:none;">All seed URL domains are covered by the allowed list.</div>
       <div id="coverage-warn" style="display:none;">
-        <span style="color:var(--nhs-red);font-weight:600;">Uncovered domains:</span>
+        <span style="color:var(--csj-error);font-weight:600;">Uncovered domains:</span>
         <span class="text-muted">these seed URLs will be skipped at crawl time.</span>
         <ul id="coverage-list" style="margin-top:6px;font-size:14px;font-family:monospace;"></ul>
       </div>
@@ -101,7 +101,15 @@
       </div>
       <div class="form-group">
         <label class="form-label">Max retries</label>
-        <input type="number" name="max_retries" value="{{ cfg.get('MAX_RETRIES', 1) }}" min="0">
+        <input type="number" name="max_retries" value="{{ cfg.get('MAX_RETRIES', 3) }}" min="0">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Max depth (blank = unlimited)</label>
+        <input type="number" name="max_depth" value="{{ cfg.get('MAX_DEPTH', '') if cfg.get('MAX_DEPTH') is not none else '' }}" min="0" placeholder="unlimited">
+      </div>
+      <div class="form-group">
+        <label class="form-label">State save interval (pages)</label>
+        <input type="number" name="state_save_interval" value="{{ cfg.get('STATE_SAVE_INTERVAL', 10) }}" min="1">
       </div>
     </div>
   </div>
@@ -203,8 +211,8 @@
     var newDomains = {};
     seeds.forEach(function(u) { var h = getHostname(u); if (!h) return; if (isCovered(h, existing)) return; newDomains[h] = true; });
     var added = Object.keys(newDomains).sort();
-    if (added.length === 0) { extractMsg.textContent = 'All seed domains are already covered.'; extractMsg.style.color = 'var(--nhs-green)'; }
-    else { domainsEl.value = existing.concat(added).join('\n') + '\n'; extractMsg.textContent = 'Added ' + added.length + ' domain' + (added.length !== 1 ? 's' : '') + '.'; extractMsg.style.color = 'var(--nhs-green)'; }
+    if (added.length === 0) { extractMsg.textContent = 'All seed domains are already covered.'; extractMsg.style.color = 'var(--csj-success)'; }
+    else { domainsEl.value = existing.concat(added).join('\n') + '\n'; extractMsg.textContent = 'Added ' + added.length + ' domain' + (added.length !== 1 ? 's' : '') + '.'; extractMsg.style.color = 'var(--csj-success)'; }
     setTimeout(function() { extractMsg.textContent = ''; }, 4000);
     checkCoverage();
   });

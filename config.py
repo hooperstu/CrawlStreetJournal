@@ -1,6 +1,6 @@
 """
 ========================================================================
-  COLLECTOR — CONFIGURATION
+  THE CRAWL STREET JOURNAL — CONFIGURATION
 ========================================================================
   Edit this file to set seeds, allowed domains, crawl limits, and output
   paths. Run with: python main.py
@@ -11,6 +11,23 @@
   tags.csv (one row per tag), crawl_errors.csv.
 ========================================================================
 """
+
+import os
+import sys
+
+# ── Path resolution ───────────────────────────────────────────────────
+# When running inside a PyInstaller bundle the source tree is extracted
+# to a temporary folder (sys._MEIPASS).  Read-only assets (templates)
+# live there, but user data must go to a persistent writable location.
+_FROZEN = getattr(sys, "frozen", False)
+BUNDLE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+
+if _FROZEN:
+    DATA_DIR = os.path.join(os.path.expanduser("~"), "Documents", "CrawlStreetJournal")
+else:
+    DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+
+os.makedirs(DATA_DIR, exist_ok=True)
 
 # ── SEEDS ─────────────────────────────────────────────────────────────
 # Starting pages for link following (must sit under ALLOWED_DOMAINS).
@@ -35,16 +52,20 @@ MAX_SITEMAP_URLS = 1_000_000
 
 # ── CRAWL LIMITS ────────────────────────────────────────────────────
 MAX_PAGES_TO_CRAWL = 1_000_000
+MAX_DEPTH = None  # None = unlimited; integer limits link-following depth
 REQUEST_DELAY_SECONDS = (3, 5)
 REQUEST_TIMEOUT_SECONDS = 20
-MAX_RETRIES = 1
+MAX_RETRIES = 3
+
+# How often to persist _state.json during a crawl (every N pages).
+STATE_SAVE_INTERVAL = 10
 
 # ── OUTPUT / PROJECTS ────────────────────────────────────────────────
 # Per-project runs are stored under PROJECTS_DIR/<slug>/runs/.
 # OUTPUT_DIR is set dynamically by activate_project(); the default below
 # is only used for backwards-compatible CLI invocations without --project.
-PROJECTS_DIR = "projects"
-OUTPUT_DIR = "output"
+PROJECTS_DIR = os.path.join(DATA_DIR, "projects")
+OUTPUT_DIR = os.path.join(DATA_DIR, "output")
 
 PAGES_CSV = "pages.csv"
 EDGES_CSV = "edges.csv"
@@ -78,7 +99,9 @@ MAX_LINK_CHECKS_PER_PAGE = 50
 LINK_CHECK_DELAY_SECONDS = 0.5
 
 # ── DOMAIN SCOPE ─────────────────────────────────────────────────────
-# A URL is allowed if its host matches any of these substrings.
+# A URL is allowed if its hostname equals any of these entries or is a
+# subdomain of one (matched at the dot boundary).  For example,
+# "example.com" matches both "example.com" and "www.example.com".
 # Configure via the project defaults in the GUI, or edit directly here.
 ALLOWED_DOMAINS = (
 )
@@ -124,6 +147,17 @@ ASSET_CATEGORY_BY_EXT = {
     ".json": "json",
 }
 
+# ── DOMAIN OWNERSHIP ──────────────────────────────────────────────────
+# Rules for classifying crawled domains into ownership categories
+# (used in ecosystem visualisations). Each rule is a (domain_suffix, label)
+# tuple — first match wins. Populate via project defaults or edit here.
+DOMAIN_OWNERSHIP_RULES = [
+    # ("england.nhs.uk", "NHS England"),
+    # ("hee.nhs.uk", "HEE"),
+    # (".nhs.uk", "NHS (other)"),
+]
+DOMAIN_OWNERSHIP_DEFAULT = "Uncategorised"
+
 # ── CONTENT ANALYSIS ──────────────────────────────────────────────────
 # Compute Flesch–Kincaid grade level via textstat.
 CAPTURE_READABILITY = True
@@ -150,6 +184,6 @@ LOG_LEVEL = "INFO"
 
 # ── IDENTITY ──────────────────────────────────────────────────────────
 USER_AGENT = (
-    "Collector/1.0 "
+    "CSJ/1.0 "
     "(research; public page metadata inventory; contact: configure in config)"
 )
