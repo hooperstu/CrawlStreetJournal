@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set active_tab = 'logs' %}
-{% block title %}Logs — {% if project is defined and project %}{{ project.name }}{% else %}Collector{% endif %}{% endblock %}
+{% block title %}Logs — {% if project is defined and project %}{{ project.name }} | {% endif %}CSJ{% endblock %}
 
 {% block content %}
 <div class="flex-between" style="margin-bottom:20px;">

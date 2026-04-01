@@ -34,7 +34,7 @@ def _on_progress(crawled: int, assets: int, current_url: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Background Collector crawl")
+    parser = argparse.ArgumentParser(description="Background CSJ crawl")
     parser.add_argument("--name", default=None, help="Friendly name for a new run")
     parser.add_argument(
         "--run", default=None, metavar="FOLDER",

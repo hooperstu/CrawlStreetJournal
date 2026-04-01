@@ -1,5 +1,5 @@
 """
-CSV writers for Collector: pages inventory, assets by type, edges, tags, errors.
+CSV writers for CSJ: pages inventory, assets by type, edges, tags, errors.
 
 Each crawl run is a self-contained project living in a timestamped subfolder
 under OUTPUT_DIR.  The folder holds:
@@ -185,9 +185,11 @@ _SNAPSHOT_KEYS = (
     "RESPECT_ROBOTS_TXT",
     "MAX_SITEMAP_URLS",
     "MAX_PAGES_TO_CRAWL",
+    "MAX_DEPTH",
     "REQUEST_DELAY_SECONDS",
     "REQUEST_TIMEOUT_SECONDS",
     "MAX_RETRIES",
+    "STATE_SAVE_INTERVAL",
     "WRITE_EDGES_CSV",
     "WRITE_TAGS_CSV",
     "ASSET_HEAD_METADATA",
@@ -394,7 +396,7 @@ def migrate_legacy_data() -> Optional[str]:
     ):
         return None
 
-    old_output = "output"
+    old_output = os.path.join(config.DATA_DIR, "output")
     if not os.path.isdir(old_output):
         return None
 

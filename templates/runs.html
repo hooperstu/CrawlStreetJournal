@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set active_tab = 'runs' %}
-{% block title %}Runs — {{ project.name }}{% endblock %}
+{% block title %}Runs — {{ project.name }} | CSJ{% endblock %}
 
 {% block content %}
 <h1 class="page-title">Crawl Runs</h1>
@@ -29,12 +29,12 @@
     <table data-sortable>
       <thead>
         <tr>
-          <th style="width:1%;"></th>
+          <th style="width:1%;" data-no-sort></th>
           <th>Name</th>
           <th>Status</th>
-          <th>Pages</th>
+          <th class="col-num">Pages</th>
           <th>Created</th>
-          <th>Actions</th>
+          <th data-no-sort>Actions</th>
         </tr>
       </thead>
       <tbody>
@@ -66,7 +66,7 @@
               <span class="badge badge-idle">{{ r.status }}</span>
             {% endif %}
           </td>
-          <td>{{ "{:,}".format(r.page_count|int) }}</td>
+          <td class="col-num">{{ "{:,}".format(r.page_count|int) }}</td>
           <td class="text-muted" style="font-size:13px;">{{ r.timestamp_label }}</td>
           <td>
             <div style="display:flex;gap:6px;flex-wrap:wrap;">
