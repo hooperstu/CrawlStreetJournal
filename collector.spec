@@ -3,9 +3,12 @@
 PyInstaller spec for The Crawl Street Journal.
 
 Build with:
-    pyinstaller collector.spec
+    pyinstaller collector.spec --noconfirm
 
-Output lands in dist/The Crawl Street Journal.app  (macOS)
+Output:
+    macOS  → dist/The Crawl Street Journal.app
+    Windows → dist/The Crawl Street Journal/The Crawl Street Journal.exe
+    Linux  → dist/The Crawl Street Journal/The Crawl Street Journal
 """
 
 import sys
@@ -13,6 +16,15 @@ from pathlib import Path
 
 block_cipher = None
 ROOT = Path(SPECPATH)
+
+# ── Per-platform icon ─────────────────────────────────────────────────
+_icon_map = {
+    "darwin": ROOT / "assets" / "icon.icns",
+    "win32": ROOT / "assets" / "icon.ico",
+    "linux": ROOT / "assets" / "icon.png",
+}
+_icon_path = _icon_map.get(sys.platform)
+_icon = str(_icon_path) if _icon_path and _icon_path.exists() else None
 
 a = Analysis(
     [str(ROOT / "launcher.py")],
@@ -31,7 +43,6 @@ a = Analysis(
         "storage",
         "run_pre_crawl_analysis",
         "run_background_crawl",
-        # Third-party libraries that PyInstaller may miss
         "flask",
         "jinja2",
         "markupsafe",
@@ -77,6 +88,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
+    icon=_icon,
     target_arch=None,
 )
 
@@ -91,16 +103,16 @@ coll = COLLECT(
     name="The Crawl Street Journal",
 )
 
-# macOS .app bundle
-app = BUNDLE(
-    coll,
-    name="The Crawl Street Journal.app",
-    icon=str(ROOT / "assets" / "icon.icns") if (ROOT / "assets" / "icon.icns").exists() else None,
-    bundle_identifier="io.csj.crawlstreetjournal",
-    info_plist={
-        "CFBundleDisplayName": "The Crawl Street Journal",
-        "CFBundleShortVersionString": "1.0.0",
-        "NSHighResolutionCapable": True,
-        "LSBackgroundOnly": False,
-    },
-)
+if sys.platform == "darwin":
+    app = BUNDLE(
+        coll,
+        name="The Crawl Street Journal.app",
+        icon=_icon,
+        bundle_identifier="io.csj.crawlstreetjournal",
+        info_plist={
+            "CFBundleDisplayName": "The Crawl Street Journal",
+            "CFBundleShortVersionString": "1.0.0",
+            "NSHighResolutionCapable": True,
+            "LSBackgroundOnly": False,
+        },
+    )

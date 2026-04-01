@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build The Crawl Street Journal macOS .app bundle.
+# Build The Crawl Street Journal for the current platform (macOS / Linux).
 #
 # Usage:
 #     ./scripts/build-macos-app.sh          # uses existing venv / global Python
@@ -38,22 +38,37 @@ $PIP install --quiet -r requirements.txt
 $PIP install --quiet pyinstaller
 
 # ── Build ────────────────────────────────────────────────────────────
-echo "🔨  Building The Crawl Street Journal.app…"
+echo "🔨  Building The Crawl Street Journal…"
 "$ROOT/.venv/bin/pyinstaller" collector.spec --noconfirm
 
 # ── Post-build ───────────────────────────────────────────────────────
-APP_PATH="dist/The Crawl Street Journal.app"
-if [[ -d "$APP_PATH" ]]; then
-    echo ""
-    echo "✅  Build complete!"
-    echo "    $APP_PATH"
-    echo ""
-    echo "    To install:  drag the .app to /Applications"
-    echo "    To distribute:  create a DMG or zip the .app"
-    echo ""
-    SIZE=$(du -sh "$APP_PATH" | cut -f1)
-    echo "    Bundle size: $SIZE"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    APP_PATH="dist/The Crawl Street Journal.app"
+    if [[ -d "$APP_PATH" ]]; then
+        echo ""
+        echo "✅  Build complete!"
+        echo "    $APP_PATH"
+        echo ""
+        echo "    To install:  drag the .app to /Applications"
+        echo "    To distribute:  create a DMG or zip the .app"
+        SIZE=$(du -sh "$APP_PATH" | cut -f1)
+        echo "    Bundle size: $SIZE"
+    else
+        echo "❌  Build failed — .app not found."
+        exit 1
+    fi
 else
-    echo "❌  Build failed — dist/The Crawl Street Journal.app not found."
-    exit 1
+    DIST_DIR="dist/The Crawl Street Journal"
+    if [[ -d "$DIST_DIR" ]]; then
+        echo ""
+        echo "✅  Build complete!"
+        echo "    $DIST_DIR"
+        echo ""
+        echo "    Run with:  $DIST_DIR/The Crawl Street Journal"
+        SIZE=$(du -sh "$DIST_DIR" | cut -f1)
+        echo "    Bundle size: $SIZE"
+    else
+        echo "❌  Build failed — dist folder not found."
+        exit 1
+    fi
 fi
