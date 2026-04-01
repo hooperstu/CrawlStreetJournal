@@ -28,7 +28,18 @@ _FROZEN = getattr(sys, "frozen", False)
 BUNDLE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 
 if _FROZEN:
-    DATA_DIR = os.path.join(os.path.expanduser("~"), "Documents", "CrawlStreetJournal")
+    if sys.platform == "win32":
+        _appdata = os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))
+        DATA_DIR = os.path.join(_appdata, "CrawlStreetJournal")
+    elif sys.platform == "darwin":
+        DATA_DIR = os.path.join(
+            os.path.expanduser("~"), "Documents", "CrawlStreetJournal"
+        )
+    else:
+        _xdg = os.environ.get(
+            "XDG_DATA_HOME", os.path.join(os.path.expanduser("~"), ".local", "share")
+        )
+        DATA_DIR = os.path.join(_xdg, "CrawlStreetJournal")
 else:
     DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 

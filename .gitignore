@@ -13,4 +13,3 @@ crawl_background.pid
 build/
 dist/
 *.app
-assets/icon.iconset/
