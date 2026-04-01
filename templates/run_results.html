@@ -1,24 +1,16 @@
 {% extends "base.html" %}
 {% set active_tab = 'runs' %}
-{% block title %}Results — {{ friendly_name or run_name }}{% endblock %}
+{% block title %}Results — {{ friendly_name or run_name }} | CSJ{% endblock %}
 
 {% block subnav %}
 <div class="sub-nav">
   <a href="{{ url_for('run_config', slug=project.slug, run_name=run_name) }}">Config</a>
   <a href="{{ url_for('run_monitor', slug=project.slug, run_name=run_name) }}">Monitor</a>
   <a href="{{ url_for('run_results', slug=project.slug, run_name=run_name) }}" class="active">Results</a>
+  <a href="{{ url_for('ecosystem.ecosystem_dashboard', slug=project.slug, run_name=run_name) }}">Ecosystem</a>
 </div>
 {% endblock %}
 
-{% block breadcrumbs %}
-<div class="breadcrumbs">
-  <a href="{{ url_for('project_runs', slug=project.slug) }}">Runs</a>
-  <span class="sep">/</span>
-  <strong>{{ friendly_name or run_name }}</strong>
-  <span class="sep">/</span>
-  Results
-</div>
-{% endblock %}
 
 {% block content %}
 <div class="flex-between" style="margin-bottom:20px;">
@@ -52,7 +44,7 @@
     <div class="stat-label">Tags</div>
   </div>
   <div class="stat">
-    <div class="stat-value" {% if m.total_errors > 0 %}style="color:var(--nhs-red);"{% endif %}>{{ "{:,}".format(m.total_errors) }}</div>
+    <div class="stat-value" {% if m.total_errors > 0 %}style="color:var(--csj-error);"{% endif %}>{{ "{:,}".format(m.total_errors) }}</div>
     <div class="stat-label">Errors</div>
   </div>
 </div>
@@ -61,14 +53,14 @@
 <!-- ── Grouped CSV files ────────────────────────────── -->
 
 {% macro file_table(files, slug, run_name) %}
-<table>
-  <thead><tr><th>File</th><th>Rows</th><th>Size</th><th></th></tr></thead>
+<table data-sortable>
+  <thead><tr><th>File</th><th class="col-num">Rows</th><th class="col-num">Size</th><th data-no-sort></th></tr></thead>
   <tbody>
     {% for f in files %}
     <tr>
       <td><a href="{{ url_for('run_results_detail', slug=slug, run_name=run_name, filename=f.name) }}">{{ f.name }}</a></td>
-      <td>{{ "{:,}".format(f.rows) }}</td>
-      <td>{{ f.size }}</td>
+      <td class="col-num">{{ "{:,}".format(f.rows) }}</td>
+      <td class="col-num">{{ f.size }}</td>
       <td><a href="{{ url_for('run_download', slug=slug, run_name=run_name, filename=f.name) }}" class="btn btn-sm btn-secondary">Download</a></td>
     </tr>
     {% endfor %}
@@ -126,7 +118,7 @@
 
 {% if m.has_data %}
 <!-- ── Analytics ─────────────────────────────────────── -->
-<h2 style="font-size:20px;font-weight:700;color:var(--nhs-dark-blue);margin:28px 0 16px;">Analytics</h2>
+<h2 style="font-size:20px;font-weight:700;color:var(--csj-headline);margin:28px 0 16px;">Analytics</h2>
 
 <div class="two-col">
   <div class="card">
@@ -158,7 +150,7 @@
           <td>{{ cat }}</td>
           <td style="width:50%;">
             <div class="bar-wrap">
-              <div class="bar-track"><div class="bar-fill" style="width:{{ (count / m.total_assets * 100)|round(1) }}%;background:var(--nhs-bright-blue);"></div></div>
+              <div class="bar-track"><div class="bar-fill" style="width:{{ (count / m.total_assets * 100)|round(1) }}%;background:var(--csj-accent);"></div></div>
               <span class="bar-label">{{ count }}</span>
             </div>
           </td>
@@ -182,7 +174,7 @@
           <td style="font-size:13px;">{{ domain }}</td>
           <td style="width:45%;">
             <div class="bar-wrap">
-              <div class="bar-track"><div class="bar-fill" style="width:{{ (count / m.domain_breakdown[0][1] * 100)|round(1) }}%;background:var(--nhs-dark-blue);"></div></div>
+              <div class="bar-track"><div class="bar-fill" style="width:{{ (count / m.domain_breakdown[0][1] * 100)|round(1) }}%;background:var(--csj-ink);"></div></div>
               <span class="bar-label">{{ count }}</span>
             </div>
           </td>
@@ -202,7 +194,7 @@
           <td>{{ err_type }}</td>
           <td style="width:45%;">
             <div class="bar-wrap">
-              <div class="bar-track"><div class="bar-fill" style="width:{{ (count / m.total_errors * 100)|round(1) }}%;background:var(--nhs-red);"></div></div>
+              <div class="bar-track"><div class="bar-fill" style="width:{{ (count / m.total_errors * 100)|round(1) }}%;background:var(--csj-error);"></div></div>
               <span class="bar-label">{{ count }}</span>
             </div>
           </td>
@@ -226,7 +218,7 @@
           <tr><td>Total images</td><td>{{ "{:,}".format(m.total_images) }}</td></tr>
           <tr>
             <td>Images missing alt text</td>
-            <td {% if m.images_missing_alt > 0 %}style="color:var(--nhs-red);"{% endif %}>
+            <td {% if m.images_missing_alt > 0 %}style="color:var(--csj-error);"{% endif %}>
               {{ "{:,}".format(m.images_missing_alt) }}
               {% if m.total_images > 0 %}
               <span class="text-muted" style="font-weight:400;"> ({{ (m.images_missing_alt / m.total_images * 100)|round(1) }}%)</span>
@@ -238,7 +230,7 @@
       </table>
     </div>
     <div>
-      <div style="font-weight:600;font-size:14px;color:var(--nhs-dark-blue);margin-bottom:8px;">Language Distribution</div>
+      <div style="font-weight:600;font-size:14px;color:var(--csj-headline);margin-bottom:8px;">Language Distribution</div>
       <table class="list-table">
         <tbody>
           {% for lang, count in m.lang_breakdown %}
@@ -246,7 +238,7 @@
             <td style="font-size:13px;"><code>{{ lang }}</code></td>
             <td>
               <div class="bar-wrap">
-                <div class="bar-track"><div class="bar-fill" style="width:{{ (count / m.pages * 100)|round(1) }}%;background:var(--nhs-green);"></div></div>
+                <div class="bar-track"><div class="bar-fill" style="width:{{ (count / m.pages * 100)|round(1) }}%;background:var(--csj-success);"></div></div>
                 <span class="bar-label">{{ count }}</span>
               </div>
             </td>
@@ -262,7 +254,7 @@
   <div class="card-title">HTTP Status Codes</div>
   <div class="stats">
     {% for code, count in m.status_breakdown %}
-    <div class="stat" style="border-left-color:{% if code.startswith('2') %}var(--nhs-green){% elif code.startswith('3') %}var(--nhs-blue){% elif code.startswith('4') %}var(--nhs-orange){% elif code.startswith('5') %}var(--nhs-red){% else %}var(--nhs-grey){% endif %};">
+    <div class="stat" style="border-left-color:{% if code.startswith('2') %}var(--csj-success){% elif code.startswith('3') %}var(--csj-accent){% elif code.startswith('4') %}var(--csj-amber){% elif code.startswith('5') %}var(--csj-error){% else %}var(--csj-body){% endif %};">
       <div class="stat-value" style="font-size:22px;">{{ count }}</div>
       <div class="stat-label">{{ code }}</div>
     </div>

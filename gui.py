@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Collector — Web GUI
+The Crawl Street Journal — Web GUI
 
 Flask application providing a browser interface for managing projects,
 configuring crawls, running them, and reviewing results.
@@ -35,8 +35,16 @@ from flask import (
 import config
 import storage as storage_module
 
-app = Flask(__name__)
+app = Flask(
+    __name__,
+    template_folder=os.path.join(config.BUNDLE_DIR, "templates"),
+    static_folder=os.path.join(config.BUNDLE_DIR, "static"),
+    static_url_path="/static",
+)
 app.secret_key = os.urandom(24)
+
+from viz_api import eco_bp  # noqa: E402
+app.register_blueprint(eco_bp)
 
 # ── Crawl state ───────────────────────────────────────────────────────────
 
@@ -345,7 +353,7 @@ def _run_metrics(run_dir: str) -> Dict[str, Any]:
         total_imgs += int(ic) if ic and ic.isdigit() else 0
         ma = r.get("img_missing_alt_count", "0")
         imgs_no_alt += int(ma) if ma and ma.isdigit() else 0
-        if r.get("training_related_flag", "").lower() in ("true", "1", "yes"):
+        if r.get("training_related_flag", "").strip():
             training += 1
 
     m["domains"] = len(domain_ctr)
@@ -376,6 +384,9 @@ def _run_metrics(run_dir: str) -> Dict[str, Any]:
             with open(errors_path, "r", encoding="utf-8") as f:
                 for r in csv.DictReader(f):
                     error_ctr[r.get("error_type", "unknown")] += 1
+                    err_status = r.get("http_status", "").strip()
+                    if err_status and err_status != "0":
+                        status_ctr[err_status] += 1
         except Exception:
             pass
     m["total_errors"] = sum(error_ctr.values())
@@ -452,6 +463,9 @@ def _build_config_dict_from_form(form) -> Dict[str, Any]:
     delay_min = float(form.get("delay_min", 3))
     delay_max = float(form.get("delay_max", 5))
 
+    max_depth_raw = form.get("max_depth", "").strip()
+    max_depth = int(max_depth_raw) if max_depth_raw else None
+
     return {
         "SEED_URLS": seed_urls,
         "SITEMAP_URLS": sitemap_urls,
@@ -459,9 +473,11 @@ def _build_config_dict_from_form(form) -> Dict[str, Any]:
         "RESPECT_ROBOTS_TXT": "respect_robots_txt" in form,
         "MAX_SITEMAP_URLS": int(form.get("max_sitemap_urls", 1_000_000)),
         "MAX_PAGES_TO_CRAWL": int(form.get("max_pages", 1_000_000)),
+        "MAX_DEPTH": max_depth,
         "REQUEST_DELAY_SECONDS": [delay_min, delay_max],
         "REQUEST_TIMEOUT_SECONDS": int(form.get("request_timeout", 20)),
-        "MAX_RETRIES": int(form.get("max_retries", 1)),
+        "MAX_RETRIES": int(form.get("max_retries", 3)),
+        "STATE_SAVE_INTERVAL": int(form.get("state_save_interval", 50)),
         "WRITE_EDGES_CSV": "write_edges" in form,
         "WRITE_TAGS_CSV": "write_tags" in form,
         "ASSET_HEAD_METADATA": "asset_head" in form,
@@ -737,10 +753,25 @@ def run_results_detail(slug: str, run_name: str, filename: str):
     )
 
 
+def _is_run_active(slug: str, run_name: str) -> bool:
+    """True when the given run is the one currently being crawled."""
+    with _status_lock:
+        return (
+            _crawl_status["running"]
+            and _crawl_status.get("project_slug") == slug
+            and _crawl_status.get("run_folder") == run_name
+        )
+
+
 @app.route("/p/<slug>/runs/<run_name>/download/<filename>")
 def run_download(slug: str, run_name: str, filename: str):
     if not filename.endswith(".csv"):
         return "Not found", 404
+    if _is_run_active(slug, run_name):
+        return (
+            "This run is still in progress. Please stop the crawl before "
+            "downloading files to avoid incomplete or corrupted data."
+        ), 409
     storage_module.activate_project(slug)
     run_dir = os.path.join(config.OUTPUT_DIR, run_name)
     abs_dir = os.path.abspath(run_dir)
@@ -749,6 +780,11 @@ def run_download(slug: str, run_name: str, filename: str):
 
 @app.route("/p/<slug>/runs/<run_name>/download-all")
 def run_download_all(slug: str, run_name: str):
+    if _is_run_active(slug, run_name):
+        return (
+            "This run is still in progress. Please stop the crawl before "
+            "downloading files to avoid incomplete or corrupted data."
+        ), 409
     storage_module.activate_project(slug)
     run_dir = os.path.join(config.OUTPUT_DIR, run_name)
     abs_dir = os.path.abspath(run_dir)
@@ -855,5 +891,5 @@ if __name__ == "__main__":
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     storage_module.migrate_legacy_data()
-    print("Collector GUI: http://localhost:5001")
+    print("The Crawl Street Journal: http://localhost:5001")
     app.run(host="0.0.0.0", port=5001, debug=False, threaded=True)

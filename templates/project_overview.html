@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set active_tab = 'overview' %}
-{% block title %}{{ project.name }} — Collector{% endblock %}
+{% block title %}{{ project.name }} | CSJ{% endblock %}
 
 {% block content %}
 <h1 class="page-title">{{ project.name }}</h1>
@@ -22,7 +22,7 @@
     <div class="stat-label">Total assets</div>
   </div>
   <div class="stat">
-    <div class="stat-value" {% if m.total_errors > 0 %}style="color:var(--nhs-red);"{% endif %}>{{ "{:,}".format(m.total_errors) }}</div>
+    <div class="stat-value" {% if m.total_errors > 0 %}style="color:var(--csj-error);"{% endif %}>{{ "{:,}".format(m.total_errors) }}</div>
     <div class="stat-label">Total errors</div>
   </div>
 </div>
@@ -34,14 +34,14 @@
     <a href="{{ url_for('project_runs', slug=project.slug) }}" class="btn btn-sm btn-secondary">View All Runs</a>
   </div>
   <div class="table-wrap mt-16">
-    <table>
+    <table data-sortable>
       <thead>
         <tr>
           <th>Name</th>
           <th>Status</th>
-          <th>Pages</th>
+          <th class="col-num">Pages</th>
           <th>Created</th>
-          <th></th>
+          <th data-no-sort></th>
         </tr>
       </thead>
       <tbody>
@@ -63,7 +63,7 @@
             <span class="badge badge-idle">{{ r.status }}</span>
             {% endif %}
           </td>
-          <td>{{ "{:,}".format(r.page_count|int) }}</td>
+          <td class="col-num">{{ "{:,}".format(r.page_count|int) }}</td>
           <td class="text-muted" style="font-size:13px;">{{ r.timestamp_label }}</td>
           <td>
             <div style="display:flex;gap:6px;">

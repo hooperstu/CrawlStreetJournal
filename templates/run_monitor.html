@@ -1,24 +1,16 @@
 {% extends "base.html" %}
 {% set active_tab = 'runs' %}
-{% block title %}Monitor — {{ friendly_name or run_name }}{% endblock %}
+{% block title %}Monitor — {{ friendly_name or run_name }} | CSJ{% endblock %}
 
 {% block subnav %}
 <div class="sub-nav">
   <a href="{{ url_for('run_config', slug=project.slug, run_name=run_name) }}">Config</a>
   <a href="{{ url_for('run_monitor', slug=project.slug, run_name=run_name) }}" class="active">Monitor</a>
   <a href="{{ url_for('run_results', slug=project.slug, run_name=run_name) }}">Results</a>
+  <a href="{{ url_for('ecosystem.ecosystem_dashboard', slug=project.slug, run_name=run_name) }}">Ecosystem</a>
 </div>
 {% endblock %}
 
-{% block breadcrumbs %}
-<div class="breadcrumbs">
-  <a href="{{ url_for('project_runs', slug=project.slug) }}">Runs</a>
-  <span class="sep">/</span>
-  <strong>{{ friendly_name or run_name }}</strong>
-  <span class="sep">/</span>
-  Monitor
-</div>
-{% endblock %}
 
 {% block content %}
 <div class="flex-between" style="margin-bottom:20px;">
