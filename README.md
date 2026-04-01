@@ -6,6 +6,20 @@ It does **not** filter pages by keywords. Every HTML page the crawler successful
 
 ---
 
+## Download (no coding required)
+
+Pre-built desktop apps are available from the [latest release](https://github.com/hooperstu/CrawlStreetJournal/releases/latest). Download the file for your operating system, extract it, and double-click to run — no Python installation needed.
+
+| Platform | File | Notes |
+|----------|------|-------|
+| **macOS** | `The-Crawl-Street-Journal-macOS.zip` | Extract, then right-click the `.app` and choose **Open** on first launch (Gatekeeper prompt). |
+| **Windows** | `The-Crawl-Street-Journal-Windows.zip` | Extract the folder, then run `The Crawl Street Journal.exe`. You may need to click **More info → Run anyway** on the SmartScreen prompt. |
+| **Linux** | `The-Crawl-Street-Journal-Linux.tar.gz` | Extract with `tar -xzf`, then run the `The Crawl Street Journal` executable. |
+
+The app starts a local web server and opens your browser automatically.
+
+---
+
 ## What this tool is for
 
 - Mapping **how much content** exists and **where** it lives (by domain, path hints, content kind).
