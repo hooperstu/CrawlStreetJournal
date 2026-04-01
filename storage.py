@@ -68,6 +68,12 @@ PAGES_FIELDS = (
     "analytics_signals",
     "training_related_flag",
     "nav_link_count",
+    "wcag_lang_valid",
+    "wcag_heading_order_valid",
+    "wcag_title_present",
+    "wcag_form_labels_pct",
+    "wcag_landmarks_present",
+    "wcag_vague_link_pct",
     "referrer_url",
     "depth",
     "discovered_at",
@@ -111,6 +117,259 @@ LINK_CHECK_FIELDS = (
     "discovered_at",
 )
 
+
+# ── Per-crawl storage context ─────────────────────────────────────────────
+
+class StorageContext:
+    """Isolated storage state for a single crawl.
+
+    Each concurrent crawl gets its own instance so that ``output_dir`` and
+    ``active_run_dir`` never collide between projects.
+    """
+
+    def __init__(
+        self,
+        output_dir: str,
+        cfg: "config.CrawlConfig",
+        active_run_dir: Optional[str] = None,
+    ) -> None:
+        self.output_dir = output_dir
+        self.cfg = cfg
+        self.active_run_dir = active_run_dir
+
+    # -- path helpers -----------------------------------------------------
+
+    def _output_path(self, name: str) -> str:
+        base = (self.active_run_dir or self.output_dir).rstrip("/") or "."
+        return os.path.join(base, name)
+
+    def ensure_output_dir(self) -> None:
+        target = self.active_run_dir or self.output_dir
+        os.makedirs(target, exist_ok=True)
+
+    def _assets_path_for_category(self, category: str) -> str:
+        fname = f"{config.ASSETS_CSV_PREFIX}{category}.csv"
+        return self._output_path(fname)
+
+    # -- header / row writing ---------------------------------------------
+
+    def _write_header(self, path: str, fieldnames: tuple) -> None:
+        self.ensure_output_dir()
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            csv.DictWriter(
+                f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL,
+            ).writeheader()
+
+    def append_row(self, path: str, fieldnames: tuple, row: Dict[str, Any]) -> None:
+        self.ensure_output_dir()
+        safe = {k: _sanitise(row.get(k, "")) for k in fieldnames}
+        try:
+            with open(path, "a", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(
+                    f, fieldnames=fieldnames,
+                    extrasaction="ignore", quoting=csv.QUOTE_ALL,
+                )
+                w.writerow(safe)
+        except Exception as e:
+            url = safe.get("final_url") or safe.get("url") or safe.get("page_url") or "?"
+            logger.warning("CSV write failed for %s → %s: %s", url, path, e)
+
+    # -- typed CSV writers ------------------------------------------------
+
+    def write_page(self, row: Dict[str, Any]) -> None:
+        self.append_row(self._output_path(config.PAGES_CSV), PAGES_FIELDS, row)
+
+    def write_asset(self, row: Dict[str, Any], category: str) -> None:
+        known = set(config.ASSET_CATEGORY_BY_EXT.values()) | {"other"}
+        cat = category if category in known else "other"
+        self.append_row(self._assets_path_for_category(cat), ASSET_FIELDS, row)
+
+    def write_edge(self, row: Dict[str, Any]) -> None:
+        if not self.cfg.WRITE_EDGES_CSV:
+            return
+        self.append_row(self._output_path(config.EDGES_CSV), EDGE_FIELDS, row)
+
+    def write_tag_row(self, row: Dict[str, Any]) -> None:
+        if not self.cfg.WRITE_TAGS_CSV:
+            return
+        self.append_row(self._output_path(config.TAGS_CSV), TAG_ROW_FIELDS, row)
+
+    def write_error(self, row: Dict[str, Any]) -> None:
+        self.append_row(self._output_path(config.ERRORS_CSV), ERROR_FIELDS, row)
+
+    def write_sitemap_url(self, row: Dict[str, Any]) -> None:
+        if not self.cfg.WRITE_SITEMAP_URLS_CSV:
+            return
+        self.append_row(
+            self._output_path(config.SITEMAP_URLS_CSV), SITEMAP_URL_FIELDS, row,
+        )
+
+    def write_nav_link(self, row: Dict[str, Any]) -> None:
+        if not self.cfg.WRITE_NAV_LINKS_CSV:
+            return
+        self.append_row(
+            self._output_path(config.NAV_LINKS_CSV), NAV_LINK_FIELDS, row,
+        )
+
+    def write_link_check(self, row: Dict[str, Any]) -> None:
+        if not self.cfg.CHECK_OUTBOUND_LINKS:
+            return
+        self.append_row(
+            self._output_path(config.LINK_CHECKS_CSV), LINK_CHECK_FIELDS, row,
+        )
+
+    # -- latest-run marker ------------------------------------------------
+
+    def _write_latest_marker(self, run_folder_name: str) -> None:
+        marker = os.path.join(self.output_dir, ".latest")
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(run_folder_name)
+
+    def get_latest_run_dir(self) -> str:
+        marker = os.path.join(self.output_dir, ".latest")
+        if os.path.isfile(marker):
+            with open(marker, "r", encoding="utf-8") as f:
+                name = f.read().strip()
+            candidate = os.path.join(self.output_dir, name)
+            if os.path.isdir(candidate):
+                return candidate
+        return self.output_dir
+
+    def get_active_run_dir(self) -> str:
+        return self.active_run_dir or self.get_latest_run_dir()
+
+    # -- run name helpers -------------------------------------------------
+
+    def rename_run(self, folder_name: str, new_name: str) -> bool:
+        full = os.path.join(self.output_dir, folder_name)
+        if not os.path.isdir(full):
+            return False
+        _write_run_name(full, new_name)
+        return True
+
+    # -- run lifecycle ----------------------------------------------------
+
+    def create_run(self, run_name: Optional[str] = None) -> str:
+        os.makedirs(self.output_dir, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S_%f")
+        folder_name = f"run_{stamp}"
+        run_dir = os.path.join(self.output_dir, folder_name)
+        os.makedirs(run_dir, exist_ok=False)
+        if run_name:
+            _write_run_name(run_dir, run_name)
+        save_run_config(run_dir, self.cfg.to_dict())
+        save_crawl_state(
+            run_dir, status="new", pages_crawled=0,
+            assets_from_pages=0, queue=[],
+        )
+        logger.info("Created run: %s (%s)", folder_name, run_name or "unnamed")
+        return folder_name
+
+    def initialise_outputs(
+        self, run_folder: Optional[str] = None, run_name: Optional[str] = None,
+    ) -> None:
+        if run_folder:
+            self.active_run_dir = os.path.join(self.output_dir, run_folder)
+            if not os.path.isdir(self.active_run_dir):
+                os.makedirs(self.active_run_dir, exist_ok=True)
+        else:
+            stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S_%f")
+            folder_name = f"run_{stamp}"
+            self.active_run_dir = os.path.join(self.output_dir, folder_name)
+            os.makedirs(self.active_run_dir, exist_ok=False)
+            if run_name:
+                _write_run_name(self.active_run_dir, run_name)
+
+        self._write_latest_marker(os.path.basename(self.active_run_dir))
+        save_run_config(self.active_run_dir, self.cfg.to_dict())
+        logger.info("Run output directory: %s", self.active_run_dir)
+
+        self._write_header(self._output_path(config.PAGES_CSV), PAGES_FIELDS)
+        if self.cfg.WRITE_EDGES_CSV:
+            self._write_header(self._output_path(config.EDGES_CSV), EDGE_FIELDS)
+        if self.cfg.WRITE_TAGS_CSV:
+            self._write_header(self._output_path(config.TAGS_CSV), TAG_ROW_FIELDS)
+        self._write_header(self._output_path(config.ERRORS_CSV), ERROR_FIELDS)
+        if self.cfg.WRITE_SITEMAP_URLS_CSV:
+            self._write_header(
+                self._output_path(config.SITEMAP_URLS_CSV), SITEMAP_URL_FIELDS,
+            )
+        if self.cfg.WRITE_NAV_LINKS_CSV:
+            self._write_header(
+                self._output_path(config.NAV_LINKS_CSV), NAV_LINK_FIELDS,
+            )
+        if self.cfg.CHECK_OUTBOUND_LINKS:
+            self._write_header(
+                self._output_path(config.LINK_CHECKS_CSV), LINK_CHECK_FIELDS,
+            )
+        seen: set[str] = set()
+        for cat in set(config.ASSET_CATEGORY_BY_EXT.values()):
+            if cat not in seen:
+                seen.add(cat)
+                self._write_header(self._assets_path_for_category(cat), ASSET_FIELDS)
+        if "other" not in seen:
+            self._write_header(self._assets_path_for_category("other"), ASSET_FIELDS)
+
+    def resume_outputs(self, run_folder: str) -> None:
+        self.active_run_dir = os.path.join(self.output_dir, run_folder)
+        if not os.path.isdir(self.active_run_dir):
+            raise FileNotFoundError(f"Run folder not found: {self.active_run_dir}")
+        self._write_latest_marker(run_folder)
+        logger.info("Resuming run in: %s", self.active_run_dir)
+
+    # -- run listing ------------------------------------------------------
+
+    def list_run_dirs(self) -> List[Dict[str, Any]]:
+        base = self.output_dir
+        if not os.path.isdir(base):
+            return []
+        latest = os.path.basename(self.get_latest_run_dir())
+        runs: List[Dict[str, Any]] = []
+        for name in sorted(os.listdir(base), reverse=True):
+            if not name.startswith("run_"):
+                continue
+            full = os.path.join(base, name)
+            if not os.path.isdir(full):
+                continue
+            raw = name.replace("run_", "", 1)
+            parts = raw.split("_")
+            date_part = parts[0] if parts else raw
+            time_part = parts[1].replace("-", ":") if len(parts) > 1 else ""
+            timestamp_label = (date_part + " " + time_part).strip()
+            friendly = _read_run_name(full)
+            label = f"{friendly} ({timestamp_label})" if friendly else timestamp_label
+            status = get_run_status(full)
+            runs.append({
+                "name": name,
+                "friendly_name": friendly or "",
+                "timestamp_label": timestamp_label,
+                "label": label,
+                "page_count": _count_pages_in(full),
+                "status": status,
+                "has_config": os.path.isfile(os.path.join(full, "_config.json")),
+                "is_latest": name == latest,
+            })
+        legacy_pages = _count_pages_in(base)
+        has_legacy_csvs = legacy_pages > 0 or any(
+            n.endswith(".csv") and not os.path.isdir(os.path.join(base, n))
+            for n in os.listdir(base)
+            if not n.startswith("run_")
+        )
+        if has_legacy_csvs:
+            runs.append({
+                "name": "_legacy",
+                "friendly_name": "",
+                "timestamp_label": "",
+                "label": "Pre-migration data",
+                "page_count": legacy_pages,
+                "status": "completed",
+                "has_config": False,
+                "is_latest": latest == os.path.basename(base),
+            })
+        return runs
+
+
+# ── Module-level helpers (backward compat & CLI) ─────────────────────────
 
 def _output_path(name: str) -> str:
     """Resolve *name* inside the active run directory (or OUTPUT_DIR fallback)."""
@@ -377,12 +636,17 @@ def save_project_defaults(slug: str, cfg: Dict[str, Any]) -> None:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
 
 
-def activate_project(slug: str) -> None:
-    """Point config.OUTPUT_DIR at this project's runs/ directory so all
-    existing run functions (create_run, list_run_dirs, etc.) are scoped."""
+def activate_project(slug: str) -> StorageContext:
+    """Point config.OUTPUT_DIR at this project's runs/ directory and return
+    an isolated :class:`StorageContext` for the project.
+
+    The module-level mutation of ``config.OUTPUT_DIR`` is kept for backward
+    compatibility with the CLI and non-concurrent code paths.
+    """
     runs_dir = get_project_runs_dir(slug)
     os.makedirs(runs_dir, exist_ok=True)
     config.OUTPUT_DIR = runs_dir
+    return StorageContext(runs_dir, config.CrawlConfig.from_module())
 
 
 def migrate_legacy_data() -> Optional[str]:

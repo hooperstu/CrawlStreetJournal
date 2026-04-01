@@ -33,7 +33,9 @@ from flask import (
 )
 
 import config
+from config import CrawlConfig
 import storage as storage_module
+from storage import StorageContext
 
 app = Flask(
     __name__,
@@ -46,15 +48,9 @@ app.secret_key = os.urandom(24)
 from viz_api import eco_bp  # noqa: E402
 app.register_blueprint(eco_bp)
 
-# ── Crawl state ───────────────────────────────────────────────────────────
+# ── Crawl state (per-project slots) ───────────────────────────────────────
 
-_crawl_thread: Optional[threading.Thread] = None
-_stop_event = threading.Event()
-_status_lock = threading.Lock()
-_start_mono: Optional[float] = None
-_active_project_slug: Optional[str] = None
-_active_run_folder: Optional[str] = None
-_crawl_status: Dict[str, Any] = {
+_EMPTY_STATUS: Dict[str, Any] = {
     "running": False,
     "stopping": False,
     "pages": 0,
@@ -65,25 +61,42 @@ _crawl_status: Dict[str, Any] = {
     "finished_message": "",
     "run_folder": "",
     "project_slug": "",
+    "phase": "",
+    "phase_detail": "",
 }
 
 
-def _reset_status() -> None:
-    global _start_mono
-    with _status_lock:
-        _start_mono = None
-        _crawl_status.update(
-            running=False,
-            stopping=False,
-            pages=0,
-            assets=0,
-            current_url="",
-            start_time="",
-            elapsed="",
-            finished_message="",
-            run_folder="",
-            project_slug="",
-        )
+class CrawlSlot:
+    """Mutable state for a single in-progress crawl."""
+    __slots__ = ("thread", "stop_event", "status", "cfg", "ctx", "start_mono")
+
+    def __init__(
+        self,
+        thread: threading.Thread,
+        stop_event: threading.Event,
+        status: Dict[str, Any],
+        cfg: CrawlConfig,
+        ctx: StorageContext,
+    ) -> None:
+        self.thread = thread
+        self.stop_event = stop_event
+        self.status = status
+        self.cfg = cfg
+        self.ctx = ctx
+        self.start_mono: Optional[float] = None
+
+
+_active_crawls: Dict[str, CrawlSlot] = {}
+_crawls_lock = threading.Lock()
+
+
+def _project_status(slug: str) -> Dict[str, Any]:
+    """Return a snapshot of the crawl status for *slug*."""
+    with _crawls_lock:
+        slot = _active_crawls.get(slug)
+        if slot:
+            return dict(slot.status)
+    return dict(_EMPTY_STATUS, project_slug=slug)
 
 
 # ── In-memory log buffer ─────────────────────────────────────────────────
@@ -118,58 +131,66 @@ def _apply_log_level() -> None:
 # ── Crawl runner ──────────────────────────────────────────────────────────
 
 def _run_crawl(
+    slot: CrawlSlot,
     project_slug: str,
     run_folder: Optional[str] = None,
     run_name: Optional[str] = None,
     resume: bool = False,
 ) -> None:
-    global _start_mono
     import scraper
 
-    storage_module.activate_project(project_slug)
-
     start = time.monotonic()
-    with _status_lock:
-        _start_mono = start
-        _crawl_status["running"] = True
-        _crawl_status["run_folder"] = run_folder or ""
-        _crawl_status["project_slug"] = project_slug
-        _crawl_status["start_time"] = datetime.now(timezone.utc).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
+    slot.start_mono = start
+    slot.status["running"] = True
+    slot.status["run_folder"] = run_folder or ""
+    slot.status["project_slug"] = project_slug
+    slot.status["start_time"] = datetime.now(timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 
     def on_progress(crawled: int, assets: int, current_url: str) -> None:
-        with _status_lock:
-            _crawl_status["pages"] = crawled
-            _crawl_status["assets"] = assets
-            _crawl_status["current_url"] = current_url
-            elapsed = time.monotonic() - start
-            m, s = divmod(int(elapsed), 60)
-            h, m = divmod(m, 60)
-            _crawl_status["elapsed"] = f"{h:02d}:{m:02d}:{s:02d}"
+        slot.status["pages"] = crawled
+        slot.status["assets"] = assets
+        slot.status["current_url"] = current_url
+        slot.status["phase"] = "crawling"
+        slot.status["phase_detail"] = ""
+        elapsed = time.monotonic() - start
+        m, s = divmod(int(elapsed), 60)
+        h, m = divmod(m, 60)
+        slot.status["elapsed"] = f"{h:02d}:{m:02d}:{s:02d}"
+
+    def on_phase(phase: str, detail: str) -> None:
+        slot.status["phase"] = phase
+        slot.status["phase_detail"] = detail
+        elapsed = time.monotonic() - start
+        m, s = divmod(int(elapsed), 60)
+        h, m = divmod(m, 60)
+        slot.status["elapsed"] = f"{h:02d}:{m:02d}:{s:02d}"
 
     try:
         pages, assets = scraper.crawl(
             on_progress=on_progress,
-            should_stop=lambda: _stop_event.is_set(),
+            on_phase=on_phase,
+            should_stop=lambda: slot.stop_event.is_set(),
             run_name=run_name,
             run_folder=run_folder,
             resume=resume,
+            cfg=slot.cfg,
+            ctx=slot.ctx,
         )
-        with _status_lock:
-            _crawl_status["pages"] = pages
-            _crawl_status["assets"] = assets
-            _crawl_status["finished_message"] = (
-                f"Finished: {pages} pages, {assets} asset rows"
-            )
+        slot.status["pages"] = pages
+        slot.status["assets"] = assets
+        slot.status["finished_message"] = (
+            f"Finished: {pages} pages, {assets} asset rows"
+        )
     except Exception as exc:
         logging.exception("Crawl failed: %s", exc)
-        with _status_lock:
-            _crawl_status["finished_message"] = f"Crawl failed: {exc}"
+        slot.status["finished_message"] = f"Crawl failed: {exc}"
     finally:
-        with _status_lock:
-            _crawl_status["running"] = False
-            _crawl_status["stopping"] = False
+        slot.status["running"] = False
+        slot.status["stopping"] = False
+        with _crawls_lock:
+            _active_crawls.pop(project_slug, None)
 
 
 def _start_crawl_thread(
@@ -177,31 +198,53 @@ def _start_crawl_thread(
     run_folder: Optional[str] = None,
     run_name: Optional[str] = None,
     resume: bool = False,
-) -> None:
-    global _crawl_thread, _start_mono, _active_project_slug, _active_run_folder
-    with _status_lock:
-        if _crawl_status["running"]:
-            return
-        _start_mono = None
-        _crawl_status.update(
-            running=True, stopping=False, pages=0, assets=0,
-            current_url="", start_time="", elapsed="", finished_message="",
-            run_folder=run_folder or "", project_slug=project_slug,
-        )
-    _active_project_slug = project_slug
-    _active_run_folder = run_folder
-    _stop_event.clear()
-    _crawl_thread = threading.Thread(
+) -> bool:
+    """Start a crawl for *project_slug*. Returns True if started."""
+    with _crawls_lock:
+        if project_slug in _active_crawls:
+            return False
+
+    runs_dir = storage_module.get_project_runs_dir(project_slug)
+    cfg = CrawlConfig.from_module()
+    if run_folder:
+        run_dir = os.path.join(runs_dir, run_folder)
+        saved = storage_module.load_run_config(run_dir)
+        if saved:
+            cfg = CrawlConfig.from_dict(saved, base=cfg)
+    cfg.OUTPUT_DIR = runs_dir
+    ctx = StorageContext(runs_dir, cfg)
+
+    status: Dict[str, Any] = {
+        "running": True, "stopping": False, "pages": 0, "assets": 0,
+        "current_url": "", "start_time": "", "elapsed": "",
+        "finished_message": "",
+        "run_folder": run_folder or "", "project_slug": project_slug,
+    }
+
+    stop_event = threading.Event()
+    slot = CrawlSlot(
+        thread=None,  # type: ignore[arg-type]
+        stop_event=stop_event,
+        status=status,
+        cfg=cfg,
+        ctx=ctx,
+    )
+
+    t = threading.Thread(
         target=_run_crawl,
-        kwargs=dict(
-            project_slug=project_slug,
-            run_folder=run_folder,
-            run_name=run_name,
-            resume=resume,
-        ),
+        args=(slot, project_slug),
+        kwargs=dict(run_folder=run_folder, run_name=run_name, resume=resume),
         daemon=True,
     )
-    _crawl_thread.start()
+    slot.thread = t
+
+    with _crawls_lock:
+        if project_slug in _active_crawls:
+            return False
+        _active_crawls[project_slug] = slot
+
+    t.start()
+    return True
 
 
 # ── CSV / metrics helpers ────────────────────────────────────────────────
@@ -532,11 +575,9 @@ def project_overview(slug: str):
         return "Project not found", 404
     project["slug"] = slug
     metrics = _project_overview_metrics(slug)
-    with _status_lock:
-        status = dict(_crawl_status)
     return render_template(
         "project_overview.html",
-        project=project, m=metrics, status=status,
+        project=project, m=metrics, status=_project_status(slug),
     )
 
 
@@ -569,10 +610,8 @@ def project_runs(slug: str):
     project["slug"] = slug
     storage_module.activate_project(slug)
     run_list = storage_module.list_run_dirs()
-    with _status_lock:
-        status = dict(_crawl_status)
     return render_template(
-        "runs.html", project=project, runs=run_list, status=status,
+        "runs.html", project=project, runs=run_list, status=_project_status(slug),
     )
 
 
@@ -585,15 +624,6 @@ def create_run_route(slug: str):
     name = request.form.get("run_name", "").strip() or None
     folder = storage_module.create_run(name)
     return redirect(url_for("run_config", slug=slug, run_name=folder))
-
-
-@app.route("/p/<slug>/logs")
-def project_logs(slug: str):
-    project = storage_module.load_project(slug)
-    if not project:
-        return "Project not found", 404
-    project["slug"] = slug
-    return render_template("logs.html", project=project)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -612,14 +642,12 @@ def run_config(slug: str, run_name: str):
         return "Run not found", 404
     cfg = storage_module.load_run_config(run_dir) or storage_module.snapshot_config()
     friendly = storage_module._read_run_name(run_dir) or ""
-    status = storage_module.get_run_status(run_dir)
-    with _status_lock:
-        crawl_status = dict(_crawl_status)
+    run_st = storage_module.get_run_status(run_dir)
     return render_template(
         "run_config.html",
         project=project, run_name=run_name,
-        friendly_name=friendly, cfg=cfg, run_status=status,
-        status=crawl_status,
+        friendly_name=friendly, cfg=cfg, run_status=run_st,
+        status=_project_status(slug),
     )
 
 
@@ -653,25 +681,20 @@ def run_monitor(slug: str, run_name: str):
         return "Run not found", 404
     run_status = storage_module.get_run_status(run_dir)
     friendly = storage_module._read_run_name(run_dir) or ""
-    with _status_lock:
-        status = dict(_crawl_status)
     return render_template(
         "run_monitor.html",
         project=project, run_name=run_name, friendly_name=friendly,
-        run_status=run_status, status=status,
+        run_status=run_status, status=_project_status(slug),
     )
 
 
 @app.route("/p/<slug>/runs/<run_name>/start", methods=["POST"])
 def start_run_route(slug: str, run_name: str):
-    with _status_lock:
-        if _crawl_status["running"]:
+    with _crawls_lock:
+        if slug in _active_crawls:
             return redirect(url_for("run_monitor", slug=slug, run_name=run_name))
     storage_module.activate_project(slug)
     run_dir = os.path.join(config.OUTPUT_DIR, run_name)
-    run_cfg = storage_module.load_run_config(run_dir)
-    if run_cfg:
-        storage_module.apply_run_config(run_cfg)
     rs = storage_module.get_run_status(run_dir)
     resume = rs == "interrupted"
     _start_crawl_thread(slug, run_folder=run_name, resume=resume)
@@ -680,25 +703,21 @@ def start_run_route(slug: str, run_name: str):
 
 @app.route("/p/<slug>/runs/<run_name>/resume", methods=["POST"])
 def resume_run_route(slug: str, run_name: str):
-    with _status_lock:
-        if _crawl_status["running"]:
+    with _crawls_lock:
+        if slug in _active_crawls:
             return redirect(url_for("run_monitor", slug=slug, run_name=run_name))
-    storage_module.activate_project(slug)
-    run_dir = os.path.join(config.OUTPUT_DIR, run_name)
-    run_cfg = storage_module.load_run_config(run_dir)
-    if run_cfg:
-        storage_module.apply_run_config(run_cfg)
     _start_crawl_thread(slug, run_folder=run_name, resume=True)
     return redirect(url_for("run_monitor", slug=slug, run_name=run_name))
 
 
 @app.route("/p/<slug>/runs/<run_name>/stop", methods=["POST"])
 def stop_run_route(slug: str, run_name: str):
-    with _status_lock:
-        if not _crawl_status["running"]:
+    with _crawls_lock:
+        slot = _active_crawls.get(slug)
+        if not slot:
             return redirect(url_for("run_monitor", slug=slug, run_name=run_name))
-        _stop_event.set()
-        _crawl_status["stopping"] = True
+        slot.stop_event.set()
+        slot.status["stopping"] = True
     return redirect(url_for("run_monitor", slug=slug, run_name=run_name))
 
 
@@ -755,11 +774,13 @@ def run_results_detail(slug: str, run_name: str, filename: str):
 
 def _is_run_active(slug: str, run_name: str) -> bool:
     """True when the given run is the one currently being crawled."""
-    with _status_lock:
+    with _crawls_lock:
+        slot = _active_crawls.get(slug)
+        if not slot:
+            return False
         return (
-            _crawl_status["running"]
-            and _crawl_status.get("project_slug") == slug
-            and _crawl_status.get("run_folder") == run_name
+            slot.status["running"]
+            and slot.status.get("run_folder") == run_name
         )
 
 
@@ -838,13 +859,18 @@ def rename_run_route(slug: str, run_name: str):
 #  API: SSE streams
 # ══════════════════════════════════════════════════════════════════════════
 
-@app.route("/api/progress")
-def progress_stream():
+@app.route("/api/progress/<slug>")
+def progress_stream(slug: str):
     def generate():
         while True:
-            with _status_lock:
-                snapshot = dict(_crawl_status)
-                mono = _start_mono
+            with _crawls_lock:
+                slot = _active_crawls.get(slug)
+                if slot:
+                    snapshot = dict(slot.status)
+                    mono = slot.start_mono
+                else:
+                    snapshot = dict(_EMPTY_STATUS, project_slug=slug)
+                    mono = None
             running = snapshot["running"]
             if running and mono is not None:
                 elapsed = time.monotonic() - mono

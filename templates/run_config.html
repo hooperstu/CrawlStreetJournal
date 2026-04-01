@@ -20,15 +20,22 @@
   <div class="gap-8">
     {% if run_status == 'new' %}
     <form method="post" action="{{ url_for('start_run_route', slug=project.slug, run_name=run_name) }}" style="display:inline;">
-      <button type="submit" class="btn btn-primary" {% if status.running %}disabled{% endif %}>Start This Run</button>
+      <button type="submit" class="btn btn-primary" {% if status.running %}disabled title="A crawl is already running in this project"{% endif %}>Start This Run</button>
     </form>
     {% elif run_status == 'interrupted' %}
     <form method="post" action="{{ url_for('resume_run_route', slug=project.slug, run_name=run_name) }}" style="display:inline;">
-      <button type="submit" class="btn btn-primary" {% if status.running %}disabled{% endif %}>Resume This Run</button>
+      <button type="submit" class="btn btn-primary" {% if status.running %}disabled title="A crawl is already running in this project"{% endif %}>Resume This Run</button>
     </form>
     {% endif %}
   </div>
 </div>
+
+{% if status.running %}
+<div class="crawl-banner">
+  <strong>A crawl is running in this project.</strong>
+  You can edit this configuration, but cannot start another crawl until the current one finishes.
+</div>
+{% endif %}
 
 {% if run_status not in ('new',) %}
 <div class="card" style="padding:10px 18px;background:#fff3cd;border-left:4px solid var(--csj-amber);">
