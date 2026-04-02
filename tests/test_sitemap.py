@@ -6,6 +6,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import sitemap
+import scraper
+import parser as parser_module
+import config
 
 
 URLSET_WITH_LASTMOD = """\
@@ -60,3 +63,13 @@ def test_parse_empty_xml():
     )
     assert len(children) == 0
     assert len(pages) == 0
+
+
+def test_allowed_domain_matching_is_case_insensitive():
+    old_domains = config.ALLOWED_DOMAINS
+    try:
+        config.ALLOWED_DOMAINS = ("EXAMPLE.COM",)
+        assert scraper.is_allowed_domain("https://www.example.com")
+        assert parser_module._is_allowed_domain("https://www.example.com")
+    finally:
+        config.ALLOWED_DOMAINS = old_domains

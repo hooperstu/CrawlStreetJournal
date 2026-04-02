@@ -31,7 +31,14 @@ if [[ -z "${VIRTUAL_ENV:-}" ]]; then
 fi
 
 # ── Dependencies ─────────────────────────────────────────────────────
-PIP="$ROOT/.venv/bin/python3 -m pip"
+if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+    PYTHON_BIN="$VIRTUAL_ENV/bin/python3"
+    PYINSTALLER_BIN="$VIRTUAL_ENV/bin/pyinstaller"
+else
+    PYTHON_BIN="$ROOT/.venv/bin/python3"
+    PYINSTALLER_BIN="$ROOT/.venv/bin/pyinstaller"
+fi
+PIP="$PYTHON_BIN -m pip"
 echo "📥  Installing dependencies…"
 $PIP install --quiet --upgrade pip
 $PIP install --quiet -r requirements.txt
@@ -39,7 +46,7 @@ $PIP install --quiet pyinstaller
 
 # ── Build ────────────────────────────────────────────────────────────
 echo "🔨  Building The Crawl Street Journal…"
-"$ROOT/.venv/bin/pyinstaller" collector.spec --noconfirm
+"$PYINSTALLER_BIN" collector.spec --noconfirm
 
 # ── Post-build ───────────────────────────────────────────────────────
 if [[ "$(uname -s)" == "Darwin" ]]; then
