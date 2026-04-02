@@ -9,6 +9,9 @@ projects/
 crawl_background.log
 crawl_background.pid
 
+# Flask session signing key (generated locally on first run; must not be committed)
+secret_key
+
 # PyInstaller build artefacts
 build/
 dist/
