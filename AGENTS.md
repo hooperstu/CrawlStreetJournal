@@ -14,7 +14,7 @@ The Crawl Street Journal (CSJ) is a single-process Python (3.9+) web crawler wit
 
 ### Testing
 
-- **Unit tests:** `source .venv/bin/activate && python3 -m pytest tests/ -v` (16 tests covering parser and sitemap modules).
+- **Unit tests:** `source .venv/bin/activate && python3 -m pytest tests/ -v` (56 tests covering parser, sitemap, and signals audit modules).
 - **Linting:** `source .venv/bin/activate && flake8 --max-line-length=120 *.py` — no linting config is committed; the repo has minor pre-existing style warnings.
 - There is no dedicated test framework in `requirements.txt`; `pytest` and `flake8` are installed as dev extras in the venv.
 
@@ -25,3 +25,6 @@ The Crawl Street Journal (CSJ) is a single-process Python (3.9+) web crawler wit
 - The crawler makes real HTTP requests to external websites. Crawl tests that target live sites will be affected by network conditions and SSL certificate handling in the VM environment.
 - Project data (configs, crawl outputs) is stored under `projects/` in the working directory; this directory is created automatically by the GUI on first project creation.
 - The Flask app binds to port **5001** (not the default 5000).
+- `signals_audit.py` is a standalone research module — it inventories every metadata signal on a page for analysis. It has no effect on the main crawl pipeline.
+- `render.py` provides optional Playwright-based JS rendering. It requires separate installation (`pip install playwright && playwright install chromium`) and is gated behind `RENDER_JAVASCRIPT = True` in config. It is **not** installed by default.
+- The `pages.csv` schema includes Phase 4 columns (author, publisher, cms_generator, microdata_types, rdfa_types, schema_* fields, etc.). These are always populated but may be empty for pages that lack the relevant signals.
