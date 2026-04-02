@@ -251,6 +251,42 @@ def url_content_hint(url: str) -> str:
         ("/training", "training_path"),
         ("/guidance", "guidance_path"),
         ("/statistics", "statistics_path"),
+        # Phase 4 — expanded path hints
+        ("/products/", "product_path"),
+        ("/product/", "product_path"),
+        ("/shop/", "product_path"),
+        ("/collections/", "product_path"),
+        ("/recipe", "recipe_path"),
+        ("/recipes/", "recipe_path"),
+        ("/faq", "faq_path"),
+        ("/help/", "help_path"),
+        ("/support/", "help_path"),
+        ("/forum", "forum_path"),
+        ("/community/", "forum_path"),
+        ("/wiki/", "wiki_path"),
+        ("/docs/", "docs_path"),
+        ("/documentation/", "docs_path"),
+        ("/portfolio/", "portfolio_path"),
+        ("/case-stud", "case_study_path"),
+        ("/review", "review_path"),
+        ("/testimonial", "review_path"),
+        ("/pricing", "pricing_path"),
+        ("/plans/", "pricing_path"),
+        ("/team/", "team_path"),
+        ("/staff/", "team_path"),
+        ("/people/", "team_path"),
+        ("/press/", "press_path"),
+        ("/media/", "press_path"),
+        ("/legal/", "legal_path"),
+        ("/terms", "legal_path"),
+        ("/privacy", "legal_path"),
+        ("/policy/", "legal_path"),
+        ("/signin", "auth_path"),
+        ("/login", "auth_path"),
+        ("/register", "auth_path"),
+        ("/signup", "auth_path"),
+        ("/account/", "auth_path"),
+        ("/search", "search_path"),
     ):
         if token in path:
             hints.append(label)
@@ -277,18 +313,51 @@ def guess_content_kind(
         return "news"
     if "article" in types_lower and "blog" not in path_l:
         return "article"
+    # Phase 4 — domain-specific JSON-LD types
+    if "product" in types_lower or "product_path" in url_hint:
+        return "product"
+    if "jobposting" in types_lower or "jobs_path" in url_hint:
+        return "job_posting"
+    if "event" in types_lower and "events_path" in url_hint:
+        return "event"
+    if "recipe" in types_lower or "recipe_path" in url_hint:
+        return "recipe"
+    if "howto" in types_lower:
+        return "how_to"
+    if "course" in types_lower or "training_path" in url_hint:
+        return "course"
+    if "qapage" in types_lower or "forum_path" in url_hint:
+        return "qa"
+    if "videoobject" in types_lower:
+        return "video"
+    if "localbusiness" in types_lower or "restaurant" in types_lower:
+        return "local_business"
+    if "softwareapplication" in types_lower:
+        return "software"
+    if "review" in types_lower or "review_path" in url_hint:
+        return "review"
     if "webpage" in types_lower or og_l in ("website", "article"):
         return "webpage"
     if "medicalwebpage" in types_lower or "medicalbusiness" in types_lower:
         return "medical_page"
     if "collectionpage" in types_lower or "itemlist" in types_lower:
         return "listing"
-    if "faqpage" in types_lower:
+    if "faqpage" in types_lower or "faq_path" in url_hint:
         return "faq"
     if "contact_path" in url_hint:
         return "contact"
     if "about_path" in url_hint:
         return "about"
+    if "pricing_path" in url_hint:
+        return "pricing"
+    if "case_study_path" in url_hint:
+        return "case_study"
+    if "docs_path" in url_hint:
+        return "documentation"
+    if "legal_path" in url_hint:
+        return "legal"
+    if "search_path" in url_hint:
+        return "search"
 
     # Fallback: breadcrumb and body class signals
     if any(w in bc_lower for w in ("blog", "blogs")):
@@ -685,6 +754,379 @@ _VAGUE_LINK_TEXTS = frozenset({
 })
 
 
+# ── Phase 4 — extended extraction ─────────────────────────────────────────
+
+def _extract_author(soup: BeautifulSoup) -> str:
+    """Best-effort author from meta, JSON-LD, or byline elements."""
+    author = _meta_content(soup, attrs={"name": "author"})
+    if author:
+        return author
+
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = (script.string or script.get_text() or "").strip()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        for node in _collect_json_ld_nodes(data):
+            if not isinstance(node, dict):
+                continue
+            a = node.get("author")
+            if isinstance(a, dict):
+                name = a.get("name", "")
+                if name:
+                    return str(name).strip()
+            elif isinstance(a, list):
+                names = [
+                    str(x.get("name", "")).strip() if isinstance(x, dict)
+                    else str(x).strip()
+                    for x in a
+                ]
+                names = [n for n in names if n]
+                if names:
+                    return " | ".join(names)
+            elif isinstance(a, str) and a.strip():
+                return a.strip()
+
+    _BYLINE_CLASS = re.compile(r"byline|author|writer|correspondent", re.I)
+    for el in soup.find_all(class_=_BYLINE_CLASS):
+        text = el.get_text(strip=True)
+        if text and 2 < len(text) < 100:
+            return text
+    return ""
+
+
+def _extract_publisher(soup: BeautifulSoup) -> str:
+    """Publisher name from JSON-LD or OG ``og:site_name``."""
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = (script.string or script.get_text() or "").strip()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        for node in _collect_json_ld_nodes(data):
+            if not isinstance(node, dict):
+                continue
+            p = node.get("publisher")
+            if isinstance(p, dict):
+                name = p.get("name", "")
+                if name:
+                    return str(name).strip()
+            elif isinstance(p, str) and p.strip():
+                return p.strip()
+
+    site_name = _meta_content(soup, attrs={"property": "og:site_name"})
+    if site_name:
+        return site_name
+    return ""
+
+
+def _extract_json_ld_id(soup: BeautifulSoup) -> str:
+    """Return the first ``@id`` found across JSON-LD nodes."""
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = (script.string or script.get_text() or "").strip()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        for node in _collect_json_ld_nodes(data):
+            if isinstance(node, dict) and node.get("@id"):
+                return str(node["@id"]).strip()
+    return ""
+
+
+def _detect_cms_generator(soup: BeautifulSoup) -> str:
+    """Detect CMS/platform from ``meta[name=generator]`` and other signals."""
+    gen = _meta_content(soup, attrs={"name": "generator"})
+    if gen:
+        return gen
+
+    _CMS_SIGNATURES = (
+        ("meta", {"name": "shopify-checkout-api-token"}, "Shopify"),
+        ("meta", {"name": "wix-dynamic-custom-elements"}, "Wix"),
+        ("meta", {"content": re.compile(r"Squarespace", re.I)}, "Squarespace"),
+    )
+    for tag_name, attrs, label in _CMS_SIGNATURES:
+        if soup.find(tag_name, attrs=attrs):
+            return label
+
+    html_str = str(soup)[:50_000].lower()
+    if "static.parastorage.com" in html_str or "wix-warmup-data" in html_str:
+        return "Wix"
+    if "static.squarespace.com" in html_str or "sqs-block" in html_str:
+        return "Squarespace"
+    if "cdn.shopify.com" in html_str:
+        return "Shopify"
+    if "assets.website-files.com" in html_str:
+        return "Webflow"
+    if "js.hs-scripts.com" in html_str:
+        return "HubSpot"
+    if "/content/dam/" in html_str:
+        return "Adobe Experience Manager"
+    if "ghost-" in (
+        " ".join((soup.find("body") or {}).get("class", []))
+    ).lower():
+        return "Ghost"
+
+    return ""
+
+
+def _extract_robots_directives(
+    soup: BeautifulSoup,
+    response_meta: Optional[Dict[str, str]] = None,
+) -> str:
+    """Combine ``meta[name=robots]`` and ``X-Robots-Tag`` header."""
+    parts: List[str] = []
+    robots = _meta_content(soup, attrs={"name": "robots"})
+    if robots:
+        parts.append(f"meta:{robots}")
+    if response_meta:
+        x_robots = response_meta.get("x_robots_tag", "")
+        if x_robots:
+            parts.append(f"header:{x_robots}")
+    return "|".join(parts)
+
+
+def _extract_hreflang_links(
+    soup: BeautifulSoup, base_url: str,
+) -> str:
+    """Pipe-separated ``lang=url`` pairs from ``link[rel=alternate][hreflang]``."""
+    pairs: List[str] = []
+    for link in soup.find_all("link", attrs={"rel": "alternate", "hreflang": True}):
+        lang = str(link.get("hreflang", "")).strip()
+        href = link.get("href", "")
+        if lang and href:
+            try:
+                resolved = urljoin(base_url, href.strip())
+            except Exception:
+                resolved = href.strip()
+            pairs.append(f"{lang}={resolved}")
+    return "|".join(pairs[:20])
+
+
+def _extract_feed_urls(soup: BeautifulSoup, base_url: str) -> str:
+    """RSS/Atom feed URLs from ``link[rel=alternate]`` with feed types."""
+    _FEED_TYPES = ("application/rss+xml", "application/atom+xml")
+    urls: List[str] = []
+    for link in soup.find_all("link", attrs={"rel": "alternate", "href": True}):
+        link_type = str(link.get("type", "")).strip().lower()
+        if link_type in _FEED_TYPES:
+            href = link.get("href", "")
+            if href:
+                try:
+                    urls.append(urljoin(base_url, href.strip()))
+                except Exception:
+                    urls.append(href.strip())
+    return "|".join(urls[:5])
+
+
+def _extract_pagination(soup: BeautifulSoup, base_url: str) -> Tuple[str, str]:
+    """Return ``(next_url, prev_url)`` from ``link[rel=next/prev]``."""
+    def _find_link(rel: str) -> str:
+        tag = soup.find("link", attrs={"rel": rel, "href": True})
+        if tag:
+            href = tag.get("href", "")
+            if href:
+                try:
+                    return urljoin(base_url, href.strip())
+                except Exception:
+                    return href.strip()
+        return ""
+    return _find_link("next"), _find_link("prev")
+
+
+def _extract_breadcrumb_schema(soup: BeautifulSoup) -> str:
+    """Extract ``BreadcrumbList`` items from JSON-LD."""
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = (script.string or script.get_text() or "").strip()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        for node in _collect_json_ld_nodes(data):
+            if not isinstance(node, dict):
+                continue
+            t = node.get("@type", "")
+            if (isinstance(t, str) and t == "BreadcrumbList") or (
+                isinstance(t, list) and "BreadcrumbList" in t
+            ):
+                items = node.get("itemListElement", [])
+                if isinstance(items, list):
+                    names: List[str] = []
+                    for item in sorted(
+                        items,
+                        key=lambda x: x.get("position", 0) if isinstance(x, dict) else 0,
+                    ):
+                        if isinstance(item, dict):
+                            name = item.get("name", "")
+                            nested = item.get("item", {})
+                            if not name and isinstance(nested, dict):
+                                name = nested.get("name", "")
+                            if name:
+                                names.append(str(name).strip())
+                    if names:
+                        return " > ".join(names)
+    return ""
+
+
+def _extract_microdata(soup: BeautifulSoup) -> str:
+    """Extract top-level Microdata ``itemscope`` types (pipe-separated)."""
+    types: List[str] = []
+    for el in soup.find_all(attrs={"itemscope": True}):
+        parent_scope = el.find_parent(attrs={"itemscope": True})
+        if parent_scope is None:
+            item_type = el.get("itemtype", "")
+            if item_type:
+                short = str(item_type).replace("http://schema.org/", "").replace(
+                    "https://schema.org/", ""
+                )
+                if short and short not in types:
+                    types.append(short)
+    return "|".join(types)
+
+
+def _extract_rdfa_types(soup: BeautifulSoup) -> str:
+    """Extract top-level RDFa ``typeof`` types (pipe-separated)."""
+    types: List[str] = []
+    for el in soup.find_all(attrs={"typeof": True}):
+        rdfa_type = str(el.get("typeof", "")).strip()
+        if rdfa_type and rdfa_type not in types:
+            types.append(rdfa_type)
+    return "|".join(types)
+
+
+def _extract_schema_specific(
+    soup: BeautifulSoup,
+) -> Dict[str, str]:
+    """Extract domain-specific fields from JSON-LD schemas.
+
+    Returns a dict with optional keys like ``schema_price``,
+    ``schema_availability``, ``schema_rating``, etc.  Empty strings
+    for fields not found on the page.
+    """
+    result: Dict[str, str] = {
+        "schema_price": "",
+        "schema_currency": "",
+        "schema_availability": "",
+        "schema_rating": "",
+        "schema_review_count": "",
+        "schema_event_date": "",
+        "schema_event_location": "",
+        "schema_job_title": "",
+        "schema_job_location": "",
+        "schema_recipe_time": "",
+    }
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = (script.string or script.get_text() or "").strip()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        for node in _collect_json_ld_nodes(data):
+            if not isinstance(node, dict):
+                continue
+            t = node.get("@type", "")
+            types_list = t if isinstance(t, list) else [t]
+            types_lower = [str(x).lower() for x in types_list]
+
+            # Product
+            if "product" in types_lower:
+                offers = node.get("offers", {})
+                if isinstance(offers, list) and offers:
+                    offers = offers[0]
+                if isinstance(offers, dict):
+                    if not result["schema_price"]:
+                        result["schema_price"] = str(
+                            offers.get("price", offers.get("lowPrice", ""))
+                        ).strip()
+                        result["schema_currency"] = str(
+                            offers.get("priceCurrency", "")
+                        ).strip()
+                        result["schema_availability"] = str(
+                            offers.get("availability", "")
+                        ).strip().rsplit("/", 1)[-1]
+
+            # Aggregate rating (any type)
+            rating = node.get("aggregateRating") or node.get("review")
+            if isinstance(rating, dict) and not result["schema_rating"]:
+                result["schema_rating"] = str(
+                    rating.get("ratingValue", "")
+                ).strip()
+                result["schema_review_count"] = str(
+                    rating.get("reviewCount", rating.get("ratingCount", ""))
+                ).strip()
+
+            # Event
+            if "event" in types_lower:
+                if not result["schema_event_date"]:
+                    result["schema_event_date"] = str(
+                        node.get("startDate", "")
+                    ).strip()
+                loc = node.get("location", {})
+                if isinstance(loc, dict) and not result["schema_event_location"]:
+                    result["schema_event_location"] = str(
+                        loc.get("name", loc.get("address", ""))
+                    ).strip()[:200]
+                elif isinstance(loc, str) and not result["schema_event_location"]:
+                    result["schema_event_location"] = loc.strip()[:200]
+
+            # JobPosting
+            if "jobposting" in types_lower:
+                if not result["schema_job_title"]:
+                    result["schema_job_title"] = str(
+                        node.get("title", "")
+                    ).strip()
+                jl = node.get("jobLocation", {})
+                if isinstance(jl, dict) and not result["schema_job_location"]:
+                    addr = jl.get("address", {})
+                    if isinstance(addr, dict):
+                        result["schema_job_location"] = str(
+                            addr.get("addressLocality", "")
+                        ).strip()
+                    elif isinstance(addr, str):
+                        result["schema_job_location"] = addr.strip()
+
+            # Recipe
+            if "recipe" in types_lower:
+                if not result["schema_recipe_time"]:
+                    result["schema_recipe_time"] = str(
+                        node.get("totalTime", node.get("cookTime", ""))
+                    ).strip()
+
+    return result
+
+
+def _compute_extraction_coverage(page_row: Dict[str, Any]) -> str:
+    """Return the percentage of non-empty content fields in the row."""
+    _SKIP = {
+        "requested_url", "final_url", "domain", "http_status",
+        "content_type", "referrer_url", "depth", "discovered_at",
+        "http_last_modified", "etag", "sitemap_lastmod",
+        "referrer_sitemap_url",
+    }
+    total = 0
+    filled = 0
+    for key, val in page_row.items():
+        if key in _SKIP:
+            continue
+        total += 1
+        if val not in (None, "", 0, "0"):
+            filled += 1
+    if total == 0:
+        return ""
+    return str(round(filled / total * 100, 1))
+
+
 def _assess_wcag_static(soup: BeautifulSoup, lang: str, title: str) -> dict:
     """Static-HTML WCAG checks per page, returned as string values for CSV."""
     # 3.1.1 — language of page declared and plausible
@@ -886,6 +1328,20 @@ def build_page_inventory_row(
     nav_count = _count_nav_links(soup)
     wcag = _assess_wcag_static(soup, lang, title)
 
+    # Phase 4 — extended extraction
+    author = _extract_author(soup)
+    publisher = _extract_publisher(soup)
+    json_ld_id = _extract_json_ld_id(soup)
+    cms_generator = _detect_cms_generator(soup)
+    robots_directives = _extract_robots_directives(soup, response_meta)
+    hreflang_links = _extract_hreflang_links(soup, final_url)
+    feed_urls = _extract_feed_urls(soup, final_url)
+    pagination_next, pagination_prev = _extract_pagination(soup, final_url)
+    breadcrumb_schema = _extract_breadcrumb_schema(soup)
+    microdata_types = _extract_microdata(soup)
+    rdfa_types = _extract_rdfa_types(soup)
+    schema_specific = _extract_schema_specific(soup)
+
     page_row = {
         "requested_url": requested_url,
         "final_url": final_url,
@@ -929,11 +1385,27 @@ def build_page_inventory_row(
         "nav_link_count": nav_count,
         # WCAG static checks
         **wcag,
+        # Phase 4 — extended extraction
+        "author": author,
+        "publisher": publisher,
+        "json_ld_id": json_ld_id,
+        "cms_generator": cms_generator,
+        "robots_directives": robots_directives,
+        "hreflang_links": hreflang_links,
+        "feed_urls": feed_urls,
+        "pagination_next": pagination_next,
+        "pagination_prev": pagination_prev,
+        "breadcrumb_schema": breadcrumb_schema,
+        "microdata_types": microdata_types,
+        "rdfa_types": rdfa_types,
+        **schema_specific,
         # common
         "referrer_url": referrer_url,
         "depth": depth,
         "discovered_at": discovered_at,
     }
+
+    page_row["extraction_coverage_pct"] = _compute_extraction_coverage(page_row)
 
     tag_rows = [
         {
