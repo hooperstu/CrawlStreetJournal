@@ -107,9 +107,14 @@ def is_allowed_domain(url: str, cfg: Optional[CrawlConfig] = None) -> bool:
     domains = cfg.ALLOWED_DOMAINS if cfg else config.ALLOWED_DOMAINS
     try:
         host = (urlparse(url).hostname or "").lower()
+        normalised_domains = [
+            str(d).strip().lower().lstrip(".")
+            for d in domains
+            if str(d).strip()
+        ]
         return any(
             host == d or host.endswith("." + d)
-            for d in domains
+            for d in normalised_domains
         )
     except Exception:
         return False
