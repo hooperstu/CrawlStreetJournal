@@ -29,7 +29,7 @@ def _is_allowed_domain(url: str) -> bool:
     try:
         host = (urlparse(url).hostname or "").lower()
         return any(
-            host == d or host.endswith("." + d)
+            host == str(d).lower() or host.endswith("." + str(d).lower())
             for d in config.ALLOWED_DOMAINS
         )
     except Exception:
