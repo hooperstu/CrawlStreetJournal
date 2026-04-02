@@ -1,4 +1,4 @@
-"""Tests for Phase 2 parser extraction functions."""
+"""Tests for Phase 2 and Phase 4 parser extraction functions."""
 
 import sys
 from pathlib import Path
@@ -167,3 +167,332 @@ def test_build_page_row_includes_new_fields():
     assert "googletagmanager.com" in row["analytics_signals"]
     assert "/privacy-policy" in row["privacy_policy_url"]
     assert int(row["nav_link_count"]) == 3
+    # Phase 4 fields present
+    assert "author" in row
+    assert "publisher" in row
+    assert "cms_generator" in row
+    assert "robots_directives" in row
+    assert "microdata_types" in row
+    assert "rdfa_types" in row
+    assert "extraction_coverage_pct" in row
+
+
+# ── Phase 4 tests ─────────────────────────────────────────────────────────
+
+PHASE4_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta name="author" content="John Smith">
+  <meta name="generator" content="Ghost 5.0">
+  <meta name="robots" content="noindex, nofollow">
+  <meta property="og:site_name" content="My Publisher">
+  <link rel="alternate" hreflang="de" href="https://example.com/de/page">
+  <link rel="alternate" hreflang="fr" href="https://example.com/fr/page">
+  <link rel="alternate" type="application/rss+xml" href="/feed.xml">
+  <link rel="next" href="https://example.com/page/2">
+  <link rel="prev" href="https://example.com/page/0">
+  <script type="application/ld+json">
+  {
+    "@type": "Article",
+    "@id": "https://example.com/page#article",
+    "author": {"@type": "Person", "name": "John Smith"},
+    "publisher": {"@type": "Organization", "name": "Big Publisher"},
+    "datePublished": "2024-06-01"
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      {"@type": "ListItem", "position": 1, "name": "Home"},
+      {"@type": "ListItem", "position": 2, "name": "Blog"},
+      {"@type": "ListItem", "position": 3, "name": "Article"}
+    ]
+  }
+  </script>
+  <title>Phase 4 Test</title>
+</head>
+<body>
+  <main>
+    <article>
+      <div itemscope itemtype="https://schema.org/Article">
+        <span itemprop="name">Test Article</span>
+      </div>
+      <div typeof="BlogPosting" vocab="https://schema.org/">
+        <span property="name">Test RDFa Blog</span>
+      </div>
+    </article>
+  </main>
+</body>
+</html>
+"""
+
+
+PRODUCT_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Widget Pro</title>
+  <script type="application/ld+json">
+  {
+    "@type": "Product",
+    "name": "Widget Pro",
+    "offers": {
+      "@type": "Offer",
+      "price": "29.99",
+      "priceCurrency": "GBP",
+      "availability": "https://schema.org/InStock"
+    },
+    "aggregateRating": {
+      "@type": "AggregateRating",
+      "ratingValue": "4.5",
+      "reviewCount": "120"
+    }
+  }
+  </script>
+</head>
+<body><main><p>Product page.</p></main></body>
+</html>
+"""
+
+
+EVENT_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Community Meetup</title>
+  <script type="application/ld+json">
+  {
+    "@type": "Event",
+    "name": "Community Meetup",
+    "startDate": "2025-09-15T18:00:00Z",
+    "location": {"@type": "Place", "name": "Town Hall"}
+  }
+  </script>
+</head>
+<body><main><p>Event page.</p></main></body>
+</html>
+"""
+
+
+JOB_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Senior Engineer</title>
+  <script type="application/ld+json">
+  {
+    "@type": "JobPosting",
+    "title": "Senior Engineer",
+    "jobLocation": {
+      "@type": "Place",
+      "address": {"@type": "PostalAddress", "addressLocality": "London"}
+    }
+  }
+  </script>
+</head>
+<body><main><p>Job page.</p></main></body>
+</html>
+"""
+
+
+def _phase4_soup():
+    return BeautifulSoup(PHASE4_HTML, "lxml")
+
+
+def test_extract_author():
+    assert parser_module._extract_author(_phase4_soup()) == "John Smith"
+
+
+def test_extract_author_from_meta():
+    html = '<html><head><meta name="author" content="Alice"></head><body></body></html>'
+    soup = BeautifulSoup(html, "lxml")
+    assert parser_module._extract_author(soup) == "Alice"
+
+
+def test_extract_publisher():
+    assert parser_module._extract_publisher(_phase4_soup()) == "Big Publisher"
+
+
+def test_extract_publisher_fallback_og():
+    html = '<html><head><meta property="og:site_name" content="Fallback Pub"></head><body></body></html>'
+    soup = BeautifulSoup(html, "lxml")
+    assert parser_module._extract_publisher(soup) == "Fallback Pub"
+
+
+def test_extract_json_ld_id():
+    assert parser_module._extract_json_ld_id(_phase4_soup()) == "https://example.com/page#article"
+
+
+def test_detect_cms_generator():
+    assert parser_module._detect_cms_generator(_phase4_soup()) == "Ghost 5.0"
+
+
+def test_detect_cms_generator_from_html_signals():
+    html = '<html><head></head><body><script src="https://cdn.shopify.com/s/files/foo.js"></script></body></html>'
+    soup = BeautifulSoup(html, "lxml")
+    assert parser_module._detect_cms_generator(soup) == "Shopify"
+
+
+def test_extract_robots_directives():
+    directives = parser_module._extract_robots_directives(_phase4_soup())
+    assert "meta:noindex, nofollow" in directives
+
+
+def test_extract_robots_directives_with_header():
+    html = "<html><head></head><body></body></html>"
+    soup = BeautifulSoup(html, "lxml")
+    result = parser_module._extract_robots_directives(
+        soup, response_meta={"x_robots_tag": "noindex"}
+    )
+    assert "header:noindex" in result
+
+
+def test_extract_hreflang_links():
+    links = parser_module._extract_hreflang_links(
+        _phase4_soup(), "https://example.com/page"
+    )
+    assert "de=" in links
+    assert "fr=" in links
+
+
+def test_extract_feed_urls():
+    feeds = parser_module._extract_feed_urls(
+        _phase4_soup(), "https://example.com/page"
+    )
+    assert "feed.xml" in feeds
+
+
+def test_extract_pagination():
+    next_url, prev_url = parser_module._extract_pagination(
+        _phase4_soup(), "https://example.com/page"
+    )
+    assert "page/2" in next_url
+    assert "page/0" in prev_url
+
+
+def test_extract_breadcrumb_schema():
+    bc = parser_module._extract_breadcrumb_schema(_phase4_soup())
+    assert "Home" in bc
+    assert "Blog" in bc
+    assert "Article" in bc
+
+
+def test_extract_microdata():
+    md = parser_module._extract_microdata(_phase4_soup())
+    assert "Article" in md
+
+
+def test_extract_rdfa_types():
+    rdfa = parser_module._extract_rdfa_types(_phase4_soup())
+    assert "BlogPosting" in rdfa
+
+
+def test_schema_specific_product():
+    soup = BeautifulSoup(PRODUCT_HTML, "lxml")
+    result = parser_module._extract_schema_specific(soup)
+    assert result["schema_price"] == "29.99"
+    assert result["schema_currency"] == "GBP"
+    assert result["schema_availability"] == "InStock"
+    assert result["schema_rating"] == "4.5"
+    assert result["schema_review_count"] == "120"
+
+
+def test_schema_specific_event():
+    soup = BeautifulSoup(EVENT_HTML, "lxml")
+    result = parser_module._extract_schema_specific(soup)
+    assert "2025-09-15" in result["schema_event_date"]
+    assert "Town Hall" in result["schema_event_location"]
+
+
+def test_schema_specific_job():
+    soup = BeautifulSoup(JOB_HTML, "lxml")
+    result = parser_module._extract_schema_specific(soup)
+    assert result["schema_job_title"] == "Senior Engineer"
+    assert "London" in result["schema_job_location"]
+
+
+def test_url_content_hint_product():
+    hint = parser_module.url_content_hint("https://shop.example.com/products/widget")
+    assert "product_path" in hint
+
+
+def test_url_content_hint_recipe():
+    hint = parser_module.url_content_hint("https://food.example.com/recipes/cake")
+    assert "recipe_path" in hint
+
+
+def test_url_content_hint_faq():
+    hint = parser_module.url_content_hint("https://help.example.com/faq")
+    assert "faq_path" in hint
+
+
+def test_guess_content_kind_product():
+    kind = parser_module.guess_content_kind(
+        "product_path", ["Product"], "", "/products/widget"
+    )
+    assert kind == "product"
+
+
+def test_guess_content_kind_recipe():
+    kind = parser_module.guess_content_kind(
+        "recipe_path", ["Recipe"], "", "/recipes/cake"
+    )
+    assert kind == "recipe"
+
+
+def test_guess_content_kind_job():
+    kind = parser_module.guess_content_kind(
+        "", ["JobPosting"], "", "/careers/senior-dev"
+    )
+    assert kind == "job_posting"
+
+
+def test_guess_content_kind_event():
+    kind = parser_module.guess_content_kind(
+        "events_path", ["Event"], "", "/events/meetup"
+    )
+    assert kind == "event"
+
+
+def test_extraction_coverage():
+    row, _ = parser_module.build_page_inventory_row(
+        PHASE4_HTML,
+        requested_url="https://example.com/page",
+        final_url="https://example.com/page",
+        http_status=200,
+        content_type="text/html",
+        referrer_url="seed",
+        depth=0,
+        discovered_at="2025-01-01 00:00:00",
+    )
+    pct = float(row["extraction_coverage_pct"])
+    assert 0 < pct <= 100
+
+
+def test_build_page_row_phase4_fields():
+    row, _ = parser_module.build_page_inventory_row(
+        PHASE4_HTML,
+        requested_url="https://example.com/page",
+        final_url="https://example.com/page",
+        http_status=200,
+        content_type="text/html",
+        referrer_url="seed",
+        depth=0,
+        discovered_at="2025-01-01 00:00:00",
+        response_meta={"x_robots_tag": "noarchive"},
+    )
+    assert row["author"] == "John Smith"
+    assert row["publisher"] == "Big Publisher"
+    assert row["json_ld_id"] == "https://example.com/page#article"
+    assert row["cms_generator"] == "Ghost 5.0"
+    assert "noindex" in row["robots_directives"]
+    assert "noarchive" in row["robots_directives"]
+    assert "de=" in row["hreflang_links"]
+    assert "feed.xml" in row["feed_urls"]
+    assert "page/2" in row["pagination_next"]
+    assert "page/0" in row["pagination_prev"]
+    assert "Home" in row["breadcrumb_schema"]
+    assert "Article" in row["microdata_types"]
+    assert "BlogPosting" in row["rdfa_types"]
