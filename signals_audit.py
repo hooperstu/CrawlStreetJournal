@@ -23,6 +23,8 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
+import utils
+
 
 def audit_page(
     html: str,
@@ -103,18 +105,11 @@ def _audit_link_tags(
 # ── JSON-LD ───────────────────────────────────────────────────────────────
 
 def _flatten_json_ld(obj: Any) -> List[dict]:
-    """Recursively collect JSON-LD node dicts (handling ``@graph``)."""
-    nodes: List[dict] = []
-    if isinstance(obj, dict):
-        if "@graph" in obj and isinstance(obj["@graph"], list):
-            for item in obj["@graph"]:
-                nodes.extend(_flatten_json_ld(item))
-        else:
-            nodes.append(obj)
-    elif isinstance(obj, list):
-        for item in obj:
-            nodes.extend(_flatten_json_ld(item))
-    return nodes
+    """Recursively collect JSON-LD node dicts (handling ``@graph``).
+
+    Thin wrapper around ``utils.flatten_json_ld`` kept for internal use.
+    """
+    return utils.flatten_json_ld(obj)
 
 
 def _audit_json_ld(soup: BeautifulSoup) -> List[Dict[str, Any]]:
@@ -175,6 +170,8 @@ def _audit_rdfa(soup: BeautifulSoup) -> List[Dict[str, Any]]:
         props: List[Dict[str, str]] = []
         for prop_el in el.find_all(attrs={"property": True}):
             prop_name = prop_el.get("property", "")
+            # og:* properties are already captured by _audit_open_graph;
+            # skip them here to avoid double-counting.
             if prop_name.startswith("og:"):
                 continue
             prop_val = (

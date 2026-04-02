@@ -1,4 +1,14 @@
-"""Tests for sitemap lastmod extraction."""
+"""Sitemap parsing and domain-allowlist test suite.
+
+Covers the sitemap.parse_sitemap_xml() function:
+  - URL-set documents: extracts <loc> entries with optional <lastmod>.
+  - Sitemap-index documents: extracts child sitemap URLs.
+  - Malformed / non-XML input: returns empty results gracefully.
+
+Also verifies that the case-insensitive domain-allowlist check
+(config.ALLOWED_DOMAINS) works identically via both entry points:
+scraper.is_allowed_domain() and parser._is_allowed_domain().
+"""
 
 import sys
 from pathlib import Path
@@ -58,6 +68,7 @@ def test_parse_sitemap_index():
 
 
 def test_parse_empty_xml():
+    """Non-XML input must not raise; both return values should be empty."""
     children, pages = sitemap.parse_sitemap_xml(
         "not xml at all", "https://example.com/sitemap.xml"
     )
@@ -66,6 +77,9 @@ def test_parse_empty_xml():
 
 
 def test_allowed_domain_matching_is_case_insensitive():
+    """Both scraper.is_allowed_domain and parser._is_allowed_domain must
+    match domains regardless of casing, including subdomains via suffix match
+    (e.g. ``www.example.com`` matches an allowed domain of ``example.com``)."""
     old_domains = config.ALLOWED_DOMAINS
     try:
         config.ALLOWED_DOMAINS = ("EXAMPLE.COM",)

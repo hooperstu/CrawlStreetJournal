@@ -2,9 +2,11 @@
 """
 The Crawl Street Journal — Desktop Launcher
 
-Entry point for the packaged macOS .app.  Starts the Flask server, waits
-for it to be ready, then opens the default browser.  Handles clean
-shutdown on SIGINT / SIGTERM / window close.
+Entry point for the packaged macOS .app.  Scans for a free TCP port starting
+at 5001 (incrementing up to ``MAX_PORT_ATTEMPTS`` times if the default is
+occupied), starts the Flask server on that port, then opens the user's default
+browser once the server accepts connections.  Handles clean shutdown on
+SIGINT / SIGTERM / window close.
 """
 
 import logging
@@ -21,6 +23,14 @@ MAX_PORT_ATTEMPTS = 10
 
 
 def _find_free_port(start: int = PORT, attempts: int = MAX_PORT_ATTEMPTS) -> int:
+    """Return the first available port in ``[start, start + attempts)``.
+
+    Probes each candidate by attempting to bind a TCP socket; a successful
+    bind confirms the port is free.
+
+    Raises:
+        RuntimeError: If every port in the range is already occupied.
+    """
     for port in range(start, start + attempts):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
@@ -34,7 +44,11 @@ def _find_free_port(start: int = PORT, attempts: int = MAX_PORT_ATTEMPTS) -> int
 
 
 def _wait_and_open(port: int) -> None:
-    """Poll until the server accepts connections, then open the browser."""
+    """Poll until the Flask server accepts TCP connections, then open the browser.
+
+    Retries up to 40 times at 250 ms intervals (~10 s total).  Runs in a
+    daemon thread so the main thread is free to start Flask immediately.
+    """
     for _ in range(40):
         try:
             with socket.create_connection((HOST, port), timeout=0.25):

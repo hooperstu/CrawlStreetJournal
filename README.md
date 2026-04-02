@@ -41,19 +41,70 @@ The app starts a local web server and opens your browser automatically.
 
 ---
 
-## Quick start
+## Web GUI
 
-**Requirements:** Python 3.9 or newer.
+The primary interface is a **browser-based GUI** served by Flask on port **5001**. It provides:
+
+- **Projects** — create named projects to group related crawl runs together
+- **Per-run configuration** — seeds, allowed domains, sitemaps, crawl limits, feature toggles, all editable in-browser; configuration is saved as JSON alongside the run's output
+- **Live monitor** — real-time progress (pages crawled, assets found, elapsed time) and streaming log output via Server-Sent Events
+- **Results viewer** — paginated in-browser CSV viewer, per-run download links, and a ZIP of all CSVs
+- **Ecosystem dashboard** — interactive D3 visualisations across ~20 panels (domain network, CMS landscape, freshness, readability, structured-data coverage, author networks, and more)
 
 ```bash
 cd /path/to/CrawlStreetJournal
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+python3 gui.py
+```
+
+Open **http://localhost:5001** in your browser. The desktop app (`launcher.py`) does this automatically.
+
+---
+
+## Quick start
+
+**Requirements:** Python 3.9 or newer.
+
+### GUI (recommended)
+
+```bash
+cd /path/to/CrawlStreetJournal
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python3 gui.py                     # opens http://localhost:5001
+```
+
+### CLI (terminal crawl)
+
+```bash
+source .venv/bin/activate
 python3 main.py
 ```
 
 **Stop early:** press **Ctrl+C**. The crawler finishes the current page; data already written to disk is kept.
+
+### CLI with project scope
+
+```bash
+python3 main.py --project my-project --name "Run label"
+```
+
+Output is saved under `projects/my-project/runs/`.
+
+### Development tools
+
+```bash
+# Unit tests (56 tests)
+python3 -m pytest tests/ -v
+
+# Linting
+flake8 --max-line-length=120 *.py
+```
+
+`pytest` and `flake8` are not in `requirements.txt` but are installed in the `.venv` as dev extras.
 
 ### Long background run
 
@@ -191,6 +242,47 @@ If a single row fails to write for any reason, the error is logged and the crawl
 | `depth` | Number of link hops from a seed/sitemap entry (0 for direct seeds). |
 | `discovered_at` | UTC timestamp when the row was written. |
 
+#### WCAG signals
+
+| Column | Meaning |
+|--------|---------|
+| `wcag_lang_valid` | `True` if `html[lang]` is present and non-empty. |
+| `wcag_heading_order_valid` | `True` if no heading level is skipped in the document outline. |
+| `wcag_title_present` | `True` if a non-empty `<title>` element is found. |
+| `wcag_form_labels_pct` | Percentage of `<input>` / `<textarea>` / `<select>` elements that have an associated `<label>`. |
+| `wcag_landmarks_present` | `True` if at least one ARIA landmark or HTML5 sectioning element is found. |
+| `wcag_vague_link_pct` | Percentage of links whose visible text is vague (e.g. "click here", "read more"). |
+
+#### Phase 4 — extended signals
+
+| Column | Meaning |
+|--------|---------|
+| `author` | Author name from JSON-LD `author.name`, `meta[name=author]`, or byline patterns. |
+| `publisher` | Publisher name from JSON-LD `publisher.name` or `og:site_name`. |
+| `json_ld_id` | `@id` value from the primary JSON-LD block. |
+| `cms_generator` | CMS or platform detected from `meta[name=generator]`, CDN paths (e.g. Shopify), or HTML markers. |
+| `robots_directives` | Pipe-separated crawl/index directives from `meta[name=robots]` and `X-Robots-Tag` response header. |
+| `hreflang_links` | Pipe-separated `hreflang` alternate URLs found in `<link rel="alternate">` elements. |
+| `feed_urls` | Pipe-separated RSS/Atom feed URLs from `<link rel="alternate" type="application/rss+xml">` etc. |
+| `pagination_next` | `href` of `<link rel="next">` (pagination). |
+| `pagination_prev` | `href` of `<link rel="prev">` (pagination). |
+| `breadcrumb_schema` | Pipe-separated breadcrumb item names from `BreadcrumbList` JSON-LD. |
+| `microdata_types` | Pipe-separated `itemtype` values from HTML Microdata. |
+| `rdfa_types` | Pipe-separated `typeof` values from RDFa markup. |
+| `schema_price` | Product price from `Product` JSON-LD or microdata. |
+| `schema_currency` | Currency code associated with `schema_price`. |
+| `schema_availability` | Product availability from `Product` JSON-LD (e.g. `InStock`). |
+| `schema_rating` | Aggregate rating value from `aggregateRating.ratingValue`. |
+| `schema_review_count` | Aggregate review count from `aggregateRating.reviewCount`. |
+| `schema_event_date` | Event start date from `Event` JSON-LD. |
+| `schema_event_location` | Event location name from `Event` JSON-LD. |
+| `schema_job_title` | Job title from `JobPosting` JSON-LD. |
+| `schema_job_location` | Job location from `JobPosting` JSON-LD. |
+| `schema_recipe_time` | Total time from `Recipe` JSON-LD. |
+| `extraction_coverage_pct` | Percentage of Phase 1–4 fields that are non-empty — a rough indicator of metadata richness. |
+
+---
+
 ### `assets_<category>.csv` — linked files (not crawled as HTML)
 
 Examples: `assets_pdf.csv`, `assets_office.csv`, `assets_image.csv`. Columns:
@@ -317,23 +409,80 @@ This prevents the same page being fetched multiple times under cosmetically diff
 
 | File | Purpose |
 |------|---------|
-| `main.py` | Interactive entry point — run from the terminal with Ctrl+C to stop. |
+| `launcher.py` | Desktop app entry point — finds a free port, starts Flask, opens the browser automatically. |
+| `gui.py` | Flask web application (port 5001): projects, run management, live monitor, results viewer, ecosystem dashboard. |
+| `main.py` | CLI entry point — run from the terminal with Ctrl+C to stop. |
 | `run_background_crawl.py` | Headless entry point for long background runs with file logging. |
-| `config.py` | All configuration: seeds, domains, limits, feature toggles, file types. |
-| `scraper.py` | Crawl loop: queue management, robots.txt, fetching, URL normalisation, rate limiting. |
-| `parser.py` | HTML parsing: metadata extraction, tag collection, content classification, date extraction. |
-| `sitemap.py` | Sitemap XML parsing (index and urlset formats). |
-| `storage.py` | CSV schemas and write functions with sanitisation and `QUOTE_ALL` quoting. |
-| `tests/` | Unit tests for parser and sitemap modules. |
-| `requirements.txt` | Python dependencies (`requests`, `beautifulsoup4`, `lxml`). |
+| `run_pre_crawl_analysis.py` | Pre-crawl sampler — fetches a diverse sample of pages per domain, detects tech stack, and reports field coverage before a full crawl. |
+| `config.py` | All configuration defaults and the `CrawlConfig` dataclass. |
+| `scraper.py` | Crawl orchestrator: dual-queue scheduling, robots.txt, rate limiting, URL normalisation, Playwright fallback. |
+| `parser.py` | HTML extraction: Phase 1–4 metadata, content classification, tags, WCAG signals, structured data. |
+| `sitemap.py` | Sitemap XML parsing (index and urlset formats, namespace-agnostic). |
+| `render.py` | Optional Playwright-based JS rendering (not installed by default; gated by `RENDER_JAVASCRIPT`). |
+| `storage.py` | Filesystem persistence: CSV schemas, project/run lifecycle, config snapshots, resume state, export/import ZIP. |
+| `viz_data.py` | Pure aggregation layer — reads crawl CSVs and returns JSON-serialisable structures for the dashboard. |
+| `viz_api.py` | Flask blueprint (`eco_bp`) exposing the ecosystem dashboard HTML and ~12 JSON API endpoints. |
+| `signals_audit.py` | Standalone research tool — full metadata signal inventory of a single page (not in the main crawl pipeline). |
+| `utils.py` | Shared stateless helpers: JSON-LD flattening, URL domain checks, robots.txt sitemap parsing, CSV sanitisation. |
+| `collector.spec` | PyInstaller spec for building the desktop app (macOS `.app`, Windows `.exe`, Linux binary). |
+| `static/js/ecosystem.js` | D3 v7 frontend driving all ~20 ecosystem dashboard charts. |
+| `templates/` | Jinja2 HTML templates for all GUI views. |
+| `tests/` | 56 unit tests across 4 files covering parser, sitemap, signals audit, and viz data. |
+| `requirements.txt` | Python dependencies: `requests`, `beautifulsoup4`, `lxml`, `urllib3`, `flask`, `textstat`, `tldextract`. |
+
+---
+
+## Packaging for desktop (developer build)
+
+The desktop app is built with **PyInstaller** using the spec file `collector.spec`.
+
+```bash
+source .venv/bin/activate
+pip install pyinstaller
+pyinstaller collector.spec --noconfirm
+```
+
+**What the spec does:**
+
+- Entry point: `launcher.py`
+- Bundles `templates/` and `static/` as data trees so Flask can resolve them in the frozen environment
+- `hiddenimports` pulls in `gui`, the full crawl stack, Flask/Jinja/Werkzeug, `bs4`, `lxml`, `textstat`, and SSL-related modules
+- `console=False` (no terminal window on Windows/macOS)
+- macOS: produces `The Crawl Street Journal.app` with bundle ID `io.csj.crawlstreetjournal` and `.icns` icon under `assets/`
+- Windows: produces `The Crawl Street Journal.exe` with `.ico` icon
+- Output is in `dist/The Crawl Street Journal/`
+
+To update the app version, edit the `version` key in the `info_plist` dict inside `collector.spec`.
 
 ---
 
 ## Limitations
 
 - **Discovery:** Link-following finds only what is linked from pages you reach. Large sites need **good seeds and sitemaps** so you do not under-represent sections that are poorly interlinked.
-- **JavaScript:** Only the HTML from a normal GET is parsed. Content inserted solely by client-side scripts may be **missing** from titles, tags, and body text unless it is already present in the raw HTML or JSON-LD.
+- **JavaScript:** By default, only the HTML from a normal GET is parsed. Content inserted solely by client-side scripts may be **missing** from titles, tags, and body text unless it is already present in the raw HTML or JSON-LD. An optional Playwright-based renderer (`render.py`) is included in the codebase for cases where JS rendering is needed; enable it by setting `RENDER_JAVASCRIPT = True` in `config.py` and running `pip install playwright && playwright install chromium`. It is **not** installed by default.
 - **Legal and ethical use:** You are responsible for complying with each site's terms, **robots.txt**, applicable law (including data protection), and your organisation's policies. Use this tool only for **lawful** access to **public** information.
+
+---
+
+## Pre-crawl analysis
+
+`run_pre_crawl_analysis.py` is a lightweight sampler you can run **before** a full crawl to understand a target estate:
+
+```bash
+source .venv/bin/activate
+python3 run_pre_crawl_analysis.py --limit 5
+```
+
+For each domain in `TARGET_URLS` (configured in the script or via the GUI), it:
+
+1. Fetches the homepage and detects the tech stack (WordPress, Drupal, SharePoint, Next.js, Gatsby, etc.)
+2. Discovers URLs from `robots.txt`, `/sitemap.xml`, and shallow link-following
+3. Fetches a diverse sample of up to 20 pages (varied by first path segment)
+4. Runs the full parser pipeline on each page, including Phase 4 extraction
+5. Writes per-domain `pages.csv` and `errors.csv` under `pre_crawl_analysis/<netloc>/`
+6. Produces a cross-domain `summary.csv` (counts, tech, coverage) and `field_coverage.csv` (fill rate per `pages.csv` field)
+
+Use the results to tune your seeds, allowed domains, and feature flags before committing to a large crawl.
 
 ---
 

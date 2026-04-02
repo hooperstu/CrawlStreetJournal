@@ -246,7 +246,12 @@ class CrawlConfig:
 
     @classmethod
     def from_module(cls) -> CrawlConfig:
-        """Snapshot current module-level globals into a new instance."""
+        """Snapshot current module-level globals into a new instance.
+
+        Iterates over every dataclass field, reading the matching attribute
+        from the ``config`` module.  Lists are shallow-copied to prevent
+        shared mutation between the snapshot and the live module.
+        """
         import config as _cfg
         kwargs: Dict[str, Any] = {}
         for f in dc_fields(cls):
@@ -259,7 +264,12 @@ class CrawlConfig:
     @classmethod
     def from_dict(cls, d: Dict[str, Any],
                   base: Optional[CrawlConfig] = None) -> CrawlConfig:
-        """Create from a JSON config dict, optionally layered on a base."""
+        """Create from a JSON config dict, optionally layered on a *base*.
+
+        Unknown keys are silently ignored.  ``ALLOWED_DOMAINS`` and
+        ``REQUEST_DELAY_SECONDS`` are converted from JSON lists back to
+        tuples so that downstream code can rely on a consistent type.
+        """
         inst = copy.copy(base) if base else cls.from_module()
         for key, val in d.items():
             if not hasattr(inst, key):

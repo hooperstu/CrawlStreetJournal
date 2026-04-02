@@ -1,6 +1,23 @@
 """
-HTML parsing: links (HTML vs downloadable assets), metadata, tags, JSON-LD,
-and URL-based content hints for CSJ.
+HTML parsing and metadata extraction for The Crawl Street Journal.
+
+Transforms raw HTML into structured ``pages.csv`` rows, tag detail rows,
+edge rows, asset rows, and navigation link rows.  The main entry points are:
+
+- ``build_page_inventory_row``  — full page-level metadata extraction.
+- ``extract_classified_links``  — separate <a> hrefs into crawlable HTML
+  URLs, downloadable asset rows, and edge (link-graph) rows.
+- ``extract_inline_assets``     — images, stylesheets, scripts, and media
+  embedded on the page (not discovered via <a> links).
+- ``extract_nav_links``         — links inside <nav> / [role=navigation].
+- ``guess_content_kind``        — heuristic page-type label from signals.
+- ``url_content_hint``          — lightweight label from URL path segments.
+
+Domain filtering uses ``config.ALLOWED_DOMAINS`` via the private helper
+``_is_allowed_domain``.  Note that ``scraper.normalise_url`` performs heavier
+canonicalisation (scheme, ports, sorted query params) for deduplication,
+whereas ``_normalise_url`` here only resolves relatives and strips fragments
+— the two are intentionally different in scope.
 """
 
 from __future__ import annotations
@@ -13,9 +30,19 @@ from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 
 import config
+import utils
+
+
+# ── URL helpers ───────────────────────────────────────────────────────────
 
 
 def _normalise_url(url: str, base_url: str) -> Optional[str]:
+    """Resolve *url* against *base_url*, strip the fragment, and remove a trailing slash.
+
+    This is a lightweight normalisation used for link extraction within a
+    page.  For crawl-queue deduplication the heavier ``scraper.normalise_url``
+    should be used instead.
+    """
     try:
         full = urljoin(base_url, url)
         parsed = urlparse(full)
@@ -26,17 +53,24 @@ def _normalise_url(url: str, base_url: str) -> Optional[str]:
 
 
 def _is_allowed_domain(url: str) -> bool:
-    try:
-        host = (urlparse(url).hostname or "").lower()
-        return any(
-            host == str(d).lower() or host.endswith("." + str(d).lower())
-            for d in config.ALLOWED_DOMAINS
-        )
-    except Exception:
-        return False
+    """Check whether *url*'s hostname matches ``config.ALLOWED_DOMAINS``.
+
+    Matches both exact hostnames and subdomains (e.g. ``blog.example.com``
+    matches an allowed domain of ``example.com``).  Returns ``False`` on
+    any parsing failure so that malformed URLs are silently excluded.
+
+    Delegates to ``utils.is_allowed_domain`` with the current
+    ``config.ALLOWED_DOMAINS`` list.
+    """
+    return utils.is_allowed_domain(url, config.ALLOWED_DOMAINS)
 
 
 def _path_extension_lower(path: str) -> str:
+    """Return the matching skip-extension suffix from *path*, or ``""``.
+
+    Extensions are tested longest-first so that e.g. ``.tar.gz`` is
+    preferred over ``.gz``.
+    """
     lower = path.lower()
     for ext in sorted(config.SKIP_EXTENSIONS, key=len, reverse=True):
         if lower.endswith(ext):
@@ -55,21 +89,38 @@ def asset_category_for_url(url: str) -> Optional[str]:
 
 
 def is_skippable_asset_url(url: str) -> bool:
+    """``True`` when *url* has a file extension that marks it as a downloadable asset."""
     return asset_category_for_url(url) is not None
 
 
 def get_visible_text(soup: BeautifulSoup) -> str:
-    for tag in soup(["script", "style", "noscript"]):
-        tag.decompose()
-    return soup.get_text(separator=" ", strip=True)
+    """Return user-visible text from *soup*, excluding script/style/noscript elements.
+
+    This implementation is non-mutating: it collects text nodes whose parent
+    element is not an invisible tag, rather than decomposing those tags from
+    the tree.  The supplied ``soup`` is left unchanged, so callers may safely
+    reuse it after this call.
+    """
+    invisible = {"script", "style", "noscript"}
+    return " ".join(
+        t.strip()
+        for t in soup.find_all(string=True)
+        if t.parent.name not in invisible and t.strip()
+    )
+
+
+# ── Meta-tag extraction ───────────────────────────────────────────────────
 
 
 def _meta_content(soup: BeautifulSoup, attrs: dict) -> str:
+    """Return the ``content`` attribute of the first ``<meta>`` matching *attrs*.
+
+    Falls back to a case-insensitive match on attribute *values* to handle
+    servers (notably ASP.NET) that emit upper-case attribute names.
+    """
     tag = soup.find("meta", attrs=attrs)
     if tag and tag.get("content"):
         return str(tag["content"]).strip()
-    # Retry with case-insensitive value matching (covers ASP.NET
-    # sites that emit e.g. NAME="DESCRIPTION" instead of name="description").
     ci_attrs = {
         k: re.compile(re.escape(v), re.IGNORECASE) if isinstance(v, str) else v
         for k, v in attrs.items()
@@ -81,6 +132,7 @@ def _meta_content(soup: BeautifulSoup, attrs: dict) -> str:
 
 
 def _all_meta_properties(soup: BeautifulSoup, prop: str) -> List[str]:
+    """Collect ``content`` values from every ``<meta property="...">`` matching *prop*."""
     out: List[str] = []
     for tag in soup.find_all("meta", attrs={"property": prop}):
         c = tag.get("content")
@@ -89,18 +141,27 @@ def _all_meta_properties(soup: BeautifulSoup, prop: str) -> List[str]:
     return out
 
 
+# ── Structured data (JSON-LD / Microdata / RDFa) ─────────────────────────
+
+
+def _dedupe_case_insensitive(seq: List[str]) -> List[str]:
+    """Return *seq* with case-insensitive duplicates removed, preserving order."""
+    seen: Set[str] = set()
+    out: List[str] = []
+    for x in seq:
+        k = x.lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(x)
+    return out
+
+
 def _collect_json_ld_nodes(obj: Any) -> List[dict]:
-    nodes: List[dict] = []
-    if isinstance(obj, dict):
-        if "@graph" in obj and isinstance(obj["@graph"], list):
-            for item in obj["@graph"]:
-                nodes.extend(_collect_json_ld_nodes(item))
-        else:
-            nodes.append(obj)
-    elif isinstance(obj, list):
-        for item in obj:
-            nodes.extend(_collect_json_ld_nodes(item))
-    return nodes
+    """Recursively flatten a JSON-LD object (or ``@graph`` array) into a list of node dicts.
+
+    Thin wrapper around ``utils.flatten_json_ld`` kept for backwards compatibility.
+    """
+    return utils.flatten_json_ld(obj)
 
 
 def _extract_json_ld(
@@ -143,20 +204,18 @@ def _extract_json_ld(
                 elif isinstance(val, str) and val.strip():
                     sections.append(val.strip())
 
-    def dedupe(seq: List[str]) -> List[str]:
-        seen: Set[str] = set()
-        out: List[str] = []
-        for x in seq:
-            k = x.lower()
-            if k not in seen:
-                seen.add(k)
-                out.append(x)
-        return out
-
-    return dedupe(types), dedupe(keywords), dedupe(sections)
+    return (
+        _dedupe_case_insensitive(types),
+        _dedupe_case_insensitive(keywords),
+        _dedupe_case_insensitive(sections),
+    )
 
 
-def _rel_tag_hrefs(soup: BeautifulSoup, base_url: str) -> List[str]:
+# ── Tag / keyword collection ──────────────────────────────────────────────
+
+
+def _rel_tag_hrefs(soup: BeautifulSoup) -> List[str]:
+    """Return visible text of ``<a rel="tag">`` links (common in WordPress)."""
     tags: List[str] = []
     for a in soup.find_all("a", rel=True, href=True):
         rels = a.get("rel") or []
@@ -193,7 +252,7 @@ def _collect_all_tags(soup: BeautifulSoup, base_url: str) -> List[Tuple[str, str
     for s in jld_sections:
         pairs.append((s, "json_ld:articleSection"))
 
-    for t in _rel_tag_hrefs(soup, base_url):
+    for t in _rel_tag_hrefs(soup):
         pairs.append((t, "rel:tag"))
 
     # /category/ and /tag/ href links (WordPress convention)
@@ -222,6 +281,9 @@ def _collect_all_tags(soup: BeautifulSoup, base_url: str) -> List[Tuple[str, str
             seen.add(key)
             unique.append(p)
     return unique
+
+
+# ── Content-kind heuristics ───────────────────────────────────────────────
 
 
 def url_content_hint(url: str) -> str:
@@ -293,6 +355,67 @@ def url_content_hint(url: str) -> str:
     return "|".join(hints) if hints else ""
 
 
+# ── Content-kind classification tables ────────────────────────────────────
+#
+# Each entry below maps a set of detection tokens to a content-kind label.
+# Add new rows here to extend classification; order matters (first match wins).
+
+# Simple OR rules: (schema_token_in_types, url_hint_token, label).
+# An empty string for the url-hint position means "URL hint not checked".
+_SCHEMA_URL_KIND_RULES: List[Tuple[str, str, str]] = [
+    ("blogposting",          "blog_path",      "blog"),
+    ("newsarticle",          "news_path",       "news"),
+    ("product",              "product_path",    "product"),
+    ("jobposting",           "jobs_path",       "job_posting"),
+    ("recipe",               "recipe_path",     "recipe"),
+    ("howto",                "",                "how_to"),
+    ("course",               "training_path",   "course"),
+    ("qapage",               "forum_path",      "qa"),
+    ("videoobject",          "",                "video"),
+    ("softwareapplication",  "",                "software"),
+    ("review",               "review_path",     "review"),
+    ("faqpage",              "faq_path",        "faq"),
+]
+
+# URL-hint-only rules (JSON-LD not required): (url_hint_token, label).
+_URL_ONLY_KIND_RULES: List[Tuple[str, str]] = [
+    ("contact_path",    "contact"),
+    ("about_path",      "about"),
+    ("pricing_path",    "pricing"),
+    ("case_study_path", "case_study"),
+    ("docs_path",       "documentation"),
+    ("legal_path",      "legal"),
+    ("search_path",     "search"),
+]
+
+# Breadcrumb keyword rules: (keywords_tuple, label).
+_BREADCRUMB_KIND_RULES: List[Tuple[Tuple[str, ...], str]] = [
+    (("blog", "blogs"),                  "blog"),
+    (("news", "newsroom"),               "news"),
+    (("publication", "publications"),    "publication"),
+    (("event", "events"),                "event"),
+    (("about",),                         "about"),
+    (("contact", "get in touch"),        "contact"),
+    (("service", "services"),            "service"),
+]
+
+# SilverStripe page-type body-class tokens → label.
+_SS_BODY_KIND_MAP: Tuple[Tuple[str, str], ...] = (
+    ("homepage",            "homepage"),
+    ("aboutoverviewpage",   "about"),
+    ("newsitemlistingpage", "news"),
+    ("newsitempage",        "news"),
+    ("contactpage",         "contact"),
+    ("eventpage",           "event"),
+    ("resourcepage",        "resource"),
+    ("staffpage",           "staff"),
+    ("blogentry",           "blog"),
+)
+
+# Drupal ``page-node-type-<type>`` body class — compiled once at module level.
+_DRUPAL_BODY_RE: re.Pattern[str] = re.compile(r"page-node-type-(\S+)")
+
+
 def guess_content_kind(
     url_hint: str,
     json_ld_types: List[str],
@@ -301,80 +424,57 @@ def guess_content_kind(
     breadcrumb: str = "",
     body_classes: str = "",
 ) -> str:
+    """Classify a page into a content-kind label using a priority cascade.
+
+    The cascade checks, in order:
+    1. JSON-LD ``@type`` values (most reliable structured signal), using the
+       rules in ``_SCHEMA_URL_KIND_RULES``.
+    2. URL path hints from ``url_content_hint`` (``_URL_ONLY_KIND_RULES``).
+    3. OpenGraph ``og:type``.
+    4. Breadcrumb text (``_BREADCRUMB_KIND_RULES``).
+    5. Body CSS classes — WordPress patterns, then SilverStripe
+       (``_SS_BODY_KIND_MAP``), then Drupal (``_DRUPAL_BODY_RE``).
+    6. Root-path homepage fallback.
+
+    Returns a short lowercase label such as ``"blog"``, ``"news"``,
+    ``"product"``, ``"homepage"``, or ``"unknown"``.
+    """
     types_lower = " ".join(json_ld_types).lower()
     og_l = (og_type or "").lower()
     path_l = path.lower()
     bc_lower = breadcrumb.lower()
     body_lower = body_classes.lower()
 
-    if "blogposting" in types_lower or "blog_path" in url_hint:
-        return "blog"
-    if "newsarticle" in types_lower or "news_path" in url_hint:
-        return "news"
+    # 1. Schema / URL-hint combined rules
+    for schema_tok, hint_tok, label in _SCHEMA_URL_KIND_RULES:
+        if schema_tok in types_lower or (hint_tok and hint_tok in url_hint):
+            return label
+
+    # Special cases that don't fit the simple OR pattern
     if "article" in types_lower and "blog" not in path_l:
         return "article"
-    # Phase 4 — domain-specific JSON-LD types
-    if "product" in types_lower or "product_path" in url_hint:
-        return "product"
-    if "jobposting" in types_lower or "jobs_path" in url_hint:
-        return "job_posting"
     if "event" in types_lower and "events_path" in url_hint:
         return "event"
-    if "recipe" in types_lower or "recipe_path" in url_hint:
-        return "recipe"
-    if "howto" in types_lower:
-        return "how_to"
-    if "course" in types_lower or "training_path" in url_hint:
-        return "course"
-    if "qapage" in types_lower or "forum_path" in url_hint:
-        return "qa"
-    if "videoobject" in types_lower:
-        return "video"
     if "localbusiness" in types_lower or "restaurant" in types_lower:
         return "local_business"
-    if "softwareapplication" in types_lower:
-        return "software"
-    if "review" in types_lower or "review_path" in url_hint:
-        return "review"
     if "webpage" in types_lower or og_l in ("website", "article"):
         return "webpage"
     if "medicalwebpage" in types_lower or "medicalbusiness" in types_lower:
         return "medical_page"
     if "collectionpage" in types_lower or "itemlist" in types_lower:
         return "listing"
-    if "faqpage" in types_lower or "faq_path" in url_hint:
-        return "faq"
-    if "contact_path" in url_hint:
-        return "contact"
-    if "about_path" in url_hint:
-        return "about"
-    if "pricing_path" in url_hint:
-        return "pricing"
-    if "case_study_path" in url_hint:
-        return "case_study"
-    if "docs_path" in url_hint:
-        return "documentation"
-    if "legal_path" in url_hint:
-        return "legal"
-    if "search_path" in url_hint:
-        return "search"
 
-    # Fallback: breadcrumb and body class signals
-    if any(w in bc_lower for w in ("blog", "blogs")):
-        return "blog"
-    if any(w in bc_lower for w in ("news", "newsroom")):
-        return "news"
-    if any(w in bc_lower for w in ("publication", "publications")):
-        return "publication"
-    if any(w in bc_lower for w in ("event", "events")):
-        return "event"
-    if "about" in bc_lower:
-        return "about"
-    if any(w in bc_lower for w in ("contact", "get in touch")):
-        return "contact"
-    if any(w in bc_lower for w in ("service", "services")):
-        return "service"
+    # 2. URL-hint-only rules
+    for hint_tok, label in _URL_ONLY_KIND_RULES:
+        if hint_tok in url_hint:
+            return label
 
+    # 3. Breadcrumb signals
+    for keywords, label in _BREADCRUMB_KIND_RULES:
+        if any(w in bc_lower for w in keywords):
+            return label
+
+    # 4. WordPress body class patterns
     if "single-post" in body_lower or "post-template" in body_lower:
         return "blog"
     if "page-template" in body_lower or "page-id" in body_lower:
@@ -382,25 +482,12 @@ def guess_content_kind(
     if "archive" in body_lower:
         return "listing"
 
-    # SilverStripe page-type body classes (e.g. AboutOverviewPage,
-    # NewsItemListingPage, HomePage, ContactPage)
-    _SS_BODY_MAP = (
-        ("homepage", "homepage"),
-        ("aboutoverviewpage", "about"),
-        ("newsitemlistingpage", "news"),
-        ("newsitempage", "news"),
-        ("contactpage", "contact"),
-        ("eventpage", "event"),
-        ("resourcepage", "resource"),
-        ("staffpage", "staff"),
-        ("blogentry", "blog"),
-    )
-    for token, kind in _SS_BODY_MAP:
+    # 5. SilverStripe page-type body classes
+    for token, kind in _SS_BODY_KIND_MAP:
         if token in body_lower:
             return kind
 
-    # Drupal body class patterns (e.g. page-node-type-section-page)
-    _DRUPAL_BODY_RE = re.compile(r"page-node-type-(\S+)")
+    # 6. Drupal page-node-type body classes
     drupal_match = _DRUPAL_BODY_RE.search(body_lower)
     if drupal_match:
         node_type = drupal_match.group(1)
@@ -422,16 +509,26 @@ def guess_content_kind(
     return "unknown"
 
 
+# ── Link classification ───────────────────────────────────────────────────
+
+
 def extract_classified_links(
     html: str,
     base_url: str,
     discovered_at: str,
 ) -> Tuple[Set[str], List[dict], List[dict]]:
-    """
+    """Partition ``<a href>`` links into crawlable HTML URLs, assets, and edges.
+
+    Args:
+        html: Raw HTML of the page.
+        base_url: Fully-qualified URL used to resolve relative hrefs.
+        discovered_at: ISO timestamp for provenance tracking.
+
     Returns:
-      html_urls — same-host URLs to crawl as HTML (not asset extensions).
-      asset_rows — dicts ready for storage.write_asset (without head_* filled).
-      edge_rows — dicts for storage.write_edge.
+        A 3-tuple of:
+        - *html_urls* — same-host URLs to enqueue for HTML crawling.
+        - *asset_rows* — dicts matching ``ASSET_FIELDS`` (``head_*`` empty).
+        - *edge_rows* — dicts for the link-graph CSV (``edges.csv``).
     """
     soup = BeautifulSoup(html, "lxml")
     html_urls: Set[str] = set()
@@ -480,6 +577,10 @@ def _document_title_from_soup(soup: BeautifulSoup) -> str:
     return text.strip()
 
 
+# ── Date extraction ───────────────────────────────────────────────────────
+
+# Regex that matches labelled dates in visible text, e.g.
+# "Last updated: 9 May, 2023" or "Posted on 2024-01-15".
 _VISIBLE_DATE_RE = re.compile(
     r"(?:"
     r"(?:date\s+)?last\s+(?:updated|reviewed|modified)"
@@ -498,6 +599,8 @@ _VISIBLE_DATE_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+
+# ── Quality / trust signal helpers ─────────────────────────────────────────
 
 _ANALYTICS_TOKENS = (
     "googletagmanager.com",
@@ -754,7 +857,7 @@ _VAGUE_LINK_TEXTS = frozenset({
 })
 
 
-# ── Phase 4 — extended extraction ─────────────────────────────────────────
+# ── Phase 4 — extended extraction (author, publisher, CMS, robots, etc.) ──
 
 def _extract_author(soup: BeautifulSoup) -> str:
     """Best-effort author from meta, JSON-LD, or byline elements."""
@@ -869,9 +972,9 @@ def _detect_cms_generator(soup: BeautifulSoup) -> str:
         return "HubSpot"
     if "/content/dam/" in html_str:
         return "Adobe Experience Manager"
-    if "ghost-" in (
-        " ".join((soup.find("body") or {}).get("class", []))
-    ).lower():
+    _body = soup.find("body")
+    body_classes = _body.get("class", []) if _body else []
+    if "ghost-" in " ".join(body_classes).lower():
         return "Ghost"
 
     return ""
@@ -1003,6 +1106,70 @@ def _extract_rdfa_types(soup: BeautifulSoup) -> str:
     return "|".join(types)
 
 
+def _extract_product_fields(node: dict, result: Dict[str, str]) -> None:
+    """Populate Product schema fields from *node* into *result* (in-place)."""
+    offers = node.get("offers", {})
+    if isinstance(offers, list) and offers:
+        offers = offers[0]
+    if isinstance(offers, dict):
+        if not result["schema_price"]:
+            result["schema_price"] = str(
+                offers.get("price", offers.get("lowPrice", ""))
+            ).strip()
+            result["schema_currency"] = str(
+                offers.get("priceCurrency", "")
+            ).strip()
+            result["schema_availability"] = str(
+                offers.get("availability", "")
+            ).strip().rsplit("/", 1)[-1]
+
+
+def _extract_rating_fields(node: dict, result: Dict[str, str]) -> None:
+    """Populate aggregateRating / review fields from *node* into *result* (in-place)."""
+    rating = node.get("aggregateRating") or node.get("review")
+    if isinstance(rating, dict) and not result["schema_rating"]:
+        result["schema_rating"] = str(rating.get("ratingValue", "")).strip()
+        result["schema_review_count"] = str(
+            rating.get("reviewCount", rating.get("ratingCount", ""))
+        ).strip()
+
+
+def _extract_event_fields(node: dict, result: Dict[str, str]) -> None:
+    """Populate Event schema fields from *node* into *result* (in-place)."""
+    if not result["schema_event_date"]:
+        result["schema_event_date"] = str(node.get("startDate", "")).strip()
+    loc = node.get("location", {})
+    if isinstance(loc, dict) and not result["schema_event_location"]:
+        result["schema_event_location"] = str(
+            loc.get("name", loc.get("address", ""))
+        ).strip()[:200]
+    elif isinstance(loc, str) and not result["schema_event_location"]:
+        result["schema_event_location"] = loc.strip()[:200]
+
+
+def _extract_job_fields(node: dict, result: Dict[str, str]) -> None:
+    """Populate JobPosting schema fields from *node* into *result* (in-place)."""
+    if not result["schema_job_title"]:
+        result["schema_job_title"] = str(node.get("title", "")).strip()
+    jl = node.get("jobLocation", {})
+    if isinstance(jl, dict) and not result["schema_job_location"]:
+        addr = jl.get("address", {})
+        if isinstance(addr, dict):
+            result["schema_job_location"] = str(
+                addr.get("addressLocality", "")
+            ).strip()
+        elif isinstance(addr, str):
+            result["schema_job_location"] = addr.strip()
+
+
+def _extract_recipe_fields(node: dict, result: Dict[str, str]) -> None:
+    """Populate Recipe schema fields from *node* into *result* (in-place)."""
+    if not result["schema_recipe_time"]:
+        result["schema_recipe_time"] = str(
+            node.get("totalTime", node.get("cookTime", ""))
+        ).strip()
+
+
 def _extract_schema_specific(
     soup: BeautifulSoup,
 ) -> Dict[str, str]:
@@ -1010,7 +1177,9 @@ def _extract_schema_specific(
 
     Returns a dict with optional keys like ``schema_price``,
     ``schema_availability``, ``schema_rating``, etc.  Empty strings
-    for fields not found on the page.
+    for fields not found on the page.  Per-family extraction is handled
+    by ``_extract_product_fields``, ``_extract_event_fields``,
+    ``_extract_job_fields``, and ``_extract_recipe_fields``.
     """
     result: Dict[str, str] = {
         "schema_price": "",
@@ -1039,69 +1208,15 @@ def _extract_schema_specific(
             types_list = t if isinstance(t, list) else [t]
             types_lower = [str(x).lower() for x in types_list]
 
-            # Product
             if "product" in types_lower:
-                offers = node.get("offers", {})
-                if isinstance(offers, list) and offers:
-                    offers = offers[0]
-                if isinstance(offers, dict):
-                    if not result["schema_price"]:
-                        result["schema_price"] = str(
-                            offers.get("price", offers.get("lowPrice", ""))
-                        ).strip()
-                        result["schema_currency"] = str(
-                            offers.get("priceCurrency", "")
-                        ).strip()
-                        result["schema_availability"] = str(
-                            offers.get("availability", "")
-                        ).strip().rsplit("/", 1)[-1]
-
-            # Aggregate rating (any type)
-            rating = node.get("aggregateRating") or node.get("review")
-            if isinstance(rating, dict) and not result["schema_rating"]:
-                result["schema_rating"] = str(
-                    rating.get("ratingValue", "")
-                ).strip()
-                result["schema_review_count"] = str(
-                    rating.get("reviewCount", rating.get("ratingCount", ""))
-                ).strip()
-
-            # Event
+                _extract_product_fields(node, result)
+            _extract_rating_fields(node, result)
             if "event" in types_lower:
-                if not result["schema_event_date"]:
-                    result["schema_event_date"] = str(
-                        node.get("startDate", "")
-                    ).strip()
-                loc = node.get("location", {})
-                if isinstance(loc, dict) and not result["schema_event_location"]:
-                    result["schema_event_location"] = str(
-                        loc.get("name", loc.get("address", ""))
-                    ).strip()[:200]
-                elif isinstance(loc, str) and not result["schema_event_location"]:
-                    result["schema_event_location"] = loc.strip()[:200]
-
-            # JobPosting
+                _extract_event_fields(node, result)
             if "jobposting" in types_lower:
-                if not result["schema_job_title"]:
-                    result["schema_job_title"] = str(
-                        node.get("title", "")
-                    ).strip()
-                jl = node.get("jobLocation", {})
-                if isinstance(jl, dict) and not result["schema_job_location"]:
-                    addr = jl.get("address", {})
-                    if isinstance(addr, dict):
-                        result["schema_job_location"] = str(
-                            addr.get("addressLocality", "")
-                        ).strip()
-                    elif isinstance(addr, str):
-                        result["schema_job_location"] = addr.strip()
-
-            # Recipe
+                _extract_job_fields(node, result)
             if "recipe" in types_lower:
-                if not result["schema_recipe_time"]:
-                    result["schema_recipe_time"] = str(
-                        node.get("totalTime", node.get("cookTime", ""))
-                    ).strip()
+                _extract_recipe_fields(node, result)
 
     return result
 
@@ -1242,6 +1357,9 @@ def _extract_breadcrumb_text(soup: BeautifulSoup) -> str:
     return "|".join(parts[:8])
 
 
+# ── Master row builder ────────────────────────────────────────────────────
+
+
 def build_page_inventory_row(
     html: str,
     requested_url: str,
@@ -1254,13 +1372,78 @@ def build_page_inventory_row(
     response_meta: Optional[Dict[str, str]] = None,
     sitemap_meta: Optional[Dict[str, str]] = None,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    """
-    Returns the pages.csv row and tag detail rows for tags.csv.
+    """Build the full ``pages.csv`` row and companion ``tags.csv`` rows for one page.
+
+    Orchestrates every extraction helper in this module.  The returned
+    *page_row* dict keys match ``storage.PAGES_FIELDS`` exactly — column
+    ordering is handled by ``storage.write_page``.
+
+    Args:
+        html: Raw HTML body.
+        requested_url: The URL that was asked for (before any redirects).
+        final_url: The URL after following all redirects.
+        http_status: HTTP status code of the final response.
+        content_type: ``Content-Type`` header value.
+        referrer_url: URL of the page where this link was discovered.
+        depth: Crawl depth (hops from a seed URL).
+        discovered_at: ISO timestamp.
+        response_meta: Optional dict of HTTP response headers
+            (keys: ``last_modified``, ``etag``, ``x_robots_tag``).
+        sitemap_meta: Optional dict of sitemap provenance
+            (keys: ``sitemap_lastmod``, ``source_sitemap``).
+
+    Returns:
+        A 2-tuple of (*page_row*, *tag_rows*).
     """
     response_meta = response_meta or {}
     sitemap_meta = sitemap_meta or {}
     soup = BeautifulSoup(html, "lxml")
 
+    seo = _extract_seo_meta(soup, final_url)
+    quality = _extract_quality_signals(
+        soup, html, seo["title"], seo["h1_joined"], seo["lang"], final_url, response_meta,
+    )
+    phase4 = _extract_phase4(soup, final_url, response_meta)
+
+    tag_pairs = _collect_all_tags(soup, final_url)
+    tags_all = "|".join(t[0] for t in tag_pairs)
+
+    page_row = _assemble_page_row(
+        requested_url=requested_url,
+        final_url=final_url,
+        http_status=http_status,
+        content_type=content_type,
+        referrer_url=referrer_url,
+        depth=depth,
+        discovered_at=discovered_at,
+        response_meta=response_meta,
+        sitemap_meta=sitemap_meta,
+        tags_all=tags_all,
+        seo=seo,
+        quality=quality,
+        phase4=phase4,
+    )
+
+    page_row["extraction_coverage_pct"] = _compute_extraction_coverage(page_row)
+
+    tag_rows = [
+        {
+            "page_url": final_url,
+            "tag_value": tv,
+            "tag_source": src,
+            "discovered_at": discovered_at,
+        }
+        for tv, src in tag_pairs
+    ]
+
+    return page_row, tag_rows
+
+
+# ── build_page_inventory_row sub-functions ────────────────────────────────
+
+
+def _extract_seo_meta(soup: BeautifulSoup, final_url: str) -> Dict[str, Any]:
+    """Extract SEO metadata: title, description, Open Graph, canonical, lang, h1s, content kind."""
     desc = _meta_content(soup, attrs={"name": "description"})
     if not desc:
         desc = _meta_content(soup, attrs={"property": "og:description"})
@@ -1287,17 +1470,14 @@ def build_page_inventory_row(
     json_types, _, _ = _extract_json_ld(soup)
     json_ld_types_str = "|".join(json_types)
 
-    tag_pairs = _collect_all_tags(soup, final_url)
-    tags_all = "|".join(t[0] for t in tag_pairs)
-
     hint = url_content_hint(final_url)
     path = urlparse(final_url).path
-    breadcrumb = _extract_breadcrumb_text(soup)
+    breadcrumb_text = _extract_breadcrumb_text(soup)
     body_tag = soup.find("body")
     body_classes = " ".join(body_tag.get("class", [])) if body_tag else ""
     kind = guess_content_kind(
         hint, json_types, og_type, path,
-        breadcrumb=breadcrumb, body_classes=body_classes,
+        breadcrumb=breadcrumb_text, body_classes=body_classes,
     )
 
     h1_texts: List[str] = []
@@ -1310,114 +1490,174 @@ def build_page_inventory_row(
     doc_title = _document_title_from_soup(soup)
     title = doc_title or og_title or (h1_texts[0] if h1_texts else "")
 
-    visible = get_visible_text(BeautifulSoup(html, "lxml"))
+    visible = get_visible_text(soup)
     word_count = len(visible.split()) if visible else 0
 
-    domain = urlparse(final_url).netloc.lower()
+    return {
+        "desc": desc,
+        "lang": lang,
+        "canonical": canonical,
+        "og_title": og_title,
+        "og_type": og_type,
+        "og_description": og_description,
+        "twitter_card": twitter_card,
+        "json_ld_types_str": json_ld_types_str,
+        "json_types": json_types,
+        "hint": hint,
+        "kind": kind,
+        "h1_joined": h1_joined,
+        "title": title,
+        "word_count": word_count,
+        "visible": visible,
+    }
 
-    # Phase 2 — structured headings, dates, quality, trust signals
+
+def _extract_quality_signals(
+    soup: BeautifulSoup,
+    html: str,
+    title: str,
+    h1_joined: str,
+    lang: str,
+    final_url: str,
+    response_meta: Dict[str, str],
+) -> Dict[str, Any]:
+    """Extract Phase 2 quality and trust signals."""
     heading_outline = _extract_heading_outline(soup)
     date_published, date_modified = _extract_structured_dates(soup)
     visible_dates = _extract_visible_dates(html, soup=soup)
     link_int, link_ext, link_total = _count_links(soup, final_url)
     img_count, img_no_alt = _count_images(soup)
-    readability = _compute_readability(visible)
+    visible_text = get_visible_text(soup)
+    readability = _compute_readability(visible_text)
     privacy_url = _find_privacy_policy_url(soup, final_url)
     analytics = _detect_analytics(html)
     training_flag = _detect_training_keywords(final_url, title, h1_joined)
     nav_count = _count_nav_links(soup)
     wcag = _assess_wcag_static(soup, lang, title)
+    return {
+        "heading_outline": heading_outline,
+        "date_published": date_published,
+        "date_modified": date_modified,
+        "visible_dates": visible_dates,
+        "link_int": link_int,
+        "link_ext": link_ext,
+        "link_total": link_total,
+        "img_count": img_count,
+        "img_no_alt": img_no_alt,
+        "readability": readability,
+        "privacy_url": privacy_url,
+        "analytics": analytics,
+        "training_flag": training_flag,
+        "nav_count": nav_count,
+        "wcag": wcag,
+    }
 
-    # Phase 4 — extended extraction
-    author = _extract_author(soup)
-    publisher = _extract_publisher(soup)
-    json_ld_id = _extract_json_ld_id(soup)
-    cms_generator = _detect_cms_generator(soup)
-    robots_directives = _extract_robots_directives(soup, response_meta)
-    hreflang_links = _extract_hreflang_links(soup, final_url)
-    feed_urls = _extract_feed_urls(soup, final_url)
-    pagination_next, pagination_prev = _extract_pagination(soup, final_url)
-    breadcrumb_schema = _extract_breadcrumb_schema(soup)
-    microdata_types = _extract_microdata(soup)
-    rdfa_types = _extract_rdfa_types(soup)
-    schema_specific = _extract_schema_specific(soup)
 
-    page_row = {
+def _extract_phase4(
+    soup: BeautifulSoup,
+    final_url: str,
+    response_meta: Dict[str, str],
+) -> Dict[str, Any]:
+    """Extract Phase 4 extended signals: authorship, CMS, structured data, SEO directives."""
+    return {
+        "author": _extract_author(soup),
+        "publisher": _extract_publisher(soup),
+        "json_ld_id": _extract_json_ld_id(soup),
+        "cms_generator": _detect_cms_generator(soup),
+        "robots_directives": _extract_robots_directives(soup, response_meta),
+        "hreflang_links": _extract_hreflang_links(soup, final_url),
+        "feed_urls": _extract_feed_urls(soup, final_url),
+        "pagination": _extract_pagination(soup, final_url),
+        "breadcrumb_schema": _extract_breadcrumb_schema(soup),
+        "microdata_types": _extract_microdata(soup),
+        "rdfa_types": _extract_rdfa_types(soup),
+        "schema_specific": _extract_schema_specific(soup),
+    }
+
+
+def _assemble_page_row(
+    requested_url: str,
+    final_url: str,
+    http_status: int,
+    content_type: str,
+    referrer_url: str,
+    depth: int,
+    discovered_at: str,
+    response_meta: Dict[str, str],
+    sitemap_meta: Dict[str, str],
+    tags_all: str,
+    seo: Dict[str, Any],
+    quality: Dict[str, Any],
+    phase4: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Assemble the final ``pages.csv`` row dict from extracted sub-groups."""
+    pagination_next, pagination_prev = phase4["pagination"]
+    domain = urlparse(final_url).netloc.lower()
+    return {
         "requested_url": requested_url,
         "final_url": final_url,
         "domain": domain,
         "http_status": http_status,
         "content_type": content_type,
-        "title": title,
-        "meta_description": desc,
-        "lang": lang,
-        "canonical_url": canonical or "",
-        "og_title": og_title,
-        "og_type": og_type,
-        "og_description": og_description,
-        "twitter_card": twitter_card,
-        "json_ld_types": json_ld_types_str,
+        "title": seo["title"],
+        "meta_description": seo["desc"],
+        "lang": seo["lang"],
+        "canonical_url": seo["canonical"] or "",
+        "og_title": seo["og_title"],
+        "og_type": seo["og_type"],
+        "og_description": seo["og_description"],
+        "twitter_card": seo["twitter_card"],
+        "json_ld_types": seo["json_ld_types_str"],
         "tags_all": tags_all,
-        "url_content_hint": hint,
-        "content_kind_guess": kind,
-        "h1_joined": h1_joined,
-        "word_count": word_count,
+        "url_content_hint": seo["hint"],
+        "content_kind_guess": seo["kind"],
+        "h1_joined": seo["h1_joined"],
+        "word_count": seo["word_count"],
         # Phase 1 — freshness / provenance
         "http_last_modified": response_meta.get("last_modified", ""),
         "etag": response_meta.get("etag", ""),
         "sitemap_lastmod": sitemap_meta.get("sitemap_lastmod", ""),
         "referrer_sitemap_url": sitemap_meta.get("source_sitemap", ""),
         # Phase 2 — on-page quality / trust
-        "heading_outline": heading_outline,
-        "date_published": date_published,
-        "date_modified": date_modified,
-        "visible_dates": visible_dates,
-        "link_count_internal": link_int,
-        "link_count_external": link_ext,
-        "link_count_total": link_total,
-        "img_count": img_count,
-        "img_missing_alt_count": img_no_alt,
-        "readability_fk_grade": readability,
-        "privacy_policy_url": privacy_url,
-        "analytics_signals": analytics,
-        "training_related_flag": training_flag,
+        "heading_outline": quality["heading_outline"],
+        "date_published": quality["date_published"],
+        "date_modified": quality["date_modified"],
+        "visible_dates": quality["visible_dates"],
+        "link_count_internal": quality["link_int"],
+        "link_count_external": quality["link_ext"],
+        "link_count_total": quality["link_total"],
+        "img_count": quality["img_count"],
+        "img_missing_alt_count": quality["img_no_alt"],
+        "readability_fk_grade": quality["readability"],
+        "privacy_policy_url": quality["privacy_url"],
+        "analytics_signals": quality["analytics"],
+        "training_related_flag": quality["training_flag"],
         # Phase 3
-        "nav_link_count": nav_count,
+        "nav_link_count": quality["nav_count"],
         # WCAG static checks
-        **wcag,
+        **quality["wcag"],
         # Phase 4 — extended extraction
-        "author": author,
-        "publisher": publisher,
-        "json_ld_id": json_ld_id,
-        "cms_generator": cms_generator,
-        "robots_directives": robots_directives,
-        "hreflang_links": hreflang_links,
-        "feed_urls": feed_urls,
+        "author": phase4["author"],
+        "publisher": phase4["publisher"],
+        "json_ld_id": phase4["json_ld_id"],
+        "cms_generator": phase4["cms_generator"],
+        "robots_directives": phase4["robots_directives"],
+        "hreflang_links": phase4["hreflang_links"],
+        "feed_urls": phase4["feed_urls"],
         "pagination_next": pagination_next,
         "pagination_prev": pagination_prev,
-        "breadcrumb_schema": breadcrumb_schema,
-        "microdata_types": microdata_types,
-        "rdfa_types": rdfa_types,
-        **schema_specific,
+        "breadcrumb_schema": phase4["breadcrumb_schema"],
+        "microdata_types": phase4["microdata_types"],
+        "rdfa_types": phase4["rdfa_types"],
+        **phase4["schema_specific"],
         # common
         "referrer_url": referrer_url,
         "depth": depth,
         "discovered_at": discovered_at,
     }
 
-    page_row["extraction_coverage_pct"] = _compute_extraction_coverage(page_row)
 
-    tag_rows = [
-        {
-            "page_url": final_url,
-            "tag_value": tv,
-            "tag_source": src,
-            "discovered_at": discovered_at,
-        }
-        for tv, src in tag_pairs
-    ]
-
-    return page_row, tag_rows
+# ── Inline asset extraction ────────────────────────────────────────────────
 
 
 def extract_inline_assets(

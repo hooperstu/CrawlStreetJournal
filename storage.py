@@ -1,31 +1,60 @@
 """
-CSV writers for CSJ: pages inventory, assets by type, edges, tags, errors.
+Filesystem-based storage layer for The Crawl Street Journal.
 
-Each crawl run is a self-contained project living in a timestamped subfolder
-under OUTPUT_DIR.  The folder holds:
+Handles all CSV writing (pages, assets, edges, tags, errors, nav links,
+link checks, sitemap URLs), run-directory lifecycle, project management,
+and crawl-state persistence for resume.
 
-    _config.json   – snapshot of all crawler settings for this run
-    _state.json    – crawl progress & serialised queue (for resume)
-    .name          – optional human-friendly label
-    .latest        – (in OUTPUT_DIR root) points to the most recent run
+Run directory layout
+--------------------
+Each crawl run lives in a timestamped subfolder under the project's
+``runs/`` directory::
 
-The ``get_latest_run_dir()`` helper resolves the marker for readers.
+    projects/<slug>/runs/run_2025-04-01_12-00-00_123456/
+        _config.json       — snapshot of all crawler settings
+        _state.json        — crawl progress & serialised queue (for resume)
+        .name              — optional human-friendly label
+        pages.csv           — one row per crawled HTML page
+        edges.csv           — link-graph (from_url → to_url)
+        tags.csv            — one row per tag/keyword per page
+        crawl_errors.csv    — fetch failures and parse errors
+        assets_pdf.csv      — discovered PDF links (+ other asset types)
+        sitemap_urls.csv    — raw sitemap entries (loc + lastmod)
+        nav_links.csv       — links inside <nav> elements
+        link_checks.csv     — HEAD-check results for outbound links
+
+A ``.latest`` marker file in the ``runs/`` root points to the most recent
+run folder; ``get_latest_run_dir()`` resolves it.
+
+Concurrency model
+-----------------
+``StorageContext`` provides per-crawl isolation of output paths and CSV
+writers.  The module also exposes a parallel set of module-level functions
+(``write_page``, ``initialise_outputs``, etc.) that use a process-global
+``_active_run_dir`` — these exist for backward compatibility with the CLI
+and should not be used for concurrent crawls.
 """
 
 import csv
+import io
 import json
 import logging
 import os
 import re
 import shutil
+import tempfile
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import config
+import utils
 
 logger = logging.getLogger(__name__)
 
+# Module-level fallback for CLI / non-concurrent code paths.
+# Set by ``initialise_outputs()``; concurrent crawls use StorageContext instead.
 _active_run_dir: Optional[str] = None
 
 # ── CSV field definitions ─────────────────────────────────────────────────
@@ -150,6 +179,17 @@ class StorageContext:
 
     Each concurrent crawl gets its own instance so that ``output_dir`` and
     ``active_run_dir`` never collide between projects.
+
+    Lifecycle:
+        1. Construct with the project's ``runs/`` directory and a ``CrawlConfig``.
+        2. Call ``initialise_outputs()`` (new crawl) or ``resume_outputs()`` (resume).
+        3. Use the ``write_*`` methods during the crawl.
+        4. ``get_active_run_dir()`` returns the resolved path at any point.
+
+    Attributes:
+        output_dir: The project's ``runs/`` directory.
+        cfg: ``CrawlConfig`` instance controlling feature toggles.
+        active_run_dir: Absolute path to the current run folder (set after init).
     """
 
     def __init__(
@@ -186,6 +226,7 @@ class StorageContext:
             ).writeheader()
 
     def append_row(self, path: str, fieldnames: tuple, row: Dict[str, Any]) -> None:
+        """Append a single CSV row, sanitising values and creating the file if needed."""
         self.ensure_output_dir()
         safe = {k: _sanitise(row.get(k, "")) for k in fieldnames}
         try:
@@ -293,6 +334,7 @@ class StorageContext:
     def initialise_outputs(
         self, run_folder: Optional[str] = None, run_name: Optional[str] = None,
     ) -> None:
+        """Create (or adopt) a run folder and write CSV headers for all enabled outputs."""
         if run_folder:
             self.active_run_dir = os.path.join(self.output_dir, run_folder)
             if not os.path.isdir(self.active_run_dir):
@@ -336,6 +378,7 @@ class StorageContext:
             self._write_header(self._assets_path_for_category("other"), ASSET_FIELDS)
 
     def resume_outputs(self, run_folder: str) -> None:
+        """Point this context at an existing run folder without overwriting CSVs."""
         self.active_run_dir = os.path.join(self.output_dir, run_folder)
         if not os.path.isdir(self.active_run_dir):
             raise FileNotFoundError(f"Run folder not found: {self.active_run_dir}")
@@ -345,6 +388,7 @@ class StorageContext:
     # -- run listing ------------------------------------------------------
 
     def list_run_dirs(self) -> List[Dict[str, Any]]:
+        """Return metadata dicts for every run under this context's output dir, newest first."""
         base = self.output_dir
         if not os.path.isdir(base):
             return []
@@ -410,11 +454,13 @@ def ensure_output_dir() -> None:
 # ── Run name helpers ──────────────────────────────────────────────────────
 
 def _write_run_name(run_dir: str, name: str) -> None:
+    """Persist a human-friendly label to the ``.name`` marker file."""
     with open(os.path.join(run_dir, ".name"), "w", encoding="utf-8") as f:
         f.write(name.strip())
 
 
 def _read_run_name(run_dir: str) -> Optional[str]:
+    """Read the friendly name from ``.name``, or ``None`` if absent."""
     path = os.path.join(run_dir, ".name")
     if os.path.isfile(path):
         with open(path, "r", encoding="utf-8") as f:
@@ -504,12 +550,14 @@ def snapshot_config() -> Dict[str, Any]:
 
 
 def save_run_config(run_dir: str, cfg: Dict[str, Any]) -> None:
+    """Write *cfg* as ``_config.json`` inside the run folder."""
     path = os.path.join(run_dir, "_config.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
 
 
 def load_run_config(run_dir: str) -> Optional[Dict[str, Any]]:
+    """Load ``_config.json`` from a run folder, or ``None`` if missing."""
     path = os.path.join(run_dir, "_config.json")
     if not os.path.isfile(path):
         return None
@@ -518,14 +566,37 @@ def load_run_config(run_dir: str) -> Optional[Dict[str, Any]]:
 
 
 def apply_run_config(cfg: Dict[str, Any]) -> None:
-    """Write *cfg* values into the live ``config`` module."""
+    """Write *cfg* values into the live ``config`` module.
+
+    Normalises types that JSON round-trips can change (lists → tuples,
+    numeric strings → ints) so the live config always has the expected
+    Python types.
+    """
+    _INT_KEYS = {
+        "MAX_PAGES_TO_CRAWL", "MAX_SITEMAP_URLS", "MAX_RETRIES",
+        "STATE_SAVE_INTERVAL", "MAX_LINK_CHECKS_PER_PAGE",
+    }
+    _FLOAT_KEYS = {
+        "REQUEST_TIMEOUT_SECONDS", "HEAD_TIMEOUT_SECONDS",
+        "LINK_CHECK_DELAY_SECONDS",
+    }
     for key, val in cfg.items():
         if key not in _SNAPSHOT_KEYS:
             continue
         if key == "ALLOWED_DOMAINS" and isinstance(val, list):
             val = tuple(val)
-        if key == "REQUEST_DELAY_SECONDS" and isinstance(val, list) and len(val) == 2:
+        elif key == "REQUEST_DELAY_SECONDS" and isinstance(val, list) and len(val) == 2:
             val = tuple(val)
+        elif key in _INT_KEYS:
+            try:
+                val = int(val)
+            except (TypeError, ValueError):
+                pass
+        elif key in _FLOAT_KEYS:
+            try:
+                val = float(val)
+            except (TypeError, ValueError):
+                pass
         setattr(config, key, val)
 
 
@@ -548,7 +619,6 @@ def get_project_dir(slug: str) -> str:
 
 def get_project_runs_dir(slug: str) -> str:
     return os.path.join(config.PROJECTS_DIR, slug, "runs")
-
 
 
 def create_project(name: str, description: str = "") -> str:
@@ -624,6 +694,7 @@ def list_projects() -> List[Dict[str, Any]]:
 
 
 def load_project(slug: str) -> Optional[Dict[str, Any]]:
+    """Read ``_project.json`` for *slug*, or ``None`` if the project does not exist."""
     path = os.path.join(get_project_dir(slug), "_project.json")
     if not os.path.isfile(path):
         return None
@@ -632,12 +703,14 @@ def load_project(slug: str) -> Optional[Dict[str, Any]]:
 
 
 def save_project(slug: str, data: Dict[str, Any]) -> None:
+    """Write (or overwrite) ``_project.json`` for *slug*."""
     path = os.path.join(get_project_dir(slug), "_project.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 def delete_project(slug: str) -> None:
+    """Remove the project directory tree.  Validates the path stays inside PROJECTS_DIR."""
     pdir = get_project_dir(slug)
     real_base = os.path.realpath(config.PROJECTS_DIR) + os.sep
     if not os.path.realpath(pdir).startswith(real_base):
@@ -648,6 +721,7 @@ def delete_project(slug: str) -> None:
 
 
 def load_project_defaults(slug: str) -> Optional[Dict[str, Any]]:
+    """Load ``_defaults.json`` for *slug* (project-level crawl config template)."""
     path = os.path.join(get_project_dir(slug), "_defaults.json")
     if not os.path.isfile(path):
         return None
@@ -656,6 +730,7 @@ def load_project_defaults(slug: str) -> Optional[Dict[str, Any]]:
 
 
 def save_project_defaults(slug: str, cfg: Dict[str, Any]) -> None:
+    """Write (or overwrite) ``_defaults.json`` for *slug*."""
     path = os.path.join(get_project_dir(slug), "_defaults.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -673,6 +748,88 @@ def activate_project(slug: str) -> StorageContext:
     os.makedirs(runs_dir, exist_ok=True)
     config.OUTPUT_DIR = runs_dir
     return StorageContext(runs_dir, config.CrawlConfig.from_module())
+
+
+def export_project(slug: str) -> io.BytesIO:
+    """Create a ZIP archive of the entire project directory and return it as
+    an in-memory buffer.  The archive root is the slug folder name so that
+    the internal structure (``_project.json``, ``_defaults.json``, ``runs/``)
+    is preserved on extraction.
+
+    Raises ``FileNotFoundError`` if the project does not exist and
+    ``ValueError`` if the path escapes ``PROJECTS_DIR``.
+    """
+    pdir = get_project_dir(slug)
+    real_base = os.path.realpath(config.PROJECTS_DIR) + os.sep
+    if not os.path.realpath(pdir).startswith(real_base):
+        raise ValueError("Project path escapes PROJECTS_DIR")
+    if not os.path.isdir(pdir):
+        raise FileNotFoundError(f"Project directory not found: {pdir}")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for dirpath, _dirnames, filenames in os.walk(pdir):
+            for fname in filenames:
+                abs_path = os.path.join(dirpath, fname)
+                arcname = os.path.join(slug, os.path.relpath(abs_path, pdir))
+                zf.write(abs_path, arcname=arcname)
+    buf.seek(0)
+    logger.info("Exported project %s (%d bytes)", slug, buf.getbuffer().nbytes)
+    return buf
+
+
+def import_project(zip_fileobj) -> str:
+    """Import a project from a ZIP archive file object.
+
+    The archive must contain a single top-level directory with a valid
+    ``_project.json`` inside it.  The slug is derived from that directory
+    name, with a hex suffix appended when a collision is detected.
+
+    Returns the slug of the newly imported project.
+
+    Raises ``ValueError`` on validation failures (missing metadata, path
+    traversal attempts, structural problems).
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_zip = os.path.join(tmpdir, "upload.zip")
+        zip_fileobj.save(tmp_zip)
+
+        with zipfile.ZipFile(tmp_zip, "r") as zf:
+            for info in zf.infolist():
+                if info.filename.startswith("/") or ".." in info.filename.split("/"):
+                    raise ValueError(
+                        f"Unsafe path in archive: {info.filename}"
+                    )
+            zf.extractall(tmpdir)
+
+        entries = [
+            e for e in os.listdir(tmpdir)
+            if e != "upload.zip" and os.path.isdir(os.path.join(tmpdir, e))
+        ]
+        if len(entries) != 1:
+            raise ValueError(
+                "Archive must contain exactly one top-level project folder"
+            )
+
+        extracted_name = entries[0]
+        extracted_dir = os.path.join(tmpdir, extracted_name)
+        meta_path = os.path.join(extracted_dir, "_project.json")
+        if not os.path.isfile(meta_path):
+            raise ValueError(
+                "Archive does not contain a valid project (_project.json missing)"
+            )
+
+        slug = _slugify(extracted_name)
+        dest = os.path.join(config.PROJECTS_DIR, slug)
+        if os.path.exists(dest):
+            slug = f"{slug}-{uuid.uuid4().hex[:6]}"
+            dest = os.path.join(config.PROJECTS_DIR, slug)
+
+        os.makedirs(config.PROJECTS_DIR, exist_ok=True)
+        shutil.move(extracted_dir, dest)
+
+    logger.info("Imported project as %s", slug)
+    return slug
 
 
 def migrate_legacy_data() -> Optional[str]:
@@ -741,6 +898,12 @@ def save_crawl_state(
     started_at: str = "",
     stopped_at: str = "",
 ) -> None:
+    """Persist crawl progress and the serialised queue to ``_state.json``.
+
+    Called periodically during the crawl (every ``STATE_SAVE_INTERVAL``
+    pages) and once at completion/interruption.  The *queue* field is a
+    list of ``(url, referrer, depth)`` triples that can be reloaded on resume.
+    """
     state = {
         "status": status,
         "pages_crawled": pages_crawled,
@@ -755,6 +918,7 @@ def save_crawl_state(
 
 
 def load_crawl_state(run_dir: str) -> Optional[Dict[str, Any]]:
+    """Load ``_state.json``, or ``None`` if the file does not exist."""
     path = os.path.join(run_dir, "_state.json")
     if not os.path.isfile(path):
         return None
@@ -781,8 +945,8 @@ def rebuild_visited_from_csvs(run_dir: str) -> set:
                     url = row.get("requested_url", "").strip()
                     if url:
                         visited.add(url)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Skipping corrupt pages CSV %s: %s", pages_path, e)
     errors_path = os.path.join(run_dir, config.ERRORS_CSV)
     if os.path.isfile(errors_path):
         try:
@@ -791,8 +955,8 @@ def rebuild_visited_from_csvs(run_dir: str) -> set:
                     url = row.get("url", "").strip()
                     if url:
                         visited.add(url)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Skipping corrupt errors CSV %s: %s", errors_path, e)
     return visited
 
 
@@ -811,8 +975,8 @@ def rebuild_sitemap_meta_from_csv(run_dir: str) -> Dict[str, Dict[str, str]]:
                         "sitemap_lastmod": row.get("lastmod", ""),
                         "source_sitemap": row.get("source_sitemap", ""),
                     }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Skipping corrupt sitemap CSV %s: %s", path, e)
     return meta
 
 
@@ -900,14 +1064,8 @@ def resume_outputs(run_folder: str) -> None:
 # ── Run listing ──────────────────────────────────────────────────────────
 
 def _count_pages_in(directory: str) -> int:
-    pages_path = os.path.join(directory, config.PAGES_CSV)
-    if not os.path.isfile(pages_path):
-        return 0
-    try:
-        with open(pages_path, "r", encoding="utf-8") as f:
-            return max(sum(1 for _ in f) - 1, 0)
-    except Exception:
-        return 0
+    """Return the number of data rows in ``pages.csv`` (0 if missing)."""
+    return utils.count_csv_rows(os.path.join(directory, config.PAGES_CSV))
 
 
 def list_run_dirs() -> List[Dict[str, Any]]:
@@ -968,14 +1126,11 @@ def list_run_dirs() -> List[Dict[str, Any]]:
 # ── CSV writing ──────────────────────────────────────────────────────────
 
 def _sanitise(value: Any) -> str:
-    if value is None:
-        return ""
-    s = str(value)
-    if "\x00" in s:
-        s = s.replace("\x00", "")
-    if len(s) > 32_000:
-        s = s[:32_000] + "…[truncated]"
-    return s
+    """Coerce *value* to a CSV-safe string (strip NULs, truncate at 32 KB).
+
+    Delegates to ``utils.sanitise_csv_value``.
+    """
+    return utils.sanitise_csv_value(value)
 
 
 def _write_header(path: str, fieldnames: tuple) -> None:

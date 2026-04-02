@@ -1,13 +1,35 @@
+{#
+  ecosystem.html — D3-powered ecosystem visualisation dashboard (project level).
+  Route: GET /p/<slug>/ecosystem  (ecosystem.ecosystem_dashboard)
+  Context: project (dict), runs (list of run metadata dicts),
+           preselected_runs (comma-separated run names or "").
+
+  Structure:
+    Tab groups are organised into five pillars — Governance, Trust, Findability,
+    Technology & Standards, and Provenance & Authorship. Each tab's data-panel
+    attribute maps to a <div id="panel-{name}"> below and a corresponding
+    render function in static/js/ecosystem.js.
+
+  CSS mapping (inline <style> blocks):
+    .viz-tab / .viz-panel  — tab switching; JS toggles .active class.
+    .viz-container         — card wrapper for each visualisation.
+    .viz-tooltip           — shared floating tooltip, positioned by ecosystem.js.
+    .network-detail-overlay— slide-in side panel for domain node details (network graph).
+    .filter-bar / .filter-chip — global filter controls wired up in ecosystem.js.
+
+  JavaScript:
+    window.ECO_API is populated with Jinja url_for() calls so ecosystem.js
+    can fetch JSON data from the ecosystem blueprint API endpoints.
+    D3 v7, d3-cloud, and d3-sankey are loaded from CDN before ecosystem.js.
+#}
 {% extends "base.html" %}
-{% set active_tab = 'runs' %}
-{% block title %}Ecosystem — {{ friendly_name or run_name }} | CSJ{% endblock %}
+{% set active_tab = 'ecosystem' %}
+{% block title %}Ecosystem — {{ project.name }} | CSJ{% endblock %}
 
 {% block subnav %}
 <div class="sub-nav">
-  <a href="{{ url_for('run_config', slug=project.slug, run_name=run_name) }}">Config</a>
-  <a href="{{ url_for('run_monitor', slug=project.slug, run_name=run_name) }}">Monitor</a>
-  <a href="{{ url_for('run_results', slug=project.slug, run_name=run_name) }}">Results</a>
-  <a href="{{ url_for('ecosystem.ecosystem_dashboard', slug=project.slug, run_name=run_name) }}" class="active">Ecosystem</a>
+  <a href="{{ url_for('project_runs', slug=project.slug) }}">Runs</a>
+  <a href="{{ url_for('ecosystem.ecosystem_dashboard', slug=project.slug) }}" class="active">Ecosystem</a>
 </div>
 {% endblock %}
 
@@ -535,9 +557,7 @@
 </style>
 
 <div class="eco-page">
-  <h1 class="page-title">
-    {% if friendly_name %}{{ friendly_name }}{% else %}{{ run_name }}{% endif %} — Ecosystem Map
-  </h1>
+  <h1 class="page-title">{{ project.name }} — Ecosystem Map</h1>
 
   <!-- ── Global Filter Bar ─────────────────────────────────── -->
   <div class="filter-bar" id="globalFilterBar">
@@ -546,6 +566,18 @@
       <button class="filter-bar-clear" id="filterClearAll" style="display:none;">Clear all</button>
     </div>
     <div class="filter-row">
+      <div class="filter-group">
+        <label>Runs</label>
+        <select id="filter-runs">
+          <option value="">All runs</option>
+          {% for run in runs %}
+          <option value="{{ run.name }}"
+            {% if preselected_runs == run.name %}selected{% endif %}>
+            {{ run.label }} ({{ run.page_count }} pages)
+          </option>
+          {% endfor %}
+        </select>
+      </div>
       <div class="filter-group">
         <label>CMS</label>
         <select id="filter-cms"><option value="">All platforms</option></select>
@@ -1026,22 +1058,30 @@
 
 <div class="viz-tooltip" id="vizTooltip"></div>
 
+{# CDN libraries — d3-cloud and d3-sankey are loaded separately because they
+   are not bundled in the core D3 v7 distribution. #}
 <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 <script src="https://cdn.jsdelivr.net/npm/d3-cloud@1"></script>
 <script src="https://cdn.jsdelivr.net/npm/d3-sankey@0.12"></script>
+{# Expose API endpoints to ecosystem.js as a global object so the JS module
+   does not need to construct URLs itself.  Each key maps to a Flask
+   endpoint registered on the ecosystem blueprint in viz_api.py.
+   The runs filter is applied client-side via query-string parameters. #}
 <script>
   window.ECO_API = {
-    domains:        "{{ url_for('ecosystem.api_domains',        slug=project.slug, run_name=run_name) }}",
-    graph:          "{{ url_for('ecosystem.api_graph',          slug=project.slug, run_name=run_name) }}",
-    tags:           "{{ url_for('ecosystem.api_tags',           slug=project.slug, run_name=run_name) }}",
-    navigation:     "{{ url_for('ecosystem.api_navigation',     slug=project.slug, run_name=run_name) }}",
-    freshness:      "{{ url_for('ecosystem.api_freshness',      slug=project.slug, run_name=run_name) }}",
-    chord:          "{{ url_for('ecosystem.api_chord',          slug=project.slug, run_name=run_name) }}",
-    filter_options: "{{ url_for('ecosystem.api_filter_options', slug=project.slug, run_name=run_name) }}",
-    technology:     "{{ url_for('ecosystem.api_technology',     slug=project.slug, run_name=run_name) }}",
-    authorship:     "{{ url_for('ecosystem.api_authorship',     slug=project.slug, run_name=run_name) }}",
-    schema_insights:"{{ url_for('ecosystem.api_schema_insights',slug=project.slug, run_name=run_name) }}"
+    domains:        "{{ url_for('ecosystem.api_domains',        slug=project.slug) }}",
+    graph:          "{{ url_for('ecosystem.api_graph',          slug=project.slug) }}",
+    tags:           "{{ url_for('ecosystem.api_tags',           slug=project.slug) }}",
+    navigation:     "{{ url_for('ecosystem.api_navigation',     slug=project.slug) }}",
+    freshness:      "{{ url_for('ecosystem.api_freshness',      slug=project.slug) }}",
+    chord:          "{{ url_for('ecosystem.api_chord',          slug=project.slug) }}",
+    filter_options: "{{ url_for('ecosystem.api_filter_options', slug=project.slug) }}",
+    technology:     "{{ url_for('ecosystem.api_technology',     slug=project.slug) }}",
+    authorship:     "{{ url_for('ecosystem.api_authorship',     slug=project.slug) }}",
+    schema_insights:"{{ url_for('ecosystem.api_schema_insights',slug=project.slug) }}",
+    runs:           "{{ url_for('ecosystem.api_runs',           slug=project.slug) }}"
   };
+  window.ECO_PRESELECTED_RUNS = "{{ preselected_runs }}";
 </script>
 <script src="{{ url_for('static', filename='js/ecosystem.js') }}"></script>
 {% endblock %}

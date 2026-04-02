@@ -3,13 +3,20 @@ Ecosystem mapping — Flask Blueprint.
 
 JSON API endpoints that serve aggregated crawl data to D3.js
 visualisations, plus the HTML page route for the dashboard itself.
+
+The dashboard lives at project level (``/p/<slug>/ecosystem``) and
+aggregates data from one or more crawl runs.  A ``?runs=`` query
+parameter selects specific runs; omitting it includes all runs.
+
+Legacy per-run URLs (``/p/<slug>/runs/<run_name>/ecosystem``) redirect
+to the project-level dashboard with the corresponding ``?runs=`` preset.
 """
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, jsonify, redirect, render_template, request, url_for
 
 import config
 import storage as storage_module
@@ -18,16 +25,51 @@ import viz_data
 eco_bp = Blueprint("ecosystem", __name__)
 
 
-def _resolve_run_dir(slug: str, run_name: str) -> Optional[str]:
+def _resolve_run_dirs(slug: str) -> List[str]:
+    """Return run directories for the active project, filtered by ``?runs=``.
+
+    When ``runs`` is absent or empty every ``run_*`` directory under the
+    project is included.  Otherwise the parameter is a comma-separated
+    list of run folder names (e.g. ``run_2025-04-01_12-00-00``).
+
+    Side effect: calls ``storage_module.activate_project(slug)`` which
+    mutates ``config.OUTPUT_DIR``.
+    """
     storage_module.activate_project(slug)
-    run_dir = os.path.join(config.OUTPUT_DIR, run_name)
-    if not os.path.isdir(run_dir):
-        return None
-    return run_dir
+    base = config.OUTPUT_DIR
+
+    runs_param = request.args.get("runs", "").strip()
+    if runs_param:
+        names = [n.strip() for n in runs_param.split(",") if n.strip()]
+        dirs = []
+        for n in names:
+            full = os.path.join(base, n)
+            if os.path.isdir(full):
+                dirs.append(full)
+        return dirs
+
+    if not os.path.isdir(base):
+        return []
+    return [
+        os.path.join(base, n)
+        for n in sorted(os.listdir(base))
+        if n.startswith("run_") and os.path.isdir(os.path.join(base, n))
+    ]
 
 
 def _parse_filters() -> Optional[Dict[str, Any]]:
-    """Extract filter parameters from query string."""
+    """Build a filter dict from the current request's query string.
+
+    Comma-separated list parameters (``domains``, ``cms``,
+    ``content_kinds``, ``schema_formats``, ``schema_types``) are split
+    into Python lists.  Scalar parameters (``date_from``, ``date_to``,
+    ``min_coverage``) are passed through as-is.
+
+    Returns:
+        A filter dict compatible with ``viz_data.filter_pages``, or
+        None when no filter parameters are present — which lets
+        ``filter_pages`` skip work entirely.
+    """
     filters: Dict[str, Any] = {}
     for key, param, split in (
         ("domains", "domains", True),
@@ -55,122 +97,149 @@ def _parse_filters() -> Optional[Dict[str, Any]]:
     return filters if filters else None
 
 
-# ── Page route ───────────────────────────────────────────────────────────
+# ── Project-level page route ─────────────────────────────────────────────
 
-@eco_bp.route("/p/<slug>/runs/<run_name>/ecosystem")
-def ecosystem_dashboard(slug: str, run_name: str):
+@eco_bp.route("/p/<slug>/ecosystem")
+def ecosystem_dashboard(slug: str):
+    """Render the ecosystem dashboard at project level."""
     project = storage_module.load_project(slug)
     if not project:
         return "Project not found", 404
     project["slug"] = slug
-    storage_module.activate_project(slug)
-    run_dir = os.path.join(config.OUTPUT_DIR, run_name)
-    if not os.path.isdir(run_dir):
-        return "Run not found", 404
-    friendly = storage_module._read_run_name(run_dir) or ""
+    ctx = storage_module.activate_project(slug)
+    runs = ctx.list_run_dirs()
+    preselected = request.args.get("runs", "")
     return render_template(
         "ecosystem.html",
         project=project,
-        run_name=run_name,
-        friendly_name=friendly,
+        runs=runs,
+        preselected_runs=preselected,
     )
 
 
-# ── JSON API endpoints ──────────────────────────────────────────────────
+# ── Legacy per-run redirect ─────────────────────────────────────────────
 
-@eco_bp.route("/p/<slug>/runs/<run_name>/api/viz/filter_options")
-def api_filter_options(slug: str, run_name: str):
-    run_dir = _resolve_run_dir(slug, run_name)
-    if not run_dir:
-        return jsonify({"error": "Run not found"}), 404
-    data = viz_data.get_filter_options(run_dir)
+@eco_bp.route("/p/<slug>/runs/<run_name>/ecosystem")
+def ecosystem_dashboard_legacy(slug: str, run_name: str):
+    """Redirect old per-run URLs to the project-level dashboard."""
+    return redirect(
+        url_for("ecosystem.ecosystem_dashboard", slug=slug, runs=run_name)
+    )
+
+
+# ── Runs list endpoint ──────────────────────────────────────────────────
+
+@eco_bp.route("/p/<slug>/api/viz/runs")
+def api_runs(slug: str):
+    """Return metadata for every run in this project (for the run picker)."""
+    project = storage_module.load_project(slug)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+    ctx = storage_module.activate_project(slug)
+    return jsonify(ctx.list_run_dirs())
+
+
+# ── JSON API endpoints (project-level) ──────────────────────────────────
+
+@eco_bp.route("/p/<slug>/api/viz/filter_options")
+def api_filter_options(slug: str):
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return jsonify({"domains": [], "cms_values": [],
+                        "content_kinds": [], "schema_types": [],
+                        "total_pages": 0})
+    data = viz_data.get_filter_options(run_dirs)
     return jsonify(data)
 
 
-@eco_bp.route("/p/<slug>/runs/<run_name>/api/viz/domains")
-def api_domains(slug: str, run_name: str):
-    run_dir = _resolve_run_dir(slug, run_name)
-    if not run_dir:
-        return jsonify({"error": "Run not found"}), 404
-    data = viz_data.aggregate_domains(run_dir, filters=_parse_filters())
+@eco_bp.route("/p/<slug>/api/viz/domains")
+def api_domains(slug: str):
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return jsonify([])
+    data = viz_data.aggregate_domains(run_dirs, filters=_parse_filters())
     return jsonify(data)
 
 
-@eco_bp.route("/p/<slug>/runs/<run_name>/api/viz/graph")
-def api_graph(slug: str, run_name: str):
-    run_dir = _resolve_run_dir(slug, run_name)
-    if not run_dir:
-        return jsonify({"error": "Run not found"}), 404
-    data = viz_data.aggregate_domain_graph(run_dir, filters=_parse_filters())
+@eco_bp.route("/p/<slug>/api/viz/graph")
+def api_graph(slug: str):
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return jsonify({"nodes": [], "links": []})
+    data = viz_data.aggregate_domain_graph(run_dirs, filters=_parse_filters())
     return jsonify(data)
 
 
-@eco_bp.route("/p/<slug>/runs/<run_name>/api/viz/tags")
-def api_tags(slug: str, run_name: str):
-    run_dir = _resolve_run_dir(slug, run_name)
-    if not run_dir:
-        return jsonify({"error": "Run not found"}), 404
-    data = viz_data.aggregate_tags(run_dir, filters=_parse_filters())
+@eco_bp.route("/p/<slug>/api/viz/tags")
+def api_tags(slug: str):
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return jsonify({"tags": [], "sources": {}, "cooccurrence": []})
+    data = viz_data.aggregate_tags(run_dirs, filters=_parse_filters())
     return jsonify(data)
 
 
-@eco_bp.route("/p/<slug>/runs/<run_name>/api/viz/navigation")
-def api_navigation(slug: str, run_name: str):
-    run_dir = _resolve_run_dir(slug, run_name)
-    if not run_dir:
-        return jsonify({"error": "Run not found"}), 404
+@eco_bp.route("/p/<slug>/api/viz/navigation")
+def api_navigation(slug: str):
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return jsonify({"domains": [], "tree": None})
     domain = request.args.get("domain")
     data = viz_data.aggregate_navigation(
-        run_dir, domain=domain, filters=_parse_filters(),
+        run_dirs, domain=domain, filters=_parse_filters(),
     )
     return jsonify(data)
 
 
-@eco_bp.route("/p/<slug>/runs/<run_name>/api/viz/freshness")
-def api_freshness(slug: str, run_name: str):
-    run_dir = _resolve_run_dir(slug, run_name)
-    if not run_dir:
-        return jsonify({"error": "Run not found"}), 404
-    data = viz_data.aggregate_freshness(run_dir, filters=_parse_filters())
+@eco_bp.route("/p/<slug>/api/viz/freshness")
+def api_freshness(slug: str):
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return jsonify({"today": "", "domains": []})
+    data = viz_data.aggregate_freshness(run_dirs, filters=_parse_filters())
     return jsonify(data)
 
 
-@eco_bp.route("/p/<slug>/runs/<run_name>/api/viz/chord")
-def api_chord(slug: str, run_name: str):
-    run_dir = _resolve_run_dir(slug, run_name)
-    if not run_dir:
-        return jsonify({"error": "Run not found"}), 404
+@eco_bp.route("/p/<slug>/api/viz/chord")
+def api_chord(slug: str):
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return jsonify({"domains": [], "matrix": []})
     top_n = request.args.get("top", 30, type=int)
     data = viz_data.aggregate_chord(
-        run_dir, top_n=top_n, filters=_parse_filters(),
+        run_dirs, top_n=top_n, filters=_parse_filters(),
     )
     return jsonify(data)
 
 
-@eco_bp.route("/p/<slug>/runs/<run_name>/api/viz/technology")
-def api_technology(slug: str, run_name: str):
-    run_dir = _resolve_run_dir(slug, run_name)
-    if not run_dir:
-        return jsonify({"error": "Run not found"}), 404
-    data = viz_data.aggregate_technology(run_dir, filters=_parse_filters())
+@eco_bp.route("/p/<slug>/api/viz/technology")
+def api_technology(slug: str):
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return jsonify({"cms_distribution": [],
+                        "structured_data_adoption": {},
+                        "schema_type_frequency": [],
+                        "seo_readiness": [],
+                        "coverage_histogram": []})
+    data = viz_data.aggregate_technology(run_dirs, filters=_parse_filters())
     return jsonify(data)
 
 
-@eco_bp.route("/p/<slug>/runs/<run_name>/api/viz/authorship")
-def api_authorship(slug: str, run_name: str):
-    run_dir = _resolve_run_dir(slug, run_name)
-    if not run_dir:
-        return jsonify({"error": "Run not found"}), 404
-    data = viz_data.aggregate_authorship(run_dir, filters=_parse_filters())
+@eco_bp.route("/p/<slug>/api/viz/authorship")
+def api_authorship(slug: str):
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return jsonify({"authors": [], "publishers": [], "author_network": {"nodes": [], "links": []}})
+    data = viz_data.aggregate_authorship(run_dirs, filters=_parse_filters())
     return jsonify(data)
 
 
-@eco_bp.route("/p/<slug>/runs/<run_name>/api/viz/schema_insights")
-def api_schema_insights(slug: str, run_name: str):
-    run_dir = _resolve_run_dir(slug, run_name)
-    if not run_dir:
-        return jsonify({"error": "Run not found"}), 404
+@eco_bp.route("/p/<slug>/api/viz/schema_insights")
+def api_schema_insights(slug: str):
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return jsonify({"products": None, "events": None, "jobs": None, "recipes": None})
     data = viz_data.aggregate_schema_insights(
-        run_dir, filters=_parse_filters(),
+        run_dirs, filters=_parse_filters(),
     )
     return jsonify(data)
