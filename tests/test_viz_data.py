@@ -1,7 +1,27 @@
-"""Tests for viz_data aggregation functions and global filter."""
+"""Visualisation data-layer test suite.
+
+Validates the aggregation functions and global filter that power the
+Flask GUI dashboards (viz_data module).  Coverage includes:
+
+  - filter_pages: no-op, single-facet, and combined filtering by CMS,
+    content kind, schema format, and minimum extraction coverage.
+  - aggregate_domains: per-domain roll-ups including Phase 4 fields
+    (CMS, authors, publishers, JSON-LD / hreflang / feed adoption
+    percentages, average extraction coverage).
+  - aggregate_technology: CMS distribution, structured-data adoption,
+    schema-type frequency, SEO-readiness, and coverage histogram.
+  - aggregate_authorship: author/publisher tables and co-occurrence
+    network (nodes + links).
+  - aggregate_schema_insights: vertical-specific summaries (Product,
+    Event, JobPosting) with a minimum-count threshold.
+  - get_filter_options: dynamic option lists derived from crawl data.
+
+Fixture helpers (_write_csv, _make_run_dir) build temporary crawl-run
+directories with CSV files matching the real output schema so that
+tests exercise the file-reading paths without touching actual projects.
+"""
 
 import csv
-import json
 import os
 import sys
 from pathlib import Path
@@ -14,6 +34,7 @@ import viz_data
 # ── Helpers to create temporary run directories with CSV data ─────────
 
 def _write_csv(path, fieldnames, rows):
+    """Write a single CSV file at *path*, creating parent directories."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
@@ -23,6 +44,11 @@ def _write_csv(path, fieldnames, rows):
 
 
 def _make_run_dir(tmp_path, pages=None, edges=None, tags=None, errors=None):
+    """Scaffold a temporary crawl-run directory with optional CSV files.
+
+    Accepts lists of row dicts; fieldnames are inferred from the first
+    row of each list.  Returns the absolute path to the run directory.
+    """
     run_dir = os.path.join(str(tmp_path), "test_run")
     os.makedirs(run_dir, exist_ok=True)
     if pages:
@@ -240,6 +266,7 @@ def test_filter_pages_by_min_coverage():
 
 
 def test_filter_pages_combined():
+    """Multiple filter facets are AND-ed together, not OR-ed."""
     result = viz_data.filter_pages(SAMPLE_PAGES, {
         "cms": ["WordPress"],
         "min_coverage": 50,
@@ -252,7 +279,7 @@ def test_filter_pages_combined():
 
 def test_aggregate_domains_basic(tmp_path):
     run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
-    result = viz_data.aggregate_domains(run_dir)
+    result = viz_data.aggregate_domains([run_dir])
     assert len(result) == 2
     domains = {r["domain"] for r in result}
     assert "example.com" in domains
@@ -260,8 +287,10 @@ def test_aggregate_domains_basic(tmp_path):
 
 
 def test_aggregate_domains_phase4_fields(tmp_path):
+    """Phase 4 roll-up columns (CMS, top authors/publishers, adoption
+    percentages) are present and correctly aggregated per domain."""
     run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
-    result = viz_data.aggregate_domains(run_dir)
+    result = viz_data.aggregate_domains([run_dir])
     ex = next(r for r in result if r["domain"] == "example.com")
     assert ex["cms_generator"] == "WordPress 6.4"
     assert "Alice Smith" in ex["top_authors"]
@@ -274,14 +303,14 @@ def test_aggregate_domains_phase4_fields(tmp_path):
 
 def test_aggregate_domains_with_filter(tmp_path):
     run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
-    result = viz_data.aggregate_domains(run_dir, filters={"cms": ["Shopify"]})
+    result = viz_data.aggregate_domains([run_dir], filters={"cms": ["Shopify"]})
     assert len(result) == 1
     assert result[0]["domain"] == "shop.example.com"
 
 
 def test_aggregate_technology(tmp_path):
     run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
-    result = viz_data.aggregate_technology(run_dir)
+    result = viz_data.aggregate_technology([run_dir])
 
     assert len(result["cms_distribution"]) >= 2
     cms_names = [c["cms"] for c in result["cms_distribution"]]
@@ -301,7 +330,7 @@ def test_aggregate_technology(tmp_path):
 
 def test_aggregate_authorship(tmp_path):
     run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
-    result = viz_data.aggregate_authorship(run_dir)
+    result = viz_data.aggregate_authorship([run_dir])
 
     assert len(result["authors"]) == 2
     author_names = [a["author"] for a in result["authors"]]
@@ -316,8 +345,11 @@ def test_aggregate_authorship(tmp_path):
 
 
 def test_aggregate_schema_insights(tmp_path):
+    """Vertical summaries are None when fewer than the minimum threshold
+    of items exist; once enough Product rows are added, the summary
+    materialises with the correct count."""
     run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
-    result = viz_data.aggregate_schema_insights(run_dir)
+    result = viz_data.aggregate_schema_insights([run_dir])
 
     assert result["products"] is None
     assert result["events"] is None
@@ -327,15 +359,15 @@ def test_aggregate_schema_insights(tmp_path):
         dict(SAMPLE_PAGES[2], schema_price="19.99", title="Widget Lite"),
         dict(SAMPLE_PAGES[2], schema_price="49.99", title="Widget Max"),
     ]
-    run_dir2 = _make_run_dir(Path(str(tmp_path) + "_2"), pages=extra_products)
-    result2 = viz_data.aggregate_schema_insights(run_dir2)
+    run_dir2 = _make_run_dir(tmp_path.parent / (tmp_path.name + "_2"), pages=extra_products)
+    result2 = viz_data.aggregate_schema_insights([run_dir2])
     assert result2["products"] is not None
     assert result2["products"]["count"] == 3
 
 
 def test_get_filter_options(tmp_path):
     run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
-    opts = viz_data.get_filter_options(run_dir)
+    opts = viz_data.get_filter_options([run_dir])
     assert "example.com" in opts["domains"]
     assert "shop.example.com" in opts["domains"]
     assert "WordPress 6.4" in opts["cms_values"]

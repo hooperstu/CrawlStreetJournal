@@ -38,7 +38,11 @@ def is_available() -> bool:
 
 
 def _get_browser():
-    """Lazy-initialise a shared headless Chromium browser instance."""
+    """Lazy-initialise a shared headless Chromium browser instance.
+
+    The instance is kept in module-level globals so subsequent calls reuse it
+    rather than paying the Chromium startup cost on every page render.
+    """
     global _browser, _playwright_instance
     if not _PLAYWRIGHT_AVAILABLE:
         return None
@@ -73,6 +77,9 @@ def render_page(
     try:
         context = browser.new_context(
             user_agent=user_agent or None,
+            # Many crawl targets use self-signed or expired certificates;
+            # rejecting them would silently lose pages that the main
+            # requests-based fetcher handles via verify=False.
             ignore_https_errors=True,
         )
         page = context.new_page()
@@ -105,7 +112,11 @@ def render_page(
 
 
 def close() -> None:
-    """Shut down the shared browser instance."""
+    """Shut down the shared browser instance and release Playwright resources.
+
+    Safe to call even if the browser was never started (both globals will
+    already be ``None``).
+    """
     global _browser, _playwright_instance
     if _browser is not None:
         try:

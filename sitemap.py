@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import xml.etree.ElementTree as ET
+from collections import deque
 from typing import Dict, List, Set, Tuple
 from urllib.parse import urljoin
 
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 def _local_tag(tag: str) -> str:
+    """Strip the XML namespace URI from an element tag, e.g. ``{http://...}url`` -> ``url``."""
     if "}" in tag:
         return tag.split("}", 1)[1]
     return tag
@@ -53,6 +55,9 @@ def parse_sitemap_xml(
         return child_maps, page_urls
 
     for el in root.iter():
+        # Sitemap XML may declare a default namespace (e.g.
+        # xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"); _local_tag
+        # strips it so tag names compare cleanly regardless.
         name = _local_tag(el.tag)
         if name == "sitemap":
             loc = None
@@ -90,10 +95,12 @@ def collect_urls_from_sitemap(
     """
     visited_maps = visited_maps if visited_maps is not None else set()
     out: List[Tuple[str, str]] = []
-    queue: List[str] = [start_url]
+    queue: deque[str] = deque([start_url])
 
+    # BFS: sitemap indexes are expanded breadth-first so that top-level
+    # entries (typically the most important pages) are collected first.
     while queue and len(out) < max_urls:
-        sm_url = queue.pop(0)
+        sm_url = queue.popleft()
         if sm_url in visited_maps:
             continue
         visited_maps.add(sm_url)

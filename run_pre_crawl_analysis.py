@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
 """
-Pre-crawl analysis: sample 20 pages from each target domain, detect tech
-stacks, and produce per-domain CSVs plus cross-domain summary and
-field-coverage reports.
+Pre-crawl analysis: sample pages from target domains before a full crawl.
+
+Pipeline stages:
+    1. For each target domain, attempt sitemap discovery (robots.txt then
+       common paths) and fall back to shallow BFS from the homepage.
+    2. Fetch up to ``SAMPLE_SIZE`` pages per domain and run the main parser
+       to extract page-inventory rows, plus CMS/framework tech-stack
+       detection via :func:`detect_tech_stack`.
+    3. Write per-domain CSVs (``pages.csv``, ``errors.csv``) under
+       ``pre_crawl_analysis/<domain>/``, a cross-domain ``summary.csv``,
+       and a ``field_coverage.csv`` showing column fill-rates grouped by
+       detected tech stack.
 
 Usage:
     python run_pre_crawl_analysis.py            # all domains
@@ -19,7 +28,6 @@ import signal
 import sys
 import time
 from collections import defaultdict, deque
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse, urljoin
 
@@ -30,9 +38,13 @@ import config
 import parser as parser_module
 import sitemap as sitemap_module
 import storage
+import utils
 
-# Permissive domain list used only during pre-crawl analysis so every
-# target domain is reachable regardless of the user's config.
+# Permissive domain suffix list used only during pre-crawl analysis.
+# Unlike the main crawl's ALLOWED_DOMAINS (which restricts the BFS to
+# user-specified hosts), this list deliberately accepts any common TLD so
+# that every target domain is reachable regardless of the project config.
+# It is swapped in at the start of main() and restored in the finally block.
 _PRE_CRAWL_ALLOWED_DOMAINS = (
     ".co.uk",
     ".org.uk",
@@ -45,6 +57,13 @@ _PRE_CRAWL_ALLOWED_DOMAINS = (
 
 logger = logging.getLogger("pre_crawl")
 
+# Output tree:
+#   pre_crawl_analysis/
+#     <sanitised-netloc>/pages.csv   — per-domain sampled page rows
+#     <sanitised-netloc>/errors.csv  — per-domain fetch/parse failures
+#     summary.csv                    — one row per domain with tech stack & stats
+#     field_coverage.csv             — column fill-rates grouped by tech stack
+#     pre_crawl.log                  — combined log for the entire run
 ANALYSIS_DIR = os.path.join(os.path.dirname(__file__) or ".", "pre_crawl_analysis")
 SAMPLE_SIZE = 20
 DELAY_SECONDS = 1.0
@@ -78,7 +97,21 @@ def detect_tech_stack(
     html: str,
     resp_headers: Optional[Dict[str, str]] = None,
 ) -> str:
-    """Return a short label for the detected CMS / framework."""
+    """Identify the CMS or framework powering a page.
+
+    Detection cascades through three tiers: ``<meta name="generator">``
+    content, HTML body marker strings, then HTTP response headers.  The
+    first positive match wins; pages with no recognisable signals return
+    ``"static/unknown"``.
+
+    Args:
+        html: Raw HTML body (only the first 500 kB is inspected for markers).
+        resp_headers: HTTP response headers, used as a fallback signal.
+
+    Returns:
+        Short human-readable label, e.g. ``"WordPress"``, ``"Drupal"``,
+        ``"static/unknown"``.
+    """
     html_lower = html[:500_000].lower()
     headers_lower = {
         k.lower(): v.lower()
@@ -162,7 +195,7 @@ def detect_tech_stack(
 # ---------------------------------------------------------------------------
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return utils.now_iso()
 
 
 def _sanitise_domain(netloc: str) -> str:
@@ -224,15 +257,11 @@ def _backfill_summary_from_csv(domain_path: str, summary: Dict[str, Any]) -> Non
 
 
 def _sanitise(value) -> str:
-    """Coerce a field value to a safe CSV string."""
-    if value is None:
-        return ""
-    s = str(value)
-    if "\x00" in s:
-        s = s.replace("\x00", "")
-    if len(s) > 32_000:
-        s = s[:32_000] + "…[truncated]"
-    return s
+    """Coerce a field value to a safe CSV string.
+
+    Delegates to ``utils.sanitise_csv_value``.
+    """
+    return utils.sanitise_csv_value(value)
 
 
 def _write_csv_header(path: str, fieldnames: tuple) -> None:
@@ -255,7 +284,7 @@ def _append_csv_row(path: str, fieldnames: tuple, row: Dict[str, Any]) -> None:
             w.writerow(safe)
     except Exception as e:
         url = safe.get("final_url") or safe.get("url") or "?"
-        logging.warning("CSV write failed for %s → %s: %s", url, path, e)
+        logger.warning("CSV write failed for %s → %s: %s", url, path, e)
 
 
 def _fetch_raw(url: str) -> Tuple[Optional[requests.Response], str]:
@@ -285,15 +314,16 @@ def _fetch_raw(url: str) -> Tuple[Optional[requests.Response], str]:
 # ---------------------------------------------------------------------------
 
 def _discover_sitemap_urls(origin: str, max_urls: int = 200) -> List[str]:
-    """Try robots.txt, then common sitemap locations. Return page URLs."""
+    """Discover page URLs via sitemaps, trying robots.txt then common paths.
+
+    Falls back to ``/sitemap.xml`` and ``/sitemap_index.xml`` when robots.txt
+    is absent or contains no Sitemap directives.
+    """
     sitemap_locations: List[str] = []
 
     resp, _ = _fetch_raw(origin.rstrip("/") + "/robots.txt")
     if resp and resp.status_code < 400:
-        for line in resp.text.splitlines():
-            line = line.strip()
-            if line.lower().startswith("sitemap:"):
-                sitemap_locations.append(line.split(":", 1)[1].strip())
+        sitemap_locations.extend(utils.parse_robots_for_sitemaps(resp.text))
 
     if not sitemap_locations:
         for path in ("/sitemap.xml", "/sitemap_index.xml"):
@@ -322,7 +352,11 @@ def _discover_sitemap_urls(origin: str, max_urls: int = 200) -> List[str]:
 
 
 def _pick_diverse(urls: List[str], n: int) -> List[str]:
-    """Select up to *n* URLs with diverse first path segments."""
+    """Select up to *n* URLs with diverse first path segments.
+
+    Round-robins across distinct first-segment buckets so the sample covers
+    different site sections rather than clustering in one area.
+    """
     if len(urls) <= n:
         return urls
 
@@ -357,9 +391,20 @@ def _bfs_collect(
     origin: str, homepage_html: str, n: int,
     allowed_netlocs: Optional[Set[str]] = None,
 ) -> List[str]:
-    """Shallow BFS on same domain from homepage, returning up to *n* URLs.
+    """Shallow BFS from the homepage, returning up to *n* same-domain URLs.
 
-    *allowed_netlocs* lets us accept both the seed and redirect-target hosts.
+    Only internal links without file extensions are followed.  The BFS does
+    not fetch additional pages — it extracts ``<a href>`` links from
+    *homepage_html* and queues them, so the result is breadth-first ordered
+    by link position in the DOM.
+
+    Args:
+        origin: Scheme + authority of the seed, e.g. ``https://example.com``.
+        homepage_html: Already-fetched homepage HTML to extract links from.
+        n: Maximum number of URLs to return.
+        allowed_netlocs: Accept links matching any of these hostnames.
+            Defaults to the seed's own netloc.  Passing both seed and
+            redirect-target hosts handles domain-level redirects.
     """
     if allowed_netlocs is None:
         allowed_netlocs = {urlparse(origin).netloc.lower()}
@@ -395,78 +440,46 @@ def _bfs_collect(
 # Process one domain
 # ---------------------------------------------------------------------------
 
-def _process_domain(
+def _prepare_urls(
     seed_url: str,
-    domain_idx: int,
-    total_domains: int,
-) -> Dict[str, Any]:
-    """Sample up to SAMPLE_SIZE pages from one domain. Returns summary dict."""
+    summary: Dict[str, Any],
+    ddir: str,
+    errors_csv: str,
+) -> Tuple[Optional[List[str]], str]:
+    """Fetch the homepage, detect tech stack, and discover URLs to sample.
+
+    Returns ``(urls_to_sample, tech)`` where *urls_to_sample* is ``None``
+    when the homepage is unreachable (the error has already been recorded).
+    *tech* is the detected tech-stack string.
+    """
     parsed = urlparse(seed_url)
     netloc = parsed.netloc.lower()
     origin = f"{parsed.scheme}://{parsed.netloc}"
-    ddir = _domain_dir(netloc)
-    pages_csv = os.path.join(ddir, "pages.csv")
-    errors_csv = os.path.join(ddir, "errors.csv")
 
-    summary: Dict[str, Any] = {
-        "domain": netloc,
-        "seed_url": seed_url,
-        "tech_stack": "",
-        "pages_sampled": 0,
-        "pages_failed": 0,
-        "sitemap_found": False,
-        "redirects_to": "",
-        "has_json_ld": False,
-        "has_og_tags": False,
-        "has_nav": False,
-        "avg_word_count": 0,
-        "distinct_content_kinds": "",
-        "notes": "",
-    }
-
-    existing = _existing_page_count(ddir)
-    if existing >= SAMPLE_SIZE:
-        logger.info(
-            "[%d/%d] SKIP %s — already has %d pages",
-            domain_idx, total_domains, netloc, existing,
-        )
-        summary["pages_sampled"] = existing
-        summary["notes"] = "resumed:already_complete"
-        _backfill_summary_from_csv(ddir, summary)
-        return summary
-
-    logger.info(
-        "[%d/%d] Starting %s ...",
-        domain_idx, total_domains, netloc,
-    )
-
-    # -- Fetch homepage -------------------------------------------------
     resp, err = _fetch_raw(seed_url)
     if resp is None:
         logger.warning("  homepage unreachable: %s", err)
         summary["notes"] = f"homepage_unreachable:{err}"
         os.makedirs(ddir, exist_ok=True)
-        _write_csv_header(pages_csv, PAGES_FIELDS_EXTENDED)
+        _write_csv_header(os.path.join(ddir, "pages.csv"), PAGES_FIELDS_EXTENDED)
         _write_csv_header(errors_csv, storage.ERROR_FIELDS)
         _append_csv_row(errors_csv, storage.ERROR_FIELDS, {
             "url": seed_url, "error_type": "homepage_unreachable",
             "message": err, "http_status": "", "discovered_at": _now_iso(),
         })
-        return summary
+        return None, "unreachable"
 
     homepage_html = resp.text if resp.status_code < 400 else ""
     final_netloc = urlparse(resp.url).netloc.lower()
     if final_netloc != netloc:
         summary["redirects_to"] = final_netloc
 
-    # -- Detect tech stack ----------------------------------------------
     resp_headers = dict(resp.headers) if resp else {}
     tech = detect_tech_stack(homepage_html, resp_headers) if homepage_html else "unreachable"
     summary["tech_stack"] = tech
     logger.info("  tech stack: %s", tech)
 
-    # -- Discover URLs --------------------------------------------------
-    # When the seed redirects (e.g. example.com -> www.example.com),
+    # When the seed redirects (e.g. example.com → www.example.com),
     # try sitemaps and BFS on the final origin too.
     final_origin = f"{urlparse(resp.url).scheme}://{urlparse(resp.url).netloc}"
     origins_to_try = [origin]
@@ -483,27 +496,38 @@ def _process_domain(
     if sm_urls:
         urls_to_sample = _pick_diverse(sm_urls, SAMPLE_SIZE)
         logger.info("  sitemap: %d URLs, picked %d", len(sm_urls), len(urls_to_sample))
+    elif homepage_html:
+        urls_to_sample = _bfs_collect(
+            final_origin, homepage_html, SAMPLE_SIZE,
+            allowed_netlocs=allowed_hosts,
+        )
+        logger.info("  BFS: found %d on-domain links", len(urls_to_sample))
     else:
-        if homepage_html:
-            urls_to_sample = _bfs_collect(
-                final_origin, homepage_html, SAMPLE_SIZE,
-                allowed_netlocs=allowed_hosts,
-            )
-            logger.info("  BFS: found %d on-domain links", len(urls_to_sample))
-        else:
-            urls_to_sample = [seed_url]
+        urls_to_sample = [seed_url]
 
-    # -- Initialise CSVs ------------------------------------------------
-    _write_csv_header(pages_csv, PAGES_FIELDS_EXTENDED)
-    _write_csv_header(errors_csv, storage.ERROR_FIELDS)
+    return urls_to_sample, tech
 
-    # -- Fetch & parse each page ----------------------------------------
+
+def _sample_pages(
+    urls_to_sample: List[str],
+    seed_url: str,
+    tech: str,
+    pages_csv: str,
+    errors_csv: str,
+    summary: Dict[str, Any],
+) -> None:
+    """Fetch and parse each sampled URL, writing rows to CSVs and updating *summary*.
+
+    Mutates *summary* in-place with ``has_json_ld``, ``has_og_tags``,
+    ``has_nav``, ``pages_sampled``, ``pages_failed``, ``avg_word_count``, and
+    ``distinct_content_kinds``.
+    """
     page_rows: List[Dict[str, Any]] = []
     kind_set: Set[str] = set()
     total_words = 0
     failed = 0
 
-    for i, url in enumerate(urls_to_sample):
+    for url in urls_to_sample:
         if _interrupted:
             summary["notes"] = "interrupted"
             break
@@ -580,10 +604,74 @@ def _process_domain(
     summary["avg_word_count"] = round(total_words / n_ok) if n_ok else 0
     summary["distinct_content_kinds"] = "|".join(sorted(kind_set))
 
+
+def _finalise_domain_summary(summary: Dict[str, Any]) -> None:
+    """Log the final per-domain stats after sampling is complete."""
     logger.info(
         "  done: %d pages OK, %d failed, kinds=%s",
-        n_ok, failed, summary["distinct_content_kinds"] or "(none)",
+        summary["pages_sampled"],
+        summary["pages_failed"],
+        summary["distinct_content_kinds"] or "(none)",
     )
+
+
+def _process_domain(
+    seed_url: str,
+    domain_idx: int,
+    total_domains: int,
+) -> Dict[str, Any]:
+    """Sample up to SAMPLE_SIZE pages from one domain and return a summary dict.
+
+    Skips domains whose per-domain ``pages.csv`` already has enough rows
+    (supports resuming after an interrupted run).
+
+    Delegates to ``_prepare_urls``, ``_sample_pages``, and
+    ``_finalise_domain_summary`` to keep each stage independently testable.
+    """
+    parsed = urlparse(seed_url)
+    netloc = parsed.netloc.lower()
+    ddir = _domain_dir(netloc)
+    pages_csv = os.path.join(ddir, "pages.csv")
+    errors_csv = os.path.join(ddir, "errors.csv")
+
+    summary: Dict[str, Any] = {
+        "domain": netloc,
+        "seed_url": seed_url,
+        "tech_stack": "",
+        "pages_sampled": 0,
+        "pages_failed": 0,
+        "sitemap_found": False,
+        "redirects_to": "",
+        "has_json_ld": False,
+        "has_og_tags": False,
+        "has_nav": False,
+        "avg_word_count": 0,
+        "distinct_content_kinds": "",
+        "notes": "",
+    }
+
+    existing = _existing_page_count(ddir)
+    if existing >= SAMPLE_SIZE:
+        logger.info(
+            "[%d/%d] SKIP %s — already has %d pages",
+            domain_idx, total_domains, netloc, existing,
+        )
+        summary["pages_sampled"] = existing
+        summary["notes"] = "resumed:already_complete"
+        _backfill_summary_from_csv(ddir, summary)
+        return summary
+
+    logger.info("[%d/%d] Starting %s ...", domain_idx, total_domains, netloc)
+
+    urls_to_sample, tech = _prepare_urls(seed_url, summary, ddir, errors_csv)
+    if urls_to_sample is None:
+        return summary
+
+    _write_csv_header(pages_csv, PAGES_FIELDS_EXTENDED)
+    _write_csv_header(errors_csv, storage.ERROR_FIELDS)
+
+    _sample_pages(urls_to_sample, seed_url, tech, pages_csv, errors_csv, summary)
+    _finalise_domain_summary(summary)
     return summary
 
 
@@ -721,6 +809,19 @@ def _dedup_targets(urls: List[str]) -> List[str]:
 
 
 def main(analysis_dir: Optional[str] = None, limit: Optional[int] = None) -> int:
+    """Run the full pre-crawl analysis pipeline.
+
+    Temporarily replaces ``config.ALLOWED_DOMAINS`` with the permissive
+    suffix list, iterates over target domains, then writes summary and
+    field-coverage reports.
+
+    Args:
+        analysis_dir: Override the default output directory.
+        limit: Process only the first *limit* domains (0 or None = all).
+
+    Returns:
+        0 on success, 1 on unhandled exception.
+    """
     global ANALYSIS_DIR
     if analysis_dir is not None:
         ANALYSIS_DIR = analysis_dir

@@ -1,4 +1,23 @@
-"""Tests for Phase 2 and Phase 4 parser extraction functions."""
+"""Parser extraction test suite — Phase 2 and Phase 4.
+
+Covers every public and private extraction helper in the parser module:
+  - Heading outline construction (H2–H6, excluding H1)
+  - Structured and visible date extraction (OG, JSON-LD, body text)
+  - Link and image counting (internal vs external, missing alt)
+  - Privacy-policy URL detection
+  - Analytics / tag-manager fingerprinting
+  - Training-keyword flagging (URL, title, H1 heuristics)
+  - Navigation link extraction and counting
+  - build_page_inventory_row integration (Phase 2 + Phase 4 columns)
+  - Phase 4 metadata: author, publisher, CMS generator, robots
+    directives, hreflang, feeds, pagination, breadcrumb schema,
+    microdata, RDFa, JSON-LD @id, schema-specific fields (Product,
+    Event, JobPosting), content-kind guessing, and extraction
+    coverage percentage.
+
+Fixture HTML fragments (SAMPLE_HTML, PHASE4_HTML, PRODUCT_HTML, etc.)
+are defined at module level so individual tests remain concise.
+"""
 
 import sys
 from pathlib import Path
@@ -57,6 +76,7 @@ def _soup():
 
 
 def test_heading_outline():
+    """H1 is deliberately excluded from the outline; only H2–H6 appear."""
     outline = parser_module._extract_heading_outline(_soup())
     assert "H2:Section One" in outline
     assert "H3:Subsection A" in outline
@@ -143,6 +163,8 @@ def test_extract_nav_links():
 
 
 def test_build_page_row_includes_new_fields():
+    """Integration: build_page_inventory_row populates all Phase 2 columns
+    including response_meta and sitemap_meta pass-through."""
     row, tags = parser_module.build_page_inventory_row(
         SAMPLE_HTML,
         requested_url="https://www.example.com/test",
@@ -306,6 +328,8 @@ def test_extract_author():
 
 
 def test_extract_author_from_meta():
+    """Fallback path: author is read from <meta name="author"> when no
+    JSON-LD author is present."""
     html = '<html><head><meta name="author" content="Alice"></head><body></body></html>'
     soup = BeautifulSoup(html, "lxml")
     assert parser_module._extract_author(soup) == "Alice"
@@ -316,6 +340,8 @@ def test_extract_publisher():
 
 
 def test_extract_publisher_fallback_og():
+    """Fallback path: publisher is derived from og:site_name when JSON-LD
+    publisher is absent."""
     html = '<html><head><meta property="og:site_name" content="Fallback Pub"></head><body></body></html>'
     soup = BeautifulSoup(html, "lxml")
     assert parser_module._extract_publisher(soup) == "Fallback Pub"
@@ -330,6 +356,8 @@ def test_detect_cms_generator():
 
 
 def test_detect_cms_generator_from_html_signals():
+    """Fallback path: CMS is inferred from known CDN script-src patterns
+    when no <meta name="generator"> tag is present."""
     html = '<html><head></head><body><script src="https://cdn.shopify.com/s/files/foo.js"></script></body></html>'
     soup = BeautifulSoup(html, "lxml")
     assert parser_module._detect_cms_generator(soup) == "Shopify"
@@ -341,6 +369,8 @@ def test_extract_robots_directives():
 
 
 def test_extract_robots_directives_with_header():
+    """Robots directives also surface from the X-Robots-Tag HTTP header,
+    prefixed with 'header:' to distinguish from meta-tag directives."""
     html = "<html><head></head><body></body></html>"
     soup = BeautifulSoup(html, "lxml")
     result = parser_module._extract_robots_directives(
@@ -443,6 +473,7 @@ def test_guess_content_kind_recipe():
 
 
 def test_guess_content_kind_job():
+    """URL hint is empty — classification relies solely on schema type."""
     kind = parser_module.guess_content_kind(
         "", ["JobPosting"], "", "/careers/senior-dev"
     )
@@ -457,6 +488,7 @@ def test_guess_content_kind_event():
 
 
 def test_extraction_coverage():
+    """Coverage percentage must be >0 (fields are populated) and <=100."""
     row, _ = parser_module.build_page_inventory_row(
         PHASE4_HTML,
         requested_url="https://example.com/page",
@@ -472,6 +504,8 @@ def test_extraction_coverage():
 
 
 def test_build_page_row_phase4_fields():
+    """Integration: build_page_inventory_row propagates all Phase 4 columns
+    and merges both meta-tag and HTTP-header robots directives."""
     row, _ = parser_module.build_page_inventory_row(
         PHASE4_HTML,
         requested_url="https://example.com/page",

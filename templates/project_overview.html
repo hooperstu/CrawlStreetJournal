@@ -1,3 +1,16 @@
+{#
+  project_overview.html — Project landing page with aggregated run metrics.
+  Route: GET /p/<slug>  (project_overview)
+  Context:
+    project  (dict)  — project metadata (name, slug, description).
+    m        (namespace) — aggregated metrics from _project_overview_metrics():
+        .total_runs, .total_pages, .total_assets, .total_errors,
+        .recent_runs (list of run dicts with status, page_count, etc.).
+    status   (dict)  — live crawl state for the project.
+
+  The delete-project flow uses a client-side confirmation pattern: the
+  user must type the project slug before the submit button is enabled.
+#}
 {% extends "base.html" %}
 {% set active_tab = 'overview' %}
 {% block title %}{{ project.name }} | CSJ{% endblock %}
@@ -96,7 +109,8 @@
   </a>
 </div>
 
-<div style="margin-top:20px;">
+<div style="margin-top:20px; display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap;">
+  <a href="{{ url_for('export_project_route', slug=project.slug) }}" class="btn btn-sm btn-secondary">Export Project</a>
   <button type="button" class="btn btn-sm btn-danger" id="delete-start">Delete Project</button>
 
   <div id="delete-confirm" style="display:none; margin-top:12px; padding:16px; border:2px solid var(--danger, #dc3545); border-radius:8px; max-width:420px;">
@@ -112,6 +126,8 @@
     <button type="button" class="btn btn-sm" id="delete-cancel" style="margin-left:6px;">Cancel</button>
   </div>
 
+  {# Slug-confirmation gate: the delete button stays disabled until the
+     user types the exact project slug into the text input. #}
   <script>
   (function () {
     var slug = {{ project.slug | tojson }};
