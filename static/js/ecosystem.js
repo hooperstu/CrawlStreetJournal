@@ -1977,6 +1977,597 @@
     });
   };
 
+  // ────────────────────────────────────────────────────────────────
+  // GLOBAL FILTER SYSTEM
+  // ────────────────────────────────────────────────────────────────
+  var activeFilters = {};
+  var filterOptionsData = null;
+
+  function buildFilterQuery() {
+    var parts = [];
+    if (activeFilters.cms) parts.push("cms=" + encodeURIComponent(activeFilters.cms));
+    if (activeFilters.content_kinds) parts.push("content_kinds=" + encodeURIComponent(activeFilters.content_kinds));
+    if (activeFilters.schema_formats) parts.push("schema_formats=" + encodeURIComponent(activeFilters.schema_formats));
+    if (activeFilters.min_coverage) parts.push("min_coverage=" + activeFilters.min_coverage);
+    return parts.length ? "?" + parts.join("&") : "";
+  }
+
+  function addFilterParam(url) {
+    var q = buildFilterQuery();
+    if (!q) return url;
+    return url + (url.indexOf("?") >= 0 ? "&" + q.substring(1) : q);
+  }
+
+  var _origFetchJSON = fetchJSON;
+  fetchJSON = function (url) {
+    var filtered = addFilterParam(url);
+    if (cache[filtered]) return Promise.resolve(cache[filtered]);
+    return d3.json(filtered).then(function (d) { cache[filtered] = d; return d; });
+  };
+
+  function onFilterChange() {
+    var cms = document.getElementById("filter-cms").value;
+    var kind = document.getElementById("filter-kind").value;
+    var schema = document.getElementById("filter-schema").value;
+    var cov = document.getElementById("filter-coverage").value;
+
+    activeFilters = {};
+    if (cms) activeFilters.cms = cms;
+    if (kind) activeFilters.content_kinds = kind;
+    if (schema) activeFilters.schema_formats = schema;
+    if (cov && parseFloat(cov) > 0) activeFilters.min_coverage = cov;
+
+    var count = Object.keys(activeFilters).length;
+    var badge = document.getElementById("filterCount");
+    var clearBtn = document.getElementById("filterClearAll");
+    if (count > 0) {
+      badge.textContent = count;
+      badge.style.display = "";
+      clearBtn.style.display = "";
+    } else {
+      badge.style.display = "none";
+      clearBtn.style.display = "none";
+    }
+
+    updateFilterChips();
+    cache = {};
+    rendered = {};
+    var activePanel = document.querySelector(".viz-tab.active");
+    if (activePanel) renderPanel(activePanel.dataset.panel);
+  }
+
+  function updateFilterChips() {
+    var el = document.getElementById("filterChips");
+    var chips = [];
+    if (activeFilters.cms) chips.push({ key: "cms", label: "CMS: " + activeFilters.cms });
+    if (activeFilters.content_kinds) chips.push({ key: "content_kinds", label: "Kind: " + activeFilters.content_kinds });
+    if (activeFilters.schema_formats) chips.push({ key: "schema_formats", label: "Schema: " + activeFilters.schema_formats });
+    if (activeFilters.min_coverage) chips.push({ key: "min_coverage", label: "Coverage ≥ " + activeFilters.min_coverage + "%" });
+    el.innerHTML = chips.map(function (c) {
+      return '<span class="filter-chip">' + c.label +
+        ' <span class="filter-chip-x" data-key="' + c.key + '">&times;</span></span>';
+    }).join("");
+    el.querySelectorAll(".filter-chip-x").forEach(function (x) {
+      x.addEventListener("click", function () {
+        var key = this.dataset.key;
+        if (key === "cms") document.getElementById("filter-cms").value = "";
+        if (key === "content_kinds") document.getElementById("filter-kind").value = "";
+        if (key === "schema_formats") document.getElementById("filter-schema").value = "";
+        if (key === "min_coverage") document.getElementById("filter-coverage").value = "";
+        onFilterChange();
+      });
+    });
+  }
+
+  document.getElementById("filter-cms").addEventListener("change", onFilterChange);
+  document.getElementById("filter-kind").addEventListener("change", onFilterChange);
+  document.getElementById("filter-schema").addEventListener("change", onFilterChange);
+  document.getElementById("filter-coverage").addEventListener("change", onFilterChange);
+  document.getElementById("filterClearAll").addEventListener("click", function () {
+    document.getElementById("filter-cms").value = "";
+    document.getElementById("filter-kind").value = "";
+    document.getElementById("filter-schema").value = "";
+    document.getElementById("filter-coverage").value = "";
+    onFilterChange();
+  });
+
+  d3.json(API.filter_options).then(function (opts) {
+    filterOptionsData = opts;
+    var cmsSel = document.getElementById("filter-cms");
+    (opts.cms_values || []).forEach(function (v) {
+      var o = document.createElement("option"); o.value = v; o.text = v; cmsSel.appendChild(o);
+    });
+    var kindSel = document.getElementById("filter-kind");
+    (opts.content_kinds || []).forEach(function (v) {
+      var o = document.createElement("option"); o.value = v; o.text = v; kindSel.appendChild(o);
+    });
+  });
+
+
+  // ────────────────────────────────────────────────────────────────
+  // 14. CMS Landscape (Treemap)
+  // ────────────────────────────────────────────────────────────────
+  VIZ.cmslandscape = function () {
+    fetchJSON(API.technology).then(function (data) {
+      hideLoading("loading-cmslandscape");
+      var cms = data.cms_distribution || [];
+      if (!cms.length) {
+        d3.select("#viz-cmslandscape").append("p").attr("class", "viz-desc")
+          .style("text-align", "center").style("padding", "60px 0")
+          .text("No CMS/platform data detected. The cms_generator field was empty for all pages.");
+        return;
+      }
+
+      var sz = vizSize("viz-cmslandscape");
+      var W = sz.w, H = sz.h;
+      var cmsColour = d3.scaleOrdinal(CSJ_PALETTE);
+
+      var root = d3.hierarchy({
+        name: "estate",
+        children: cms.map(function (c) {
+          return {
+            name: c.cms,
+            children: c.domains.map(function (d) {
+              return { name: d.domain, value: d.pages, cms: c.cms };
+            })
+          };
+        })
+      }).sum(function (d) { return d.value || 0; })
+        .sort(function (a, b) { return b.value - a.value; });
+
+      d3.treemap().size([W, H]).padding(2).paddingTop(18).round(true)(root);
+      var svg = d3.select("#viz-cmslandscape").append("svg").attr("width", W).attr("height", H);
+
+      var groups = svg.selectAll("g").data(root.children).enter().append("g");
+      groups.append("rect")
+        .attr("x", function (d) { return d.x0; }).attr("y", function (d) { return d.y0; })
+        .attr("width", function (d) { return d.x1 - d.x0; })
+        .attr("height", function (d) { return d.y1 - d.y0; })
+        .attr("fill", "none").attr("stroke", function (d) { return cmsColour(d.data.name); })
+        .attr("stroke-width", 2);
+      groups.append("text")
+        .attr("x", function (d) { return d.x0 + 4; }).attr("y", function (d) { return d.y0 + 13; })
+        .text(function (d) { return d.data.name + " (" + fmt(d.value) + " pages)"; })
+        .attr("font-size", 11).attr("font-weight", 700)
+        .attr("fill", function (d) { return cmsColour(d.data.name); });
+
+      var leaves = svg.selectAll(".leaf").data(root.leaves()).enter().append("g").attr("class", "leaf");
+      leaves.append("rect")
+        .attr("x", function (d) { return d.x0; }).attr("y", function (d) { return d.y0; })
+        .attr("width", function (d) { return d.x1 - d.x0; })
+        .attr("height", function (d) { return d.y1 - d.y0; })
+        .attr("fill", function (d) { return cmsColour(d.parent.data.name); })
+        .attr("fill-opacity", 0.7).attr("stroke", "#fff").attr("stroke-width", 0.5)
+        .on("mouseover", function (evt, d) {
+          d3.select(this).attr("fill-opacity", 1);
+          showTip(evt, "<strong>" + shortDomain(d.data.name) + "</strong><br>" +
+            "Platform: " + d.data.cms + "<br>Pages: " + fmt(d.data.value));
+        })
+        .on("mouseout", function () { d3.select(this).attr("fill-opacity", 0.7); hideTip(); });
+
+      leaves.append("text")
+        .attr("x", function (d) { return d.x0 + 3; }).attr("y", function (d) { return d.y0 + 13; })
+        .text(function (d) { return (d.x1 - d.x0 > 50 && d.y1 - d.y0 > 16) ? shortDomain(d.data.name) : ""; })
+        .attr("font-size", 10).attr("fill", "#fff").attr("pointer-events", "none");
+
+      buildLegend("legend-cmslandscape", cms.map(function (c, i) {
+        return { label: c.cms + " (" + c.domain_count + " domains)", colour: cmsColour(c.cms) };
+      }));
+    });
+  };
+
+  // ────────────────────────────────────────────────────────────────
+  // 15. Structured Data Adoption Matrix
+  // ────────────────────────────────────────────────────────────────
+  VIZ.structureddata = function () {
+    fetchJSON(API.domains).then(function (data) {
+      hideLoading("loading-structureddata");
+      var signals = ["has_json_ld_pct", "has_microdata_pct", "has_rdfa_pct",
+        "has_hreflang_pct", "has_feed_pct", "has_pagination_pct",
+        "has_breadcrumb_schema_pct", "robots_noindex_pct"];
+      var signalLabels = {
+        "has_json_ld_pct": "JSON-LD", "has_microdata_pct": "Microdata",
+        "has_rdfa_pct": "RDFa", "has_hreflang_pct": "Hreflang",
+        "has_feed_pct": "RSS/Atom Feed", "has_pagination_pct": "Pagination",
+        "has_breadcrumb_schema_pct": "Breadcrumb Schema", "robots_noindex_pct": "Noindex"
+      };
+
+      var top = data.filter(function (d) { return d.page_count >= 2; }).slice(0, 40);
+      if (!top.length) return;
+
+      var colourScale = d3.scaleSequential(d3.interpolateBlues).domain([0, 100]);
+      var warnColour = d3.scaleSequential(d3.interpolateReds).domain([0, 100]);
+      var sz = vizSize("viz-structureddata");
+
+      var labelW = 200, cellSize = 52;
+      var margin = { top: 130, right: 20, bottom: 10, left: labelW };
+      var gridW = signals.length * cellSize;
+      var rowH = 26;
+      var gridH = top.length * rowH;
+      var W = Math.max(sz.w, margin.left + gridW + margin.right);
+      var H = margin.top + gridH + margin.bottom;
+
+      var svg = d3.select("#viz-structureddata").append("svg").attr("width", W).attr("height", H);
+      var g = svg.append("g").attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+      signals.forEach(function (sig, j) {
+        svg.append("text")
+          .attr("x", 0).attr("y", 0)
+          .attr("transform",
+            "translate(" + (margin.left + j * cellSize + cellSize / 2) + "," + (margin.top - 10) + ") rotate(-55)")
+          .attr("font-size", 11).attr("text-anchor", "end").attr("fill", "#4c6272")
+          .text(signalLabels[sig] || sig);
+      });
+
+      top.forEach(function (d, i) {
+        var y = i * rowH;
+        g.append("text").attr("x", -8).attr("y", y + rowH / 2)
+          .attr("text-anchor", "end").attr("dominant-baseline", "central")
+          .attr("font-size", 11).attr("fill", "#1A1A1A").text(shortDomain(d.domain));
+
+        signals.forEach(function (sig, j) {
+          var val = d[sig] || 0;
+          var isWarn = sig === "robots_noindex_pct";
+          g.append("rect")
+            .attr("x", j * cellSize + 1).attr("y", y + 1)
+            .attr("width", cellSize - 2).attr("height", rowH - 2).attr("rx", 3)
+            .attr("fill", val > 0 ? (isWarn ? warnColour(Math.min(val, 100)) : colourScale(Math.min(val, 100))) : "#F2EFEB")
+            .on("mouseover", function (evt) {
+              showTip(evt, "<strong>" + shortDomain(d.domain) + "</strong><br>" +
+                (signalLabels[sig] || sig) + ": " + val.toFixed(1) + "% of " + fmt(d.page_count) + " pages");
+            })
+            .on("mouseout", hideTip);
+          if (val > 0) {
+            g.append("text").attr("x", j * cellSize + cellSize / 2).attr("y", y + rowH / 2)
+              .attr("text-anchor", "middle").attr("dominant-baseline", "central")
+              .attr("font-size", 9).attr("fill", val > 50 ? "#fff" : "#333").attr("pointer-events", "none")
+              .text(Math.round(val) + "%");
+          }
+        });
+      });
+
+      buildLegend("legend-structureddata", [
+        { colour: colourScale(90), label: "High adoption (>75%)" },
+        { colour: colourScale(40), label: "Partial adoption" },
+        { colour: colourScale(10), label: "Low adoption (<25%)" },
+        { colour: "#F2EFEB", label: "Not detected" }
+      ]);
+    });
+  };
+
+  // ────────────────────────────────────────────────────────────────
+  // 16. SEO Readiness Scorecard
+  // ────────────────────────────────────────────────────────────────
+  VIZ.seoreadiness = function () {
+    fetchJSON(API.technology).then(function (data) {
+      hideLoading("loading-seoreadiness");
+      var seo = (data.seo_readiness || []).slice(0, 40);
+      if (!seo.length) return;
+
+      var checks = ["has_canonical", "has_structured_data", "has_breadcrumb_schema",
+        "has_hreflang", "has_feed", "has_pagination", "has_robots"];
+      var checkLabels = {
+        "has_canonical": "Canonical", "has_structured_data": "Structured Data",
+        "has_breadcrumb_schema": "Breadcrumb", "has_hreflang": "Hreflang",
+        "has_feed": "Feed", "has_pagination": "Pagination", "has_robots": "Robots"
+      };
+
+      var sz = vizSize("viz-seoreadiness");
+      var labelW = 200, cellSize = 48, rowH = 26;
+      var margin = { top: 120, right: 50, bottom: 10, left: labelW };
+      var gridW = checks.length * cellSize;
+      var gridH = seo.length * rowH;
+      var W = Math.max(sz.w, margin.left + gridW + margin.right);
+      var H = margin.top + gridH + margin.bottom;
+
+      var svg = d3.select("#viz-seoreadiness").append("svg").attr("width", W).attr("height", H);
+      var g = svg.append("g").attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+      checks.forEach(function (chk, j) {
+        svg.append("text")
+          .attr("transform",
+            "translate(" + (margin.left + j * cellSize + cellSize / 2) + "," + (margin.top - 10) + ") rotate(-55)")
+          .attr("font-size", 11).attr("text-anchor", "end").attr("fill", "#4c6272")
+          .text(checkLabels[chk] || chk);
+      });
+
+      var green = "#2D6A4F", amber = "#C4841D", red = "#A4243B", grey = "#F2EFEB";
+
+      seo.forEach(function (d, i) {
+        var y = i * rowH;
+        var pc = d.pages || 1;
+        g.append("text").attr("x", -8).attr("y", y + rowH / 2)
+          .attr("text-anchor", "end").attr("dominant-baseline", "central")
+          .attr("font-size", 11).attr("fill", "#1A1A1A").text(shortDomain(d.domain));
+
+        var totalScore = 0;
+        checks.forEach(function (chk, j) {
+          var val = d[chk] || 0;
+          var pct = val / pc * 100;
+          totalScore += pct;
+          var colour = pct === 0 ? grey : pct >= 80 ? green : pct >= 30 ? amber : red;
+          g.append("rect")
+            .attr("x", j * cellSize + 1).attr("y", y + 1)
+            .attr("width", cellSize - 2).attr("height", rowH - 2).attr("rx", 3)
+            .attr("fill", colour).attr("fill-opacity", pct === 0 ? 1 : 0.8)
+            .on("mouseover", function (evt) {
+              showTip(evt, "<strong>" + shortDomain(d.domain) + "</strong><br>" +
+                (checkLabels[chk] || chk) + ": " + val + " / " + pc + " pages (" + pct.toFixed(1) + "%)");
+            })
+            .on("mouseout", hideTip);
+          if (pct > 0) {
+            g.append("text").attr("x", j * cellSize + cellSize / 2).attr("y", y + rowH / 2)
+              .attr("text-anchor", "middle").attr("dominant-baseline", "central")
+              .attr("font-size", 9).attr("fill", "#fff").attr("pointer-events", "none")
+              .text(Math.round(pct) + "%");
+          }
+        });
+
+        var avgScore = Math.round(totalScore / checks.length);
+        g.append("text").attr("x", gridW + 12).attr("y", y + rowH / 2)
+          .attr("text-anchor", "start").attr("dominant-baseline", "central")
+          .attr("font-size", 10).attr("fill", "#5A5246").attr("font-weight", 600)
+          .text(avgScore + "%");
+      });
+
+      g.append("text").attr("x", gridW + 12).attr("y", -10)
+        .attr("text-anchor", "start").attr("font-size", 10)
+        .attr("fill", "#5A5246").attr("font-weight", 600).text("Avg");
+    });
+  };
+
+  // ────────────────────────────────────────────────────────────────
+  // 17. Extraction Coverage Histogram
+  // ────────────────────────────────────────────────────────────────
+  VIZ.coverage = function () {
+    fetchJSON(API.technology).then(function (data) {
+      hideLoading("loading-coverage");
+      var hist = data.coverage_histogram || [];
+      if (!hist.length) return;
+
+      var sz = vizSize("viz-coverage");
+      var margin = { top: 20, right: 20, bottom: 40, left: 50 };
+      var W = sz.w, H = 350;
+      var iW = W - margin.left - margin.right;
+      var iH = H - margin.top - margin.bottom;
+
+      var svg = d3.select("#viz-coverage").append("svg").attr("width", W).attr("height", H);
+      var g = svg.append("g").attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+      var x = d3.scaleBand().domain(hist.map(function (h) { return h.bucket; })).range([0, iW]).padding(0.15);
+      var maxCount = d3.max(hist, function (h) { return h.count; }) || 1;
+      var y = d3.scaleLinear().domain([0, maxCount]).range([iH, 0]);
+      var colourScale = d3.scaleSequential(d3.interpolateBlues).domain([0, 90]);
+
+      g.selectAll("rect").data(hist).enter().append("rect")
+        .attr("x", function (d) { return x(d.bucket); })
+        .attr("y", function (d) { return y(d.count); })
+        .attr("width", x.bandwidth())
+        .attr("height", function (d) { return iH - y(d.count); })
+        .attr("fill", function (d) {
+          var mid = parseInt(d.bucket);
+          return colourScale(mid);
+        })
+        .attr("rx", 2)
+        .on("mouseover", function (evt, d) {
+          showTip(evt, "<strong>" + d.bucket + "</strong><br>" + fmt(d.count) + " pages");
+        })
+        .on("mouseout", hideTip);
+
+      g.selectAll("text.bar-label").data(hist).enter().append("text")
+        .attr("x", function (d) { return x(d.bucket) + x.bandwidth() / 2; })
+        .attr("y", function (d) { return y(d.count) - 4; })
+        .attr("text-anchor", "middle").attr("font-size", 10).attr("fill", "#5A5246")
+        .text(function (d) { return d.count > 0 ? fmt(d.count) : ""; });
+
+      g.append("g").attr("transform", "translate(0," + iH + ")")
+        .call(d3.axisBottom(x)).selectAll("text").attr("font-size", 10);
+      g.append("g").call(d3.axisLeft(y).ticks(5));
+
+      svg.append("text").attr("x", W / 2).attr("y", H - 4)
+        .attr("text-anchor", "middle").attr("font-size", 12).attr("fill", "#5A5246")
+        .text("Extraction coverage (% of fields populated)");
+    });
+  };
+
+  // ────────────────────────────────────────────────────────────────
+  // 18. Author Network
+  // ────────────────────────────────────────────────────────────────
+  VIZ.authornetwork = function () {
+    fetchJSON(API.authorship).then(function (data) {
+      hideLoading("loading-authornetwork");
+      var net = data.author_network || { nodes: [], links: [] };
+      if (!net.nodes.length) {
+        d3.select("#viz-authornetwork").append("p").attr("class", "viz-desc")
+          .style("text-align", "center").style("padding", "60px 0")
+          .text("No author data detected. The author field was empty for all pages.");
+        return;
+      }
+
+      var sz = vizSize("viz-authornetwork");
+      var W = sz.w, H = Math.max(500, sz.h);
+      var maxPages = d3.max(net.nodes, function (n) { return n.pages; }) || 1;
+      var rScale = d3.scaleSqrt().domain([0, maxPages]).range([4, 35]);
+
+      var svg = d3.select("#viz-authornetwork").append("svg").attr("width", W).attr("height", H);
+      var g = svg.append("g");
+      svg.call(d3.zoom().scaleExtent([0.2, 5]).on("zoom", function (evt) {
+        g.attr("transform", evt.transform);
+      }));
+
+      var authorColour = "#C4841D", domainColour = "#2D6A4F";
+      var maxWeight = d3.max(net.links, function (l) { return l.weight; }) || 1;
+
+      var sim = d3.forceSimulation(net.nodes)
+        .force("link", d3.forceLink(net.links).id(function (d) { return d.id; }).distance(100).strength(0.3))
+        .force("charge", d3.forceManyBody().strength(-180))
+        .force("center", d3.forceCenter(W / 2, H / 2))
+        .force("collision", d3.forceCollide().radius(function (d) { return rScale(d.pages) + 3; }));
+
+      var link = g.selectAll("line").data(net.links).enter().append("line")
+        .attr("stroke", "#ccc").attr("stroke-opacity", 0.5)
+        .attr("stroke-width", function (d) { return Math.max(0.5, d.weight / maxWeight * 4); });
+
+      var node = g.selectAll("circle").data(net.nodes).enter().append("circle")
+        .attr("r", function (d) { return rScale(d.pages); })
+        .attr("fill", function (d) { return d.type === "author" ? authorColour : domainColour; })
+        .attr("stroke", "#fff").attr("stroke-width", 1.5).attr("cursor", "pointer")
+        .on("mouseover", function (evt, d) {
+          showTip(evt, "<strong>" + d.label + "</strong><br>" +
+            (d.type === "author" ? "Author" : "Domain") + "<br>Pages: " + fmt(d.pages));
+        })
+        .on("mouseout", hideTip)
+        .call(d3.drag()
+          .on("start", function (evt, d) { if (!evt.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+          .on("drag", function (evt, d) { d.fx = evt.x; d.fy = evt.y; })
+          .on("end", function (evt, d) { if (!evt.active) sim.alphaTarget(0); d.fx = null; d.fy = null; })
+        );
+
+      var labels = g.selectAll("text").data(net.nodes.filter(function (n) { return n.pages > 5; }))
+        .enter().append("text")
+        .text(function (d) { return d.type === "domain" ? shortDomain(d.label) : d.label; })
+        .attr("font-size", 9).attr("fill", "#1A1A1A").attr("text-anchor", "middle")
+        .attr("dy", function (d) { return rScale(d.pages) + 12; })
+        .attr("pointer-events", "none");
+
+      sim.on("tick", function () {
+        link.attr("x1", function (d) { return d.source.x; }).attr("y1", function (d) { return d.source.y; })
+          .attr("x2", function (d) { return d.target.x; }).attr("y2", function (d) { return d.target.y; });
+        node.attr("cx", function (d) { return d.x; }).attr("cy", function (d) { return d.y; });
+        labels.attr("x", function (d) { return d.x; }).attr("y", function (d) { return d.y; });
+      });
+
+      buildLegend("legend-authornetwork", [
+        { label: "Author", colour: authorColour },
+        { label: "Domain", colour: domainColour }
+      ]);
+    });
+  };
+
+  // ────────────────────────────────────────────────────────────────
+  // 19. Publisher Landscape
+  // ────────────────────────────────────────────────────────────────
+  VIZ.publishers = function () {
+    fetchJSON(API.authorship).then(function (data) {
+      hideLoading("loading-publishers");
+      var pubs = (data.publishers || []).slice(0, 30);
+      if (!pubs.length) {
+        d3.select("#viz-publishers").append("p").attr("class", "viz-desc")
+          .style("text-align", "center").style("padding", "60px 0")
+          .text("No publisher data detected.");
+        return;
+      }
+
+      var margin = { top: 10, right: 60, bottom: 10, left: 200 };
+      var barH = 22, gap = 4;
+      var sz = vizSize("viz-publishers");
+      var W = sz.w;
+      var iW = W - margin.left - margin.right;
+      var H = margin.top + margin.bottom + pubs.length * (barH + gap);
+      var maxPages = d3.max(pubs, function (d) { return d.total_pages; }) || 1;
+      var x = d3.scaleLinear().domain([0, maxPages]).range([0, iW]);
+
+      var svg = d3.select("#viz-publishers").append("svg").attr("width", W).attr("height", H);
+      var g = svg.append("g").attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+      pubs.forEach(function (pub, i) {
+        var y = i * (barH + gap);
+        var label = pub.publisher.length > 28 ? pub.publisher.slice(0, 26) + "\u2026" : pub.publisher;
+        g.append("text").attr("x", -6).attr("y", y + barH / 2 + 4)
+          .attr("text-anchor", "end").attr("font-size", 11).attr("fill", "#1A1A1A").text(label);
+        g.append("rect").attr("x", 0).attr("y", y)
+          .attr("width", x(pub.total_pages)).attr("height", barH)
+          .attr("fill", "#2D6A4F").attr("fill-opacity", 0.8).attr("rx", 2)
+          .on("mouseover", function (evt) {
+            showTip(evt, "<strong>" + pub.publisher + "</strong><br>" +
+              fmt(pub.total_pages) + " pages across " + pub.domain_count + " domains");
+          })
+          .on("mouseout", hideTip);
+        g.append("text").attr("x", x(pub.total_pages) + 4).attr("y", y + barH / 2 + 4)
+          .attr("font-size", 10).attr("fill", "#5A5246")
+          .text(fmt(pub.total_pages) + " (" + pub.domain_count + " domains)");
+      });
+    });
+  };
+
+  // ────────────────────────────────────────────────────────────────
+  // 20. Schema Insights (conditional)
+  // ────────────────────────────────────────────────────────────────
+  VIZ.schemainsights = function () {
+    fetchJSON(API.schema_insights).then(function (data) {
+      hideLoading("loading-schemainsights");
+      var container = d3.select("#viz-schemainsights");
+      var hasAny = false;
+
+      if (data.products) {
+        hasAny = true;
+        var sec = container.append("div").style("margin-bottom", "32px");
+        sec.append("h3").style("font-size", "15px").style("font-weight", "700")
+          .style("color", "var(--csj-headline)").style("margin", "0 0 8px")
+          .text("Products (" + fmt(data.products.count) + " items)");
+        var statsHtml = [
+          "Price range: " + data.products.price_min + " – " + data.products.price_max,
+          "Average price: " + data.products.price_avg,
+          "Domains: " + data.products.by_domain.length
+        ].join(" · ");
+        sec.append("p").style("font-size", "13px").style("color", "var(--csj-body)")
+          .style("margin", "0 0 12px").html(statsHtml);
+
+        var avail = data.products.availability;
+        if (avail && Object.keys(avail).length) {
+          var chips = Object.keys(avail).map(function (k) {
+            return '<span class="ndo-badge" style="margin-right:4px;">' + k + ': ' + avail[k] + '</span>';
+          }).join("");
+          sec.append("div").style("margin-bottom", "8px").html(chips);
+        }
+      }
+
+      if (data.events) {
+        hasAny = true;
+        var sec2 = container.append("div").style("margin-bottom", "32px");
+        sec2.append("h3").style("font-size", "15px").style("font-weight", "700")
+          .style("color", "var(--csj-headline)").style("margin", "0 0 8px")
+          .text("Events (" + fmt(data.events.count) + " items)");
+        var evList = (data.events.events || []).slice(0, 15);
+        var evHtml = evList.map(function (ev) {
+          return '<div style="padding:3px 0;font-size:12px;border-bottom:1px solid var(--csj-newsprint);">' +
+            '<strong>' + ev.date + '</strong> — ' + ev.title +
+            (ev.location ? ' <span style="color:var(--csj-body);">(' + ev.location + ')</span>' : '') +
+            '</div>';
+        }).join("");
+        sec2.append("div").html(evHtml);
+      }
+
+      if (data.jobs) {
+        hasAny = true;
+        var sec3 = container.append("div").style("margin-bottom", "32px");
+        sec3.append("h3").style("font-size", "15px").style("font-weight", "700")
+          .style("color", "var(--csj-headline)").style("margin", "0 0 8px")
+          .text("Job Postings (" + fmt(data.jobs.count) + " items)");
+        if (data.jobs.by_location && data.jobs.by_location.length) {
+          var locChips = data.jobs.by_location.slice(0, 10).map(function (loc) {
+            return '<span class="ndo-badge" style="margin-right:4px;">' + loc.location + ': ' + loc.count + '</span>';
+          }).join("");
+          sec3.append("div").style("margin-bottom", "8px").html("<strong>By location:</strong> " + locChips);
+        }
+      }
+
+      if (data.recipes) {
+        hasAny = true;
+        var sec4 = container.append("div").style("margin-bottom", "32px");
+        sec4.append("h3").style("font-size", "15px").style("font-weight", "700")
+          .style("color", "var(--csj-headline)").style("margin", "0 0 8px")
+          .text("Recipes (" + fmt(data.recipes.count) + " items)");
+      }
+
+      if (!hasAny) {
+        container.append("p").attr("class", "viz-desc")
+          .style("text-align", "center").style("padding", "60px 0")
+          .text("No domain-specific schema data (Product, Event, Job, Recipe) found in this crawl. These insights appear automatically when relevant Schema.org types are detected.");
+      }
+    });
+  };
+
   // ── Initial render ──────────────────────────────────────────────
   renderPanel("network");
 
