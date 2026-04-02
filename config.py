@@ -114,6 +114,12 @@ LINK_CHECKS_CSV = "link_checks.csv"
 MAX_LINK_CHECKS_PER_PAGE = 50
 LINK_CHECK_DELAY_SECONDS = 0.5
 
+# ── JAVASCRIPT RENDERING (optional) ──────────────────────────────────
+# When True, the crawler fetches pages via a headless Chromium browser
+# (Playwright) so that client-side rendered content is available to the
+# parser.  Requires: pip install playwright && playwright install chromium
+RENDER_JAVASCRIPT = False
+
 # ── DOMAIN SCOPE ─────────────────────────────────────────────────────
 # A URL is allowed if its hostname equals any of these entries or is a
 # subdomain of one (matched at the dot boundary).  For example,
@@ -233,6 +239,7 @@ class CrawlConfig:
     MAX_LINK_CHECKS_PER_PAGE: int = 50
     LINK_CHECK_DELAY_SECONDS: float = 0.5
     CAPTURE_READABILITY: bool = True
+    RENDER_JAVASCRIPT: bool = False
     ALLOWED_DOMAINS: Any = ()
     USER_AGENT: str = ""
     LOG_LEVEL: str = "INFO"

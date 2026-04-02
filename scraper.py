@@ -200,6 +200,9 @@ def fetch_page(
                 meta = {
                     "last_modified": (resp.headers.get("Last-Modified") or "").strip(),
                     "etag": (resp.headers.get("ETag") or "").strip(),
+                    "x_robots_tag": (resp.headers.get("X-Robots-Tag") or "").strip(),
+                    "server": (resp.headers.get("Server") or "").strip(),
+                    "x_powered_by": (resp.headers.get("X-Powered-By") or "").strip(),
                 }
             if status >= 400:
                 last_error = f"HTTP {status}"
@@ -640,6 +643,8 @@ def crawl(
             hostname = (urlparse(url).hostname or "").lower()
             _wait_for_domain(hostname, delay_cfg)
 
+            _render_js = cfg.RENDER_JAVASCRIPT if cfg else config.RENDER_JAVASCRIPT
+
             html, status, final_url, ctype, resp_meta, error_detail = fetch_page(url, cfg)
             if html is None:
                 _record_domain_failure(hostname)
@@ -651,6 +656,33 @@ def crawl(
                     "discovered_at": _now_iso(),
                 })
                 continue
+
+            # JS rendering fallback: re-fetch via headless browser when the
+            # static HTML body is suspiciously thin (likely a JS-rendered SPA).
+            if _render_js and html and len(html.strip()) < 2000:
+                try:
+                    import render as render_module
+                    if render_module.is_available():
+                        rendered = render_module.render_page(
+                            url,
+                            user_agent=cfg.USER_AGENT if cfg else config.USER_AGENT,
+                        )
+                        if rendered is not None:
+                            r_html, r_status, r_final, r_ct, r_headers = rendered
+                            if r_html and len(r_html.strip()) > len(html.strip()):
+                                html = r_html
+                                status = r_status
+                                final_url = r_final
+                                ctype = r_ct
+                                resp_meta.update({
+                                    "x_robots_tag": (r_headers.get("x-robots-tag") or "").strip(),
+                                    "server": (r_headers.get("server") or resp_meta.get("server", "")).strip(),
+                                })
+                                logger.debug("JS-rendered %s (%d → %d bytes)", url, len(html), len(r_html))
+                except ImportError:
+                    pass
+                except Exception as render_err:
+                    logger.debug("JS render fallback failed for %s: %s", url, render_err)
 
             _record_domain_success(hostname)
 
