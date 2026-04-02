@@ -1,4 +1,22 @@
-"""Tests for the signals_audit module."""
+"""Signals-audit test suite.
+
+The signals_audit module is a standalone research tool that inventories
+every discoverable metadata signal on a page.  This suite verifies
+audit_page() and summarise_audit() against a single richly-annotated
+HTML fixture that contains:
+
+  - Meta tags: generator, author, robots, description, OG, Twitter
+  - Link tags: canonical, alternate (hreflang + RSS), icon
+  - JSON-LD (Article with @id, author, publisher, datePublished)
+  - Microdata (schema.org/Article via itemscope/itemprop)
+  - RDFa (schema.org/Article via typeof/property)
+  - HTML signals: lang attribute, body classes, landmark elements
+  - Data attributes on body
+  - <time> elements with datetime values
+  - Response headers passed in externally
+
+Each test targets one category so regressions are easy to localise.
+"""
 
 import sys
 from pathlib import Path
@@ -63,6 +81,8 @@ SAMPLE_HTML = """\
 
 
 def test_audit_page_returns_all_categories():
+    """The top-level report must contain exactly the expected category keys
+    — no more, no fewer — so downstream consumers can rely on the shape."""
     report = signals_audit.audit_page(SAMPLE_HTML, url="https://example.com/page")
     expected_keys = {
         "url", "meta_tags", "link_tags", "json_ld", "microdata",
@@ -153,6 +173,8 @@ def test_audit_response_headers():
 
 
 def test_summarise_audit():
+    """summarise_audit() condenses the full audit dict into a flat
+    overview with boolean has_* flags and comma-separated property lists."""
     report = signals_audit.audit_page(
         SAMPLE_HTML,
         url="https://example.com/page",

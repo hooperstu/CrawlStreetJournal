@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
-The Crawl Street Journal — crawl allowed hosts, record page metadata to CSV,
-and write linked files to per-type asset CSVs.
+The Crawl Street Journal — CLI crawl entry point.
+
+Registers SIGINT/SIGTERM handlers for graceful mid-crawl shutdown, optionally
+activates a project scope (so output lands under ``projects/<slug>/runs/``),
+then delegates to :mod:`scraper` for the actual crawl loop.  Progress is
+logged to the console every 10 pages.
 
 Configure seeds, domains, and limits in config.py.
 """
@@ -19,12 +23,14 @@ _interrupted = False
 
 
 def _signal_handler(_signum, _frame):
+    """Set the interrupt flag so the crawl loop finishes its current page before exiting."""
     global _interrupted
     _interrupted = True
     print("\nShutting down after current page...", file=sys.stderr)
 
 
 def _on_progress(crawled: int, assets: int, current_url: str) -> None:
+    """Log crawl progress every 10 pages to keep console noise manageable."""
     if crawled % 10 == 0 and crawled > 0:
         logging.info(
             "Progress: %s pages crawled, %s asset link rows written, last %s",
@@ -35,6 +41,11 @@ def _on_progress(crawled: int, assets: int, current_url: str) -> None:
 
 
 def main() -> int:
+    """Parse CLI arguments, wire up signal handling, and run the crawl.
+
+    Returns:
+        0 on success or graceful interrupt, 1 on unhandled exception.
+    """
     parser = argparse.ArgumentParser(description="CSJ crawl")
     parser.add_argument("--name", default=None, help="Friendly name for a new run")
     parser.add_argument(

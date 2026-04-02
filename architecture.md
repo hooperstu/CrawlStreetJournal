@@ -1,0 +1,753 @@
+# Architecture — The Crawl Street Journal
+
+This document describes how the application is built and how it works, from high-level structure down to individual module responsibilities. It is intended for developers picking up the codebase.
+
+---
+
+## Table of contents
+
+1. [High-level overview](#1-high-level-overview)
+2. [Module dependency map](#2-module-dependency-map)
+3. [Entry points](#3-entry-points)
+4. [Configuration system](#4-configuration-system)
+5. [Project and run data model](#5-project-and-run-data-model)
+6. [Crawl pipeline](#6-crawl-pipeline)
+7. [Parser architecture (Phases 1–4)](#7-parser-architecture-phases-14)
+8. [Storage layer](#8-storage-layer)
+9. [Ecosystem visualisation layer](#9-ecosystem-visualisation-layer)
+10. [Pre-crawl analysis](#10-pre-crawl-analysis)
+11. [Signals audit module](#11-signals-audit-module)
+12. [Desktop packaging](#12-desktop-packaging)
+13. [Testing](#13-testing)
+
+---
+
+## 1. High-level overview
+
+The Crawl Street Journal is a **single-process Python application** with a Flask web GUI. There are no databases, Docker containers, or separate microservices. Persistence is entirely filesystem-based: JSON for configuration and crawl state, CSV for all output data.
+
+The application has three conceptual layers:
+
+- **Entry points** — how the application is started (desktop app, Flask GUI, CLI scripts)
+- **Crawl pipeline** — the modules that orchestrate fetching, parsing, and writing
+- **Storage and visualisation** — the modules that persist and aggregate data
+
+```mermaid
+graph TD
+    subgraph entryPoints [Entry Points]
+        launcher[launcher.py]
+        guiPy[gui.py]
+        mainPy[main.py]
+        bgCrawl[run_background_crawl.py]
+        preAnalysis[run_pre_crawl_analysis.py]
+    end
+    subgraph pipeline [Crawl Pipeline]
+        scraper[scraper.py]
+        parser[parser.py]
+        sitemap[sitemap.py]
+        renderPy[render.py]
+    end
+    subgraph storageViz [Storage and Viz]
+        storage[storage.py]
+        vizData[viz_data.py]
+        vizApi[viz_api.py]
+        ecosystemJs[ecosystem.js]
+    end
+    launcher --> guiPy
+    guiPy --> scraper
+    mainPy --> scraper
+    bgCrawl --> scraper
+    preAnalysis --> parser
+    preAnalysis --> sitemap
+    scraper --> parser
+    scraper --> sitemap
+    scraper --> renderPy
+    scraper --> storage
+    guiPy --> vizApi
+    vizApi --> vizData
+    vizData --> storage
+    ecosystemJs --> vizApi
+```
+
+---
+
+## 2. Module dependency map
+
+The directed graph below shows which modules import which. `utils.py` and `config.py` are the only leaf dependencies; no CSJ module is imported by them (preventing circular imports).
+
+```mermaid
+graph LR
+    utils[utils.py]
+    configMod[config.py]
+
+    storage --> configMod
+    storage --> utils
+
+    parser --> configMod
+    parser --> utils
+
+    sitemap --> configMod
+
+    scraper --> configMod
+    scraper --> parser
+    scraper --> sitemap
+    scraper --> storage
+    scraper --> utils
+    scraper -.->|optional| renderPy[render.py]
+
+    renderPy --> configMod
+
+    vizData --> configMod
+
+    vizApi --> configMod
+    vizApi --> storage
+    vizApi --> vizData
+
+    guiPy[gui.py] --> configMod
+    guiPy --> storage
+    guiPy --> scraper
+    guiPy --> utils
+    guiPy --> vizApi
+
+    mainPy[main.py] --> configMod
+    mainPy --> storage
+    mainPy --> scraper
+
+    bgCrawl[run_background_crawl.py] --> configMod
+    bgCrawl --> storage
+    bgCrawl --> scraper
+
+    preAnalysis[run_pre_crawl_analysis.py] --> configMod
+    preAnalysis --> parser
+    preAnalysis --> sitemap
+    preAnalysis --> storage
+    preAnalysis --> utils
+
+    launcher[launcher.py] --> storage
+    launcher --> guiPy
+
+    signalsAudit[signals_audit.py] --> utils
+```
+
+---
+
+## 3. Entry points
+
+### 3.1 `launcher.py` — desktop application
+
+Used when the application is distributed as a packaged `.app` / `.exe`. It:
+
+1. Calls `storage.migrate_legacy_data()` to handle any data from older versions
+2. Probes TCP ports starting at **5001** (up to 10 attempts) to find a free one
+3. Starts a daemon thread that polls the port until Flask is ready, then calls `webbrowser.open`
+4. Registers `SIGINT` / `SIGTERM` handlers so the app exits cleanly
+5. Calls `gui.app.run(host="127.0.0.1", port=port, debug=False, threaded=True)`
+
+### 3.2 `gui.py` — Flask web application
+
+The main user-facing application. It runs on port **5001** (or the next free port if launched via `launcher.py`), serves all HTML templates, and manages crawl threads.
+
+**Key internal type — `CrawlSlot`:**
+
+Each project can have at most one active crawl at a time. A `CrawlSlot` holds:
+- a daemon `threading.Thread` running `scraper.crawl`
+- a `threading.Event` for stop signalling
+- a mutable `status` dict (pages crawled, assets, current URL, phase)
+- the `CrawlConfig` and `StorageContext` for that run
+- a monotonic start time for elapsed-time calculation
+
+**Route groups:**
+
+| Group | Routes |
+|-------|--------|
+| Projects | `/` (list), create, delete, export ZIP, import ZIP |
+| Project pages | overview, defaults (GET/POST), runs list, create run |
+| Run management | config (GET/POST), monitor, start, stop, resume, rename, delete |
+| Results | results hub, paginated CSV viewer, single-file download, all-CSVs ZIP |
+| SSE streams | `/api/progress/<slug>`, `/api/logs` |
+| Ecosystem | registered via `viz_api.eco_bp` blueprint |
+
+**SSE (Server-Sent Events):**
+
+- `/api/progress/<slug>` — streams `status` dict updates (pages, assets, elapsed) every ~1 s while a crawl is running
+- `/api/logs` — streams formatted log lines from `_BufferHandler` (a `logging.Handler` that pushes into a deque of 2000 lines)
+
+### 3.3 `main.py` — interactive CLI
+
+Simple terminal entry point. Registers `SIGINT` / `SIGTERM` handlers, optionally calls `storage.activate_project`, then calls `scraper.crawl` directly using module-level `config` globals (not a `CrawlConfig` instance). Logs progress every 10 HTML pages.
+
+### 3.4 `run_background_crawl.py` — headless long run
+
+Identical structure to `main.py` but:
+- Sets `config.MAX_PAGES_TO_CRAWL = 1_000_000` **before** importing `scraper` (so the module-level constant is seen by the crawl loop at its raised value)
+- Logs to a file handler (`crawl_background.log`) rather than stdout
+- Reports progress every 50 pages
+
+---
+
+## 4. Configuration system
+
+### 4.1 Module-level defaults (`config.py`)
+
+`config.py` contains plain Python module-level assignments that act as the application's default configuration. Every other module reads these at import time or via explicit `import config`.
+
+Key categories of settings:
+
+| Category | Examples |
+|----------|---------|
+| Paths | `OUTPUT_DIR`, `DATA_DIR`, `BUNDLE_DIR`, `PROJECTS_DIR` |
+| Seeds and scope | `SEED_URLS`, `SITEMAP_URLS`, `ALLOWED_DOMAINS` |
+| Crawl behaviour | `MAX_PAGES_TO_CRAWL`, `REQUEST_DELAY_SECONDS`, `MAX_DEPTH` |
+| Feature toggles | `WRITE_EDGES_CSV`, `WRITE_TAGS_CSV`, `CAPTURE_READABILITY`, `RENDER_JAVASCRIPT` |
+| Asset handling | `SKIP_EXTENSIONS`, `ASSET_CATEGORY_BY_EXT`, `ASSET_HEAD_METADATA` |
+| Identity | `USER_AGENT` |
+
+`DATA_DIR` and `BUNDLE_DIR` are resolved at import time to handle both dev (source tree) and PyInstaller frozen (`sys._MEIPASS`) environments.
+
+### 4.2 `CrawlConfig` dataclass
+
+`CrawlConfig` is a frozen snapshot of the configuration for a single crawl run. It is defined in `config.py` as a `@dataclass`.
+
+```
+CrawlConfig
+├── from_module()     → copies current config.* globals into an instance
+├── from_dict(d)      → overlays a dict (e.g. from _config.json) over from_module()
+└── to_dict()         → JSON-serialisable dict (omits OUTPUT_DIR)
+```
+
+The GUI always passes a `CrawlConfig` instance to `scraper.crawl`. The CLI entry points use the module globals directly.
+
+### 4.3 Configuration layering in the GUI
+
+```mermaid
+graph TD
+    moduleDefaults["config.py module defaults"]
+    projectDefaults["_defaults.json per-project defaults"]
+    runConfig["_config.json per-run snapshot"]
+    crawlConfig["CrawlConfig instance passed to scraper.crawl"]
+
+    moduleDefaults -->|"CrawlConfig.from_module()"| projectDefaults
+    projectDefaults -->|"CrawlConfig.from_dict()"| runConfig
+    runConfig -->|"storage.apply_run_config()"| crawlConfig
+```
+
+When a new run is created, the project's `_defaults.json` is loaded over the module defaults. When a run is started, the run's `_config.json` (saved when the user clicks Save on the config form) is applied. The resulting `CrawlConfig` is immutable for the lifetime of the crawl.
+
+---
+
+## 5. Project and run data model
+
+All data lives under `projects/` in the working directory (or `DATA_DIR` in the packaged app).
+
+```
+projects/
+├── <slug>/
+│   ├── _project.json          # {"name": "...", "created_at": "..."}
+│   ├── _defaults.json         # CrawlConfig.to_dict() for new runs
+│   └── runs/
+│       ├── run_20240101T120000_my-label/
+│       │   ├── _config.json   # CrawlConfig snapshot (frozen at run creation)
+│       │   ├── _state.json    # resume checkpoint: visited URLs + pending queue
+│       │   ├── pages.csv
+│       │   ├── edges.csv
+│       │   ├── tags.csv
+│       │   ├── nav_links.csv
+│       │   ├── sitemap_urls.csv
+│       │   ├── assets_pdf.csv
+│       │   ├── assets_office.csv
+│       │   ├── assets_image.csv
+│       │   ├── assets_video.csv
+│       │   ├── assets_other.csv
+│       │   ├── link_checks.csv
+│       │   └── crawl_errors.csv
+│       └── .latest            # plain text: name of most recent run folder
+└── pre_crawl_analysis/        # output of run_pre_crawl_analysis.py
+    ├── <sanitised-netloc>/
+    │   ├── pages.csv
+    │   └── errors.csv
+    ├── summary.csv
+    └── field_coverage.csv
+```
+
+**Run folder naming:** `run_<UTC-datetime-compact>_<sanitised-label>`, e.g. `run_20240315T093042_govuk-content`.
+
+**`_state.json` resume format:** stores serialised `visited` URL set and `crawl_queue` / `seed_queue` contents, plus the count of pages and assets written so far. On resume, `storage.rebuild_visited_from_csvs` re-reads `pages.csv` and all asset CSVs to reconstruct the visited set, then merges with `_state.json`.
+
+**`.latest`:** contains the folder name (not a filesystem symlink) of the most recent run for quick access by the GUI.
+
+---
+
+## 6. Crawl pipeline
+
+### 6.1 Overview sequence
+
+```mermaid
+sequenceDiagram
+    participant caller as gui.py or main.py
+    participant scraper as scraper.py
+    participant sitemap as sitemap.py
+    participant storage as storage.py
+    participant parser as parser.py
+    participant renderPy as render.py
+
+    caller->>scraper: crawl(cfg, ctx)
+    scraper->>storage: create_run or resume_outputs
+    scraper->>sitemap: collect_urls_from_sitemap
+    sitemap-->>scraper: url + lastmod pairs
+    scraper->>storage: write sitemap_url rows
+
+    loop BFS crawl loop
+        scraper->>scraper: pop URL from queue
+        scraper->>scraper: robots check + rate-limit sleep
+        scraper->>scraper: fetch_page via requests
+        alt RENDER_JAVASCRIPT and thin body
+            scraper->>renderPy: render_page
+            renderPy-->>scraper: rendered HTML
+        end
+        scraper->>parser: build_page_inventory_row
+        parser-->>scraper: page_row and tag_rows
+        scraper->>storage: write_page
+        scraper->>storage: write_tags
+        scraper->>parser: extract_classified_links
+        parser-->>scraper: html_urls and asset_rows and edge_rows
+        scraper->>storage: write_asset and write_edge rows
+        scraper->>scraper: enqueue new same-domain URLs
+        scraper->>storage: save_crawl_state periodically
+    end
+    scraper-->>caller: pages_crawled and assets_found
+```
+
+### 6.2 Dual-queue scheduling
+
+The scraper maintains two `collections.deque` queues:
+
+- **`crawl_queue`** — URLs discovered by following links on crawled pages (same-domain HTML)
+- **`seed_queue`** — URLs from seeds and sitemaps that have not yet been encountered via link-following
+
+The loop always prefers `crawl_queue` over `seed_queue`. This ensures that pages discovered through organic link-following (which are more likely to be navigable, canonical pages) are processed before the full sitemap backlog. It is effectively a BFS over discovered links, with sitemap/seed URLs as a fallback reservoir.
+
+### 6.3 URL normalisation
+
+Every URL is normalised before entering the queue or visited set:
+
+1. Parse with `urllib.parse.urlparse`
+2. Scheme → `https`
+3. Strip default ports (`:80`, `:443`)
+4. Lowercase host
+5. Strip fragment (`#...`)
+6. Remove trailing slash from path
+7. Sort query parameters alphabetically
+
+This prevents the same logical page being fetched under cosmetically different URLs.
+
+### 6.4 robots.txt handling
+
+- `_robots_for_url(url)` fetches and parses `robots.txt` for the origin, using `urllib.robotparser.RobotFileParser`
+- Results are cached in `_robots_cache` (keyed by origin) with a `threading.Lock`
+- Origins that fail to return a parseable `robots.txt` are added to `_blocked_origins` to avoid repeated failed fetches
+- `can_fetch(url, user_agent)` consults the cached parser
+
+### 6.5 Rate limiting
+
+- `_domain_last_fetch` (dict: hostname → monotonic time) tracks when each host was last fetched
+- The scraper sleeps for `REQUEST_DELAY_SECONDS` (fixed or random range) between requests to the same host
+- On repeated failures, `_domain_fail_count` triggers adaptive exponential back-off per host
+
+### 6.6 Optional Playwright rendering
+
+If `config.RENDER_JAVASCRIPT` is `True` and `render.is_available()` returns `True`, the scraper re-fetches any page whose response body is shorter than a configured threshold using a headless Chromium browser via `render.render_page(url)`. This handles pages that rely on client-side rendering for their primary content. Playwright is not installed by default; see the README for installation instructions.
+
+---
+
+## 7. Parser architecture (Phases 1–4)
+
+`parser.py` contains a single public function — `build_page_inventory_row` — and many private helpers. The extraction is conceptually divided into four phases, all applied on every crawled page.
+
+```mermaid
+graph TD
+    htmlIn[HTML + response_meta + sitemap_meta]
+    bs4[BeautifulSoup parse via lxml]
+    phase1[Phase 1 - Core metadata]
+    phase2[Phase 2 - Quality signals]
+    phase3[Phase 3 - Tags and content kind]
+    phase4[Phase 4 - Extended signals]
+    assemble[_assemble_page_row - merge all dicts]
+    coverage[extraction_coverage_pct]
+    outputRow[page_row dict and tag_rows list]
+
+    htmlIn --> bs4
+    bs4 --> phase1
+    bs4 --> phase2
+    bs4 --> phase3
+    bs4 --> phase4
+    phase1 --> assemble
+    phase2 --> assemble
+    phase3 --> assemble
+    phase4 --> assemble
+    assemble --> coverage
+    coverage --> outputRow
+```
+
+### Phase 1 — core metadata
+
+| Field group | Sources |
+|-------------|---------|
+| Title | `<title>`, `og:title`, first `<h1>` |
+| Description | `meta[name=description]`, `og:description`, `twitter:description`, first substantial `<p>` |
+| Language | `html[lang]` |
+| Canonical URL | `link[rel=canonical]` |
+| Open Graph | `og:title`, `og:type`, `og:description` |
+| Twitter card | `twitter:card` |
+| JSON-LD types | `@type` from all `application/ld+json` blocks, pipe-separated |
+
+### Phase 2 — quality signals
+
+| Field group | Sources / method |
+|-------------|-----------------|
+| Headings | `h1_joined` (up to 5 H1 texts), `heading_outline` (H2–H6 outline) |
+| Word count | visible text after stripping scripts/styles |
+| Readability | `textstat.flesch_kincaid_grade` (when `CAPTURE_READABILITY`, ≥30 words) |
+| Dates | JSON-LD `datePublished`/`dateModified`, `article:*_time` meta, `<time datetime>`, regex visible-text patterns |
+| Links | internal/external/total `<a>` counts |
+| Images | count + missing-alt count |
+| Privacy policy | first link matching common privacy URL patterns |
+| Analytics signals | GTM, GA4, Matomo, and other tokens found in raw HTML |
+| Training flag | `TRAINING_KEYWORDS` matched in URL, title, or H1 |
+
+### Phase 2 also — WCAG static signals
+
+| Field | Check |
+|-------|-------|
+| `wcag_lang_valid` | `html[lang]` present and non-empty |
+| `wcag_heading_order_valid` | no heading level skipped |
+| `wcag_title_present` | non-empty `<title>` |
+| `wcag_form_labels_pct` | % of form controls with associated label |
+| `wcag_landmarks_present` | any ARIA landmark or HTML5 sectioning element |
+| `wcag_vague_link_pct` | % of links with vague visible text |
+
+### Phase 3 — tags and content classification
+
+**Tag extraction sources (in priority order):**
+
+1. `meta[name=keywords/news_keywords/subject]` — split on `,`, `;`, `|`
+2. `meta[property="article:tag"]` and `meta[property="article:section"]`
+3. JSON-LD `keywords`, `articleSection`, `genre`
+4. `a[rel~=tag]` visible text
+5. Links with `/category/`, `/tag/`, `/topic/` path segments
+6. Elements with CSS class `topics`
+
+Tags are deduplicated by `(text, source)` for `tags_all` and `tags.csv`.
+
+**Content kind classification** (`content_kind_guess`) uses a priority cascade:
+
+1. URL path tokens (`/blog`, `/news`, `/guidance`, `/statistics`, `/events`, `/jobs`, etc.)
+2. JSON-LD `@type` (`BlogPosting`, `NewsArticle`, `FAQPage`, `Event`, etc.)
+3. `og:type` (`article`, `profile`, `product`, etc.)
+4. Breadcrumb trail text
+5. Body CSS classes (CMS-specific: SilverStripe page types, Drupal `page-node-type-*`, etc.)
+6. Default: `webpage`
+
+### Phase 4 — extended signals
+
+Phase 4 extracts richer structured data and provenance signals added in a later development phase. All columns are always present in `pages.csv`; they may be empty for pages that lack the relevant markup.
+
+| Field group | Sources |
+|-------------|---------|
+| Author | JSON-LD `author.name`, `meta[name=author]`, byline class patterns |
+| Publisher | JSON-LD `publisher.name`, `og:site_name` |
+| JSON-LD `@id` | primary block's `@id` value |
+| CMS generator | `meta[name=generator]`, CDN URL patterns (Shopify, WP Engine, etc.), HTML markers (WordPress, Drupal, SharePoint, Next.js, Gatsby) |
+| Robots directives | `meta[name=robots]` + `X-Robots-Tag` response header, merged |
+| Hreflang | all `link[rel=alternate][hreflang]` hrefs, pipe-separated |
+| Feeds | `link[rel=alternate][type=application/rss+xml]` etc., pipe-separated |
+| Pagination | `link[rel=next]` and `link[rel=prev]` hrefs |
+| Breadcrumb schema | `BreadcrumbList` JSON-LD item names, pipe-separated |
+| Microdata types | all `itemtype` attribute values, pipe-separated |
+| RDFa types | all `typeof` attribute values, pipe-separated |
+| Product schema | price, currency, availability, rating, review count from `Product` JSON-LD/microdata |
+| Event schema | event date and location from `Event` JSON-LD |
+| Job schema | job title and location from `JobPosting` JSON-LD |
+| Recipe schema | total time from `Recipe` JSON-LD |
+| Coverage | `extraction_coverage_pct` — % of Phase 1–4 fields that are non-empty |
+
+---
+
+## 8. Storage layer
+
+### 8.1 Two modes: `StorageContext` vs module-level functions
+
+`storage.py` exposes two parallel interfaces for writing crawl output:
+
+| Interface | Used by | How it works |
+|-----------|---------|-------------|
+| `StorageContext` class | GUI (`gui.py`) | Instance holds `output_dir`, `cfg`, `active_run_dir`; all write methods are instance methods. Supports multiple concurrent projects without shared global state. |
+| Module-level functions | CLI (`main.py`, `run_background_crawl.py`) | Use `_active_run_dir` module global set by `activate_project` / `initialise_outputs`. Not safe for concurrent crawls. |
+
+### 8.2 CSV write pipeline
+
+Every write goes through:
+
+1. **`utils.sanitise_csv_value`** — coerce `None` to `""`, strip null bytes, truncate at 32 000 characters
+2. **`csv.writer(quoting=csv.QUOTE_ALL)`** — every field double-quoted regardless of content
+3. **Append mode** — rows are appended to existing files so the crawl can be stopped and resumed without losing data
+
+The header row is written once by `initialise_outputs` / `resume_outputs` at run start. If a row write fails for any reason, the error is logged and the crawl continues.
+
+### 8.3 CSV schemas
+
+| File | Key fields |
+|------|-----------|
+| `pages.csv` | 58 fields: Phase 1–4 metadata + WCAG + provenance (see README for full list) |
+| `assets_<category>.csv` | `referrer_page_url`, `asset_url`, `link_text`, `category`, `head_content_type`, `head_content_length`, `discovered_at` |
+| `edges.csv` | `from_url`, `to_url`, `link_text`, `discovered_at` |
+| `tags.csv` | `page_url`, `tag_value`, `tag_source`, `discovered_at` |
+| `nav_links.csv` | `page_url`, `nav_href`, `nav_text`, `discovered_at` |
+| `sitemap_urls.csv` | `url`, `lastmod`, `source_sitemap`, `discovered_at` |
+| `link_checks.csv` | `from_url`, `to_url`, `check_status`, `check_final_url`, `discovered_at` |
+| `crawl_errors.csv` | `url`, `error_type`, `message`, `http_status`, `discovered_at` |
+
+### 8.4 Project lifecycle
+
+```mermaid
+graph LR
+    create[create_project] --> activate[activate_project]
+    activate --> createRun[create_run]
+    createRun --> crawl[scraper.crawl]
+    crawl --> saveState[save_crawl_state - periodic]
+    crawl --> finalise[run complete]
+    finalise --> listRuns[list_run_dirs]
+    listRuns --> exportZip[export_project to ZIP]
+    exportZip --> importZip[import_project from ZIP]
+```
+
+**Export/import:** `export_project` produces an in-memory `io.BytesIO` ZIP containing all run folders and metadata. `import_project` unpacks a ZIP into `PROJECTS_DIR`, supporting migration between machines.
+
+**Legacy migration:** `migrate_legacy_data()` is called at startup by `launcher.py` and `gui.py`. It moves any run folders from the old flat `output/` layout into the project structure.
+
+### 8.5 Resume mechanism
+
+When `--resume` is passed (or the GUI resumes a run):
+
+1. `storage.rebuild_visited_from_csvs(run_dir)` reads all existing `pages.csv` and asset CSV rows to reconstruct the set of already-processed URLs
+2. `storage.load_crawl_state(run_dir)` loads `_state.json` for the pending queue
+3. `storage.resume_outputs(run_dir)` opens existing CSV files in append mode rather than overwriting them
+4. The scraper skips any URL already in the visited set
+
+---
+
+## 9. Ecosystem visualisation layer
+
+The ecosystem dashboard is a separate read-only layer that sits entirely on top of the completed crawl output. It never writes to disk.
+
+### 9.1 Architecture
+
+```mermaid
+graph LR
+    browser[Browser]
+    ecosystemHtml[ecosystem.html Jinja2 template]
+    ecosystemJs[ecosystem.js D3 v7]
+    vizApiBp[viz_api.py Flask blueprint]
+    vizDataMod[viz_data.py aggregators]
+    csvFiles[Run CSVs - pages.csv edges.csv etc]
+
+    browser --> ecosystemHtml
+    ecosystemHtml --> ecosystemJs
+    ecosystemJs -->|JSON API calls with filters| vizApiBp
+    vizApiBp --> vizDataMod
+    vizDataMod -->|csv.DictReader| csvFiles
+```
+
+### 9.2 Filtering
+
+All API endpoints accept the same filter query parameters:
+
+| Parameter | Filters on |
+|-----------|------------|
+| `runs` | Comma-separated run folder names to include |
+| `domains` | Comma-separated hostname substrings |
+| `cms` | Comma-separated `cms_generator` substrings |
+| `content_kinds` | Comma-separated `content_kind_guess` values |
+| `schema_formats` | `json_ld`, `microdata`, or `rdfa` |
+| `schema_types` | JSON-LD `@type` substring |
+| `date_from` / `date_to` | Filter by `date_published` range |
+| `min_coverage` | Minimum `extraction_coverage_pct` (0–100) |
+
+`viz_data.filter_pages` applies all active filters as an AND condition before any aggregation.
+
+### 9.3 API endpoints and D3 panels
+
+| Panel (`data-panel`) | Tab group | API endpoint | `viz_data` function |
+|----------------------|-----------|-------------|---------------------|
+| `network` | Governance | `/api/graph` | `aggregate_domain_graph` |
+| `treemap` | Governance | `/api/domains` | `aggregate_domains` |
+| `analytics` | Governance | `/api/domains` | `aggregate_domains` |
+| `chord` | Governance | `/api/chord` | `aggregate_chord` |
+| `bubble` | Governance | `/api/domains` | `aggregate_domains` |
+| `contenttypes` | Governance | `/api/domains` | `aggregate_domains` |
+| `status` | Trust | `/api/domains` | `aggregate_domains` |
+| `freshness` | Trust | `/api/freshness` | `aggregate_freshness` |
+| `radar` | Trust | `/api/domains` | `aggregate_domains` |
+| `parallel` | Trust | `/api/domains` | `aggregate_domains` |
+| `sunburst` | Findability | `/api/navigation` | `aggregate_navigation` |
+| `wordcloud` | Findability | `/api/tags` | `aggregate_tags` |
+| `sankey` | Findability | `/api/graph` | `aggregate_domain_graph` |
+| `cmslandscape` | Technology | `/api/technology` | `aggregate_technology` |
+| `structureddata` | Technology | `/api/technology` | `aggregate_technology` |
+| `seoreadiness` | Technology | `/api/technology` | `aggregate_technology` |
+| `coverage` | Technology | `/api/technology` | `aggregate_technology` |
+| `authornetwork` | Provenance | `/api/authorship` | `aggregate_authorship` |
+| `publishers` | Provenance | `/api/authorship` | `aggregate_authorship` |
+| `schemainsights` | Provenance | `/api/schema_insights` | `aggregate_schema_insights` |
+
+### 9.4 Frontend caching and filter flow
+
+`ecosystem.js` maintains an in-memory `cache` keyed by full request URL (including query string). On every filter change:
+
+1. `onFilterChange` clears `cache` and the `rendered` guard (which prevents a panel re-rendering on tab revisit)
+2. `reloadFilterOptions()` fetches `/api/filter_options` with the current `runs` selection to populate dropdowns with values present in the selected data
+3. The active panel re-renders via `renderPanel(activePanelName)`
+
+`ECO_PRESELECTED_RUNS` (injected from the template via Jinja2) pre-seeds the runs filter when navigating from a per-run "Ecosystem" link.
+
+---
+
+## 10. Pre-crawl analysis
+
+`run_pre_crawl_analysis.py` is a standalone sampling tool. It is not called by the main crawl pipeline but shares the same `parser`, `sitemap`, and `storage` modules.
+
+```mermaid
+graph TD
+    target[TARGET_URLS - seeds per domain]
+    homepage[Fetch homepage and detect tech stack]
+    discovery[Discover URLs via robots.txt sitemaps and shallow BFS]
+    sample[Pick diverse sample - 20 pages varied by path]
+    fetch[Fetch and parse each page - full Phase 1-4 extraction]
+    write[Write per-domain pages.csv and errors.csv]
+    summaryOut[Aggregate summary.csv and field_coverage.csv]
+
+    target --> homepage
+    homepage --> discovery
+    discovery --> sample
+    sample --> fetch
+    fetch --> write
+    write --> summaryOut
+```
+
+**Tech stack detection** (`detect_tech_stack`) inspects:
+- `meta[name=generator]` content
+- HTML markers (WordPress admin paths, Drupal classes, SharePoint `_layouts`, etc.)
+- CDN URLs (Shopify CDN, WP Engine, etc.)
+- Response headers (server, `X-Powered-By`, etc.)
+- SPA heuristics (React root, Next.js `__NEXT_DATA__`, Gatsby, etc.)
+
+**Diverse URL sampling** (`_pick_diverse`) does a round-robin selection across URLs grouped by their first path segment, so the sample represents different site sections rather than being biased towards one area.
+
+**Domain isolation:** during the run, `config.ALLOWED_DOMAINS` is temporarily replaced with a permissive suffix list (`_PRE_CRAWL_ALLOWED_DOMAINS`) that allows cross-domain fetches. The original value is restored in a `finally` block.
+
+---
+
+## 11. Signals audit module
+
+`signals_audit.py` is a **research and testing tool** that is entirely separate from the main crawl pipeline. It is not called by `scraper.py`, `parser.py`, or any GUI route.
+
+**Purpose:** given a single HTML page (and optionally its HTTP response headers), produce a complete inventory of every metadata signal present: meta tags, link elements, JSON-LD blocks, Microdata, RDFa, Open Graph, Twitter cards, HTML landmark structure, `data-*` attribute names, `<time>` elements, and relevant response headers.
+
+**API:**
+
+```python
+report = signals_audit.audit_page(html, url="", response_headers=None)
+# → nested dict with keys: meta, links, json_ld, microdata, rdfa,
+#   open_graph, twitter, html_signals, data_attributes, time_elements, response_headers
+
+summary = signals_audit.summarise_audit(report)
+# → flat dict: has_*, generator, server, og_properties (pipe-separated), etc.
+```
+
+It is used by `tests/test_signals_audit.py` and can be used standalone for debugging or signal research on individual pages.
+
+---
+
+## 12. Desktop packaging
+
+The desktop application is built with **PyInstaller** using `collector.spec`.
+
+```mermaid
+graph LR
+    launcherPy[launcher.py entry point]
+    spec[collector.spec PyInstaller recipe]
+    pyinstaller[pyinstaller build]
+    distFolder[dist folder COLLECT]
+    macApp[The Crawl Street Journal.app macOS]
+    winExe[The Crawl Street Journal.exe Windows]
+    linuxBin[The Crawl Street Journal Linux]
+
+    spec --> pyinstaller
+    launcherPy --> pyinstaller
+    pyinstaller --> distFolder
+    distFolder -->|macOS| macApp
+    distFolder -->|Windows| winExe
+    distFolder -->|Linux| linuxBin
+```
+
+**What the spec bundles:**
+
+| Item | Why |
+|------|-----|
+| `templates/` tree | Flask's `render_template` resolves paths via `BUNDLE_DIR` |
+| `static/` tree | `url_for('static', ...)` served from the frozen bundle |
+| `hiddenimports` | Flask, Jinja2, Werkzeug internals; `bs4`, `lxml`, `textstat`, SSL modules not auto-detected by PyInstaller |
+
+**`BUNDLE_DIR` resolution in `config.py`:**
+
+```python
+if getattr(sys, 'frozen', False):
+    BUNDLE_DIR = sys._MEIPASS   # PyInstaller temp extraction dir
+else:
+    BUNDLE_DIR = os.path.dirname(__file__)  # source tree root
+```
+
+`gui.py` uses `BUNDLE_DIR` when constructing the path for `template_folder` and `static_folder` passed to the Flask app constructor.
+
+**Platform outputs:**
+
+| Platform | Output | Notes |
+|----------|--------|-------|
+| macOS | `The Crawl Street Journal.app` | Bundle ID `io.csj.crawlstreetjournal`, `.icns` icon, `console=False` |
+| Windows | `The Crawl Street Journal.exe` | `.ico` icon, `console=False` |
+| Linux | `The Crawl Street Journal` | `.png` icon |
+
+Build command:
+
+```bash
+source .venv/bin/activate
+pip install pyinstaller
+pyinstaller collector.spec --noconfirm
+```
+
+---
+
+## 13. Testing
+
+The test suite lives in `tests/` and uses `pytest`. There are no live HTTP requests; all tests use synthetic HTML fixtures and temporary directories.
+
+```bash
+source .venv/bin/activate
+python3 -m pytest tests/ -v
+```
+
+| File | What it tests | Key techniques |
+|------|--------------|---------------|
+| `tests/test_parser.py` | Phase 1–4 extraction, content kind classification, URL hints, WCAG signals, coverage %, full `build_page_inventory_row` integration | Inline HTML fixtures, `response_meta` / `sitemap_meta` dicts |
+| `tests/test_sitemap.py` | Sitemap XML parsing (urlset + index), malformed XML resilience, domain allowlist case-insensitivity across `scraper` and `parser` | Inline XML strings, `monkeypatch` / direct `config.ALLOWED_DOMAINS` mutation |
+| `tests/test_signals_audit.py` | `audit_page` top-level keys, per-category signal extraction, `summarise_audit` output | Single comprehensive HTML fixture with all signal types present |
+| `tests/test_viz_data.py` | `filter_pages` (no filter, CMS, content kind, schema format, coverage, combined AND), `aggregate_domains`, `aggregate_technology`, `aggregate_authorship`, `aggregate_schema_insights`, `get_filter_options` | `tempfile.mkdtemp`, synthetic `pages.csv` with full schema including WCAG and Phase 4 columns |
+
+**Total: 56 tests.**
+
+Linting:
+
+```bash
+flake8 --max-line-length=120 *.py
+```
+
+There are minor pre-existing style warnings in the repository; no linting configuration file is committed.

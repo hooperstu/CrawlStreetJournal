@@ -1,3 +1,24 @@
+{#
+  base.html — Root layout inherited by every page in the application.
+  Route: not served directly; extended via {% extends "base.html" %}.
+  Context variables:
+    project  (optional dict) — when present, the masthead shows the project
+      name and the nav-bar renders Overview / Defaults / Runs tabs.
+    active_tab (optional str) — "overview" | "defaults" | "runs"; highlights
+      the matching nav-bar link.
+  Blocks available to child templates:
+    title    — <title> content (default: "The Crawl Street Journal").
+    subnav   — secondary tab row beneath the nav-bar (e.g. run-level tabs).
+    content  — main page body inside <div class="page">.
+  Design tokens (CSS custom properties on :root):
+    --csj-ink, --csj-headline   dark text colours
+    --csj-accent, --csj-amber   gold / amber highlight
+    --csj-paper, --csj-newsprint  background tones
+    --csj-body                    secondary body text
+    --csj-success, --csj-error    semantic status colours
+    --csj-highlight               pale amber highlight band
+    --border, --radius, --shadow  shared border / shape / elevation tokens
+#}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -463,6 +484,9 @@
       <a href="https://buymeacoffee.com/hooperstu" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;font-size:12px;font-family:inherit;font-weight:600;color:#000;background:#40b04d;border:1px solid #000;border-radius:3px;text-decoration:none;">🤗 Support my work</a>
     </div>
   </footer>
+  {# Client-side sortable-table handler: attaches click listeners to any
+     <th> inside a <table data-sortable>. Supports numeric, file-size
+     (KB/MB/GB), and locale-aware string comparisons. #}
   <script>
   (function() {
     var SIZE_UNITS = {B:1,KB:1024,MB:1048576,GB:1073741824,TB:1099511627776};

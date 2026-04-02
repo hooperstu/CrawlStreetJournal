@@ -1,3 +1,15 @@
+{#
+  projects.html — Top-level project listing and creation page.
+  Route: GET  /              (projects_list)
+         POST /projects/create  (create_project_route)
+         POST /projects/import  (import_project_route)
+  Context:
+    projects  (list of dicts) — each dict contains: name, slug, description,
+        run_count, total_pages, latest_run_status.
+  When the list is empty an explanatory placeholder is shown instead of the
+  project grid. The import form accepts a .zip archive exported from another
+  CSJ instance.
+#}
 {% extends "base.html" %}
 {% block title %}Projects | CSJ{% endblock %}
 
@@ -13,6 +25,7 @@
     <div class="meta">
       <span>{{ p.run_count }} run{{ 's' if p.run_count != 1 }}</span>
       <span>{{ "{:,}".format(p.total_pages) }} pages</span>
+      {# Badge shown only when at least one run exists for the project. #}
       {% if p.latest_run_status %}
       <span>Latest:
         {% if p.latest_run_status == 'completed' %}
@@ -49,6 +62,17 @@
       <input type="text" name="description" placeholder="Brief description of what this project covers">
     </div>
     <button type="submit" class="btn btn-primary">Create Project</button>
+  </form>
+</div>
+
+<div class="card">
+  <div class="card-title">Import Project</div>
+  <form method="post" action="{{ url_for('import_project_route') }}" enctype="multipart/form-data">
+    <div class="form-group" style="max-width:400px;">
+      <label class="form-label">Project archive (.zip)</label>
+      <input type="file" name="zipfile" accept=".zip" required>
+    </div>
+    <button type="submit" class="btn btn-primary">Import</button>
   </form>
 </div>
 {% endblock %}

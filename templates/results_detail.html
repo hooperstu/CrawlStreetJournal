@@ -1,3 +1,18 @@
+{#
+  results_detail.html — Paginated CSV viewer for a single output file.
+  Route: GET /p/<slug>/runs/<run_name>/results/<filename>  (run_results_detail)
+  Context:
+    project, run_name, friendly_name — standard run identifiers.
+    filename     (str)   — CSV filename being viewed.
+    headers      (list)  — column names from the CSV header row.
+    rows         (list of dicts) — current page of data rows.
+    total        (int)   — total row count across all pages.
+    page         (int)   — current 1-based page number.
+    per_page     (int)   — rows per page (50 | 100 | 250 | 500).
+    total_pages  (int)   — computed page count.
+
+  Pagination uses a sliding window of +/- 3 pages with ellipsis gaps.
+#}
 {% extends "base.html" %}
 {% set active_tab = 'runs' %}
 {% block title %}{{ filename }} — {{ friendly_name or run_name }} | CSJ{% endblock %}
@@ -7,7 +22,7 @@
   <a href="{{ url_for('run_config', slug=project.slug, run_name=run_name) }}">Config</a>
   <a href="{{ url_for('run_monitor', slug=project.slug, run_name=run_name) }}">Monitor</a>
   <a href="{{ url_for('run_results', slug=project.slug, run_name=run_name) }}" class="active">Results</a>
-  <a href="{{ url_for('ecosystem.ecosystem_dashboard', slug=project.slug, run_name=run_name) }}">Ecosystem</a>
+  <a href="{{ url_for('ecosystem.ecosystem_dashboard', slug=project.slug, runs=run_name) }}">Ecosystem</a>
 </div>
 {% endblock %}
 
@@ -65,6 +80,7 @@
     <a href="{{ url_for('run_results_detail', slug=project.slug, run_name=run_name, filename=filename, page=page-1, per_page=per_page) }}">Prev</a>
     {% endif %}
 
+    {# Sliding window: show at most 7 page links centred on the current page. #}
     {% set start_page = [1, page - 3] | max %}
     {% set end_page = [total_pages, page + 3] | min %}
 
