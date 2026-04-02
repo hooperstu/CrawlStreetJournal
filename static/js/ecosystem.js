@@ -371,6 +371,45 @@
         overlay.classList.add("open");
       }
 
+      // ── Colour-by toggle ─────────────────────────────────────
+      var CMS_COLOURS = {};
+      var _cmsIdx = 0;
+      domains.forEach(function (d) {
+        var c = d.cms_generator || "(undetected)";
+        if (!CMS_COLOURS[c]) { CMS_COLOURS[c] = CSJ_PALETTE[_cmsIdx % CSJ_PALETTE.length]; _cmsIdx++; }
+      });
+      var covScale = d3.scaleSequential(d3.interpolateViridis).domain([0, 100]);
+
+      function nodeColour(d) {
+        var mode = document.getElementById("network-colour-by").value;
+        var detail = domainLookup[d.id] || {};
+        if (mode === "cms") return CMS_COLOURS[detail.cms_generator || "(undetected)"] || "#5A5246";
+        if (mode === "coverage") return covScale(detail.avg_extraction_coverage || 0);
+        return ownerColour(d.ownership);
+      }
+
+      function recolourNodes() {
+        node.attr("fill", nodeColour);
+        var mode = document.getElementById("network-colour-by").value;
+        if (mode === "cms") {
+          buildLegend("legend-network", Object.keys(CMS_COLOURS).map(function (k) {
+            return { label: k, colour: CMS_COLOURS[k] };
+          }));
+        } else if (mode === "coverage") {
+          buildLegend("legend-network", [
+            { label: "High coverage", colour: covScale(90) },
+            { label: "Medium", colour: covScale(50) },
+            { label: "Low coverage", colour: covScale(10) },
+          ]);
+        } else {
+          buildLegend("legend-network", Object.keys(OWNER_COLOURS).map(function (k) {
+            return { label: k, colour: OWNER_COLOURS[k] };
+          }));
+        }
+      }
+
+      document.getElementById("network-colour-by").addEventListener("change", recolourNodes);
+
       buildLegend("legend-network", Object.keys(OWNER_COLOURS).map(function (k) {
         return { label: k, colour: OWNER_COLOURS[k] };
       }));
@@ -384,79 +423,92 @@
     fetchJSON(API.domains).then(function (data) {
       hideLoading("loading-treemap");
       _assignOwnerColours(data);
-      var sz = vizSize("viz-treemap");
-      var W = sz.w, H = sz.h;
 
-      var grouped = {};
-      data.forEach(function (d) {
-        if (!grouped[d.ownership]) grouped[d.ownership] = [];
-        grouped[d.ownership].push(d);
-      });
+      var TM_COLOURS = {};
+      var _tmIdx = 0;
+      function tmColour(key) {
+        if (!TM_COLOURS[key]) { TM_COLOURS[key] = CSJ_PALETTE[_tmIdx % CSJ_PALETTE.length]; _tmIdx++; }
+        return TM_COLOURS[key];
+      }
 
-      var root = d3.hierarchy({
-        name: "estate",
-        children: Object.keys(grouped).map(function (owner) {
-          return {
-            name: owner,
-            children: grouped[owner].map(function (d) {
-              return { name: d.domain, value: d.page_count, data: d };
-            })
-          };
-        })
-      }).sum(function (d) { return d.value || 0; })
-        .sort(function (a, b) { return b.value - a.value; });
+      function drawTreemap() {
+        d3.select("#viz-treemap").selectAll("*").remove();
+        TM_COLOURS = {}; _tmIdx = 0;
+        var mode = document.getElementById("treemap-group-by").value;
+        var sz = vizSize("viz-treemap");
+        var W = sz.w, H = sz.h;
 
-      d3.treemap().size([W, H]).padding(2).paddingTop(18).round(true)(root);
+        var grouped = {};
+        data.forEach(function (d) {
+          var key;
+          if (mode === "cms") key = d.cms_generator || "(undetected)";
+          else if (mode === "content") {
+            var kinds = d.content_kinds || {};
+            var topKind = Object.keys(kinds).sort(function (a, b) { return kinds[b] - kinds[a]; })[0] || "(unclassified)";
+            key = topKind;
+          } else {
+            key = d.ownership;
+          }
+          if (!grouped[key]) grouped[key] = [];
+          grouped[key].push(d);
+        });
 
-      var svg = d3.select("#viz-treemap").append("svg").attr("width", W).attr("height", H);
+        var colourFn = mode === "ownership" ? ownerColour : tmColour;
 
-      var groups = svg.selectAll("g").data(root.children).enter().append("g");
+        var root = d3.hierarchy({
+          name: "estate",
+          children: Object.keys(grouped).map(function (k) {
+            return {
+              name: k,
+              children: grouped[k].map(function (d) {
+                return { name: d.domain, value: d.page_count, data: d };
+              })
+            };
+          })
+        }).sum(function (d) { return d.value || 0; })
+          .sort(function (a, b) { return b.value - a.value; });
 
-      groups.append("rect")
-        .attr("x", function (d) { return d.x0; })
-        .attr("y", function (d) { return d.y0; })
-        .attr("width", function (d) { return d.x1 - d.x0; })
-        .attr("height", function (d) { return d.y1 - d.y0; })
-        .attr("fill", "none")
-        .attr("stroke", function (d) { return ownerColour(d.data.name); })
-        .attr("stroke-width", 2);
+        d3.treemap().size([W, H]).padding(2).paddingTop(18).round(true)(root);
+        var svg = d3.select("#viz-treemap").append("svg").attr("width", W).attr("height", H);
 
-      groups.append("text")
-        .attr("x", function (d) { return d.x0 + 4; })
-        .attr("y", function (d) { return d.y0 + 13; })
-        .text(function (d) { return d.data.name + " (" + fmt(d.value) + " pages)"; })
-        .attr("font-size", 11)
-        .attr("font-weight", 700)
-        .attr("fill", function (d) { return ownerColour(d.data.name); });
+        var groups = svg.selectAll("g").data(root.children).enter().append("g");
+        groups.append("rect")
+          .attr("x", function (d) { return d.x0; }).attr("y", function (d) { return d.y0; })
+          .attr("width", function (d) { return d.x1 - d.x0; })
+          .attr("height", function (d) { return d.y1 - d.y0; })
+          .attr("fill", "none").attr("stroke", function (d) { return colourFn(d.data.name); })
+          .attr("stroke-width", 2);
+        groups.append("text")
+          .attr("x", function (d) { return d.x0 + 4; }).attr("y", function (d) { return d.y0 + 13; })
+          .text(function (d) { return d.data.name + " (" + fmt(d.value) + " pages)"; })
+          .attr("font-size", 11).attr("font-weight", 700)
+          .attr("fill", function (d) { return colourFn(d.data.name); });
 
-      var leaves = svg.selectAll(".leaf").data(root.leaves()).enter().append("g").attr("class", "leaf");
+        var leaves = svg.selectAll(".leaf").data(root.leaves()).enter().append("g").attr("class", "leaf");
+        leaves.append("rect")
+          .attr("x", function (d) { return d.x0; }).attr("y", function (d) { return d.y0; })
+          .attr("width", function (d) { return d.x1 - d.x0; })
+          .attr("height", function (d) { return d.y1 - d.y0; })
+          .attr("fill", function (d) { return colourFn(d.parent.data.name); })
+          .attr("fill-opacity", 0.7).attr("stroke", "#fff").attr("stroke-width", 0.5)
+          .on("mouseover", function (evt, d) {
+            d3.select(this).attr("fill-opacity", 1);
+            var info = d.data.data || {};
+            showTip(evt, "<strong>" + shortDomain(d.data.name) + "</strong><br>" +
+              "Pages: " + fmt(d.data.value) +
+              (info.cms_generator ? "<br>CMS: " + info.cms_generator : "") +
+              (info.total_assets ? "<br>Assets: " + fmt(info.total_assets) : "") +
+              (info.avg_word_count ? "<br>Avg words: " + fmt(info.avg_word_count) : ""));
+          })
+          .on("mouseout", function () { d3.select(this).attr("fill-opacity", 0.7); hideTip(); });
+        leaves.append("text")
+          .attr("x", function (d) { return d.x0 + 3; }).attr("y", function (d) { return d.y0 + 13; })
+          .text(function (d) { return (d.x1 - d.x0 > 50 && d.y1 - d.y0 > 16) ? shortDomain(d.data.name) : ""; })
+          .attr("font-size", 10).attr("fill", "#fff").attr("pointer-events", "none");
+      }
 
-      leaves.append("rect")
-        .attr("x", function (d) { return d.x0; })
-        .attr("y", function (d) { return d.y0; })
-        .attr("width", function (d) { return d.x1 - d.x0; })
-        .attr("height", function (d) { return d.y1 - d.y0; })
-        .attr("fill", function (d) { return ownerColour(d.parent.data.name); })
-        .attr("fill-opacity", 0.7)
-        .attr("stroke", "#fff")
-        .attr("stroke-width", 0.5)
-        .on("mouseover", function (evt, d) {
-          d3.select(this).attr("fill-opacity", 1);
-          var info = d.data.data || {};
-          showTip(evt, "<strong>" + shortDomain(d.data.name) + "</strong><br>" +
-            "Pages: " + fmt(d.data.value) +
-            (info.total_assets ? "<br>Assets: " + fmt(info.total_assets) : "") +
-            (info.avg_word_count ? "<br>Avg words: " + fmt(info.avg_word_count) : ""));
-        })
-        .on("mouseout", function () { d3.select(this).attr("fill-opacity", 0.7); hideTip(); });
-
-      leaves.append("text")
-        .attr("x", function (d) { return d.x0 + 3; })
-        .attr("y", function (d) { return d.y0 + 13; })
-        .text(function (d) { return (d.x1 - d.x0 > 50 && d.y1 - d.y0 > 16) ? shortDomain(d.data.name) : ""; })
-        .attr("font-size", 10)
-        .attr("fill", "#fff")
-        .attr("pointer-events", "none");
+      drawTreemap();
+      document.getElementById("treemap-group-by").addEventListener("change", drawTreemap);
     });
   };
 
@@ -708,63 +760,92 @@
   // 5. Freshness Timeline
   // ────────────────────────────────────────────────────────────────
   VIZ.freshness = function () {
-    fetchJSON(API.freshness).then(function (data) {
+    Promise.all([fetchJSON(API.freshness), fetchJSON(API.domains)]).then(function (results) {
+      var data = results[0];
+      var domainData = results[1];
       hideLoading("loading-freshness");
-      var domains = data.domains.slice(0, 50);
-      if (!domains.length) return;
 
-      var margin = { top: 30, right: 30, bottom: 30, left: 200 };
-      var barH = 16, gap = 4;
-      var sz = vizSize("viz-freshness");
-      var W = sz.w;
-      var innerW = W - margin.left - margin.right;
-      var H = margin.top + margin.bottom + domains.length * (barH + gap);
+      function drawFreshness() {
+        d3.select("#viz-freshness").selectAll("*").remove();
+        var mode = document.getElementById("freshness-group-by").value;
+        var rows;
 
-      var allDates = [];
-      domains.forEach(function (d) {
-        if (d.oldest) allDates.push(new Date(d.oldest));
-        if (d.latest) allDates.push(new Date(d.latest));
-      });
-      var xMin = d3.min(allDates) || new Date("2020-01-01");
-      var xMax = new Date(data.today);
-      var x = d3.scaleTime().domain([xMin, xMax]).range([0, innerW]);
+        if (mode === "domain") {
+          rows = data.domains.slice(0, 50);
+        } else {
+          var groups = {};
+          domainData.forEach(function (d) {
+            var key;
+            if (mode === "cms") key = d.cms_generator || "(undetected)";
+            else {
+              var kinds = d.content_kinds || {};
+              key = Object.keys(kinds).sort(function (a, b) { return kinds[b] - kinds[a]; })[0] || "(unclassified)";
+            }
+            if (!groups[key]) groups[key] = { label: key, oldest: null, latest: null };
+            var g = groups[key];
+            if (d.oldest_date && (!g.oldest || d.oldest_date < g.oldest)) g.oldest = d.oldest_date;
+            if (d.latest_date && (!g.latest || d.latest_date > g.latest)) g.latest = d.latest_date;
+          });
+          rows = Object.values(groups).filter(function (g) { return g.oldest || g.latest; })
+            .map(function (g) { return { domain: g.label, oldest: g.oldest, latest: g.latest }; })
+            .sort(function (a, b) { return (b.latest || "") > (a.latest || "") ? 1 : -1; })
+            .slice(0, 50);
+        }
+        if (!rows.length) return;
 
-      var freshColour = d3.scaleSequential(d3.interpolateRdYlGn).domain([0, 1]);
+        var margin = { top: 30, right: 30, bottom: 30, left: 200 };
+        var barH = 16, gap = 4;
+        var sz = vizSize("viz-freshness");
+        var W = sz.w;
+        var innerW = W - margin.left - margin.right;
+        var H = margin.top + margin.bottom + rows.length * (barH + gap);
 
-      var svg = d3.select("#viz-freshness").append("svg").attr("width", W).attr("height", H);
-      var g = svg.append("g").attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+        var allDates = [];
+        rows.forEach(function (d) {
+          if (d.oldest) allDates.push(new Date(d.oldest));
+          if (d.latest) allDates.push(new Date(d.latest));
+        });
+        var xMin = d3.min(allDates) || new Date("2020-01-01");
+        var xMax = new Date(data.today);
+        var x = d3.scaleTime().domain([xMin, xMax]).range([0, innerW]);
+        var freshColour = d3.scaleSequential(d3.interpolateRdYlGn).domain([0, 1]);
 
-      g.append("g").attr("transform", "translate(0,-8)")
-        .call(d3.axisTop(x).ticks(8).tickFormat(d3.timeFormat("%b %Y")))
-        .selectAll("text").attr("font-size", 10);
+        var svg = d3.select("#viz-freshness").append("svg").attr("width", W).attr("height", H);
+        var gEl = svg.append("g").attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+        gEl.append("g").attr("transform", "translate(0,-8)")
+          .call(d3.axisTop(x).ticks(8).tickFormat(d3.timeFormat("%b %Y")))
+          .selectAll("text").attr("font-size", 10);
 
-      var today = new Date(data.today);
+        var today = new Date(data.today);
+        rows.forEach(function (d, i) {
+          var y = i * (barH + gap);
+          var label = mode === "domain" ? shortDomain(d.domain) : d.domain;
+          svg.append("text")
+            .attr("x", margin.left - 6).attr("y", margin.top + y + barH / 2 + 3)
+            .attr("text-anchor", "end").attr("font-size", 10).attr("fill", "#1A1A1A")
+            .text(label.length > 30 ? label.slice(0, 28) + "\u2026" : label);
 
-      domains.forEach(function (d, i) {
-        var y = i * (barH + gap);
-        svg.append("text")
-          .attr("x", margin.left - 6).attr("y", margin.top + y + barH / 2 + 3)
-          .attr("text-anchor", "end").attr("font-size", 10).attr("fill", "#1A1A1A")
-          .text(shortDomain(d.domain));
+          var oldest = d.oldest ? new Date(d.oldest) : xMin;
+          var latest = d.latest ? new Date(d.latest) : xMin;
+          var daysSinceUpdate = (today - latest) / (1000 * 60 * 60 * 24);
+          var freshness = Math.max(0, Math.min(1, 1 - daysSinceUpdate / 730));
 
-        var oldest = d.oldest ? new Date(d.oldest) : xMin;
-        var latest = d.latest ? new Date(d.latest) : xMin;
-        var daysSinceUpdate = (today - latest) / (1000 * 60 * 60 * 24);
-        var freshness = Math.max(0, Math.min(1, 1 - daysSinceUpdate / 730));
+          gEl.append("rect")
+            .attr("x", x(oldest)).attr("y", y)
+            .attr("width", Math.max(2, x(latest) - x(oldest)))
+            .attr("height", barH)
+            .attr("fill", freshColour(freshness)).attr("rx", 2)
+            .on("mouseover", function (evt) {
+              showTip(evt, "<strong>" + label + "</strong><br>" +
+                "Oldest: " + d.oldest + "<br>Latest: " + d.latest +
+                "<br>Days since update: " + Math.round(daysSinceUpdate));
+            })
+            .on("mouseout", hideTip);
+        });
+      }
 
-        g.append("rect")
-          .attr("x", x(oldest)).attr("y", y)
-          .attr("width", Math.max(2, x(latest) - x(oldest)))
-          .attr("height", barH)
-          .attr("fill", freshColour(freshness))
-          .attr("rx", 2)
-          .on("mouseover", function (evt) {
-            showTip(evt, "<strong>" + shortDomain(d.domain) + "</strong><br>" +
-              "Oldest: " + d.oldest + "<br>Latest: " + d.latest +
-              "<br>Days since update: " + Math.round(daysSinceUpdate));
-          })
-          .on("mouseout", hideTip);
-      });
+      drawFreshness();
+      document.getElementById("freshness-group-by").addEventListener("change", drawFreshness);
     });
   };
 
@@ -1137,7 +1218,14 @@
           pageTitle:     (d.wcag_title_pct || 0) / 100,
           formLabels:    (d.wcag_form_labels_pct != null ? d.wcag_form_labels_pct : 100) / 100,
           landmarks:     (d.wcag_landmarks_pct || 0) / 100,
-          linkPurpose:   Math.max(0, 1 - (d.wcag_vague_link_pct || 0) / 100)
+          linkPurpose:   Math.max(0, 1 - (d.wcag_vague_link_pct || 0) / 100),
+          structuredData: Math.min(1, ((d.has_json_ld_pct || 0) + (d.has_microdata_pct || 0)) / 100),
+          metadataCompleteness: Math.min(1, (
+            (d.top_authors && d.top_authors.length ? 33 : 0) +
+            (d.top_publishers && d.top_publishers.length ? 33 : 0) +
+            (d.date_count > 0 ? 34 : 0)
+          ) / 100),
+          extractionCoverage: (d.avg_extraction_coverage || 0) / 100
         };
       });
 
@@ -1153,7 +1241,10 @@
         { key: "pageTitle",      label: "Page Titled",       tip: function (d) { return (d.wcag_title_pct || 0).toFixed(0) + "% of pages have a title"; } },
         { key: "formLabels",     label: "Form Labels",       tip: function (d) { return (d.wcag_form_labels_pct != null ? d.wcag_form_labels_pct : 100).toFixed(0) + "% of form inputs labelled"; } },
         { key: "landmarks",      label: "Landmark Regions",  tip: function (d) { return (d.wcag_landmarks_pct || 0).toFixed(0) + "% of pages have main landmark or skip link"; } },
-        { key: "linkPurpose",    label: "Link Purpose",      tip: function (d) { return (100 - (d.wcag_vague_link_pct || 0)).toFixed(0) + "% of links have descriptive text"; } }
+        { key: "linkPurpose",    label: "Link Purpose",      tip: function (d) { return (100 - (d.wcag_vague_link_pct || 0)).toFixed(0) + "% of links have descriptive text"; } },
+        { key: "structuredData", label: "Structured Data", tip: function (d) { return (d.has_json_ld_pct || 0).toFixed(0) + "% JSON-LD, " + (d.has_microdata_pct || 0).toFixed(0) + "% Microdata"; } },
+        { key: "metadataCompleteness", label: "Metadata Depth", tip: function (d) { return (d.top_authors && d.top_authors.length ? "Has authors" : "No authors") + ", " + (d.top_publishers && d.top_publishers.length ? "has publisher" : "no publisher"); } },
+        { key: "extractionCoverage", label: "Extraction Coverage", tip: function (d) { return (d.avg_extraction_coverage || 0).toFixed(1) + "% avg fields populated"; } }
       ];
 
       var stableColour = d3.scaleOrdinal(CSJ_PALETTE);
@@ -1271,45 +1362,76 @@
   // 9. Word Cloud — Content Themes
   // ────────────────────────────────────────────────────────────────
   VIZ.wordcloud = function () {
-    fetchJSON(API.tags).then(function (data) {
-      hideLoading("loading-wordcloud");
-      var tags = data.tags.slice(0, 100);
-      if (!tags.length) return;
-
+    function renderCloud(items) {
+      d3.select("#viz-wordcloud").selectAll("*").remove();
+      if (!items.length) {
+        d3.select("#viz-wordcloud").append("p").attr("class", "viz-desc")
+          .style("text-align", "center").style("padding", "60px 0")
+          .text("No data for this mode.");
+        return;
+      }
       var sz = vizSize("viz-wordcloud");
       var W = sz.w, H = Math.max(400, sz.h);
-      var maxCount = tags[0].count;
+      var maxCount = items[0].count;
       var sizeScale = d3.scaleSqrt().domain([1, maxCount]).range([12, 64]);
 
-      var layout = d3.layout.cloud()
+      d3.layout.cloud()
         .size([W, H])
-        .words(tags.map(function (t) { return { text: t.tag, size: sizeScale(t.count), count: t.count }; }))
+        .words(items.map(function (t) { return { text: t.tag, size: sizeScale(t.count), count: t.count }; }))
         .padding(3)
         .rotate(function () { return (~~(Math.random() * 3) - 1) * 30; })
         .font("Arial")
         .fontSize(function (d) { return d.size; })
-        .on("end", draw);
+        .on("end", function (words) {
+          var colour = d3.scaleOrdinal(CSJ_PALETTE);
+          d3.select("#viz-wordcloud").append("svg")
+            .attr("width", W).attr("height", H)
+            .append("g").attr("transform", "translate(" + W / 2 + "," + H / 2 + ")")
+            .selectAll("text").data(words).enter().append("text")
+            .style("font-size", function (d) { return d.size + "px"; })
+            .style("font-family", "Arial")
+            .style("font-weight", function (d) { return d.size > 30 ? "700" : "400"; })
+            .attr("text-anchor", "middle")
+            .attr("fill", function (d, i) { return colour(i); })
+            .attr("transform", function (d) { return "translate(" + d.x + "," + d.y + ")rotate(" + d.rotate + ")"; })
+            .text(function (d) { return d.text; })
+            .on("mouseover", function (evt, d) {
+              showTip(evt, "<strong>" + d.text + "</strong><br>Frequency: " + fmt(d.count));
+            })
+            .on("mouseout", hideTip);
+        })
+        .start();
+    }
 
-      layout.start();
-
-      function draw(words) {
-        var colour = d3.scaleOrdinal(CSJ_PALETTE);
-        d3.select("#viz-wordcloud").append("svg")
-          .attr("width", W).attr("height", H)
-          .append("g").attr("transform", "translate(" + W / 2 + "," + H / 2 + ")")
-          .selectAll("text").data(words).enter().append("text")
-          .style("font-size", function (d) { return d.size + "px"; })
-          .style("font-family", "Arial")
-          .style("font-weight", function (d) { return d.size > 30 ? "700" : "400"; })
-          .attr("text-anchor", "middle")
-          .attr("fill", function (d, i) { return colour(i); })
-          .attr("transform", function (d) { return "translate(" + d.x + "," + d.y + ")rotate(" + d.rotate + ")"; })
-          .text(function (d) { return d.text; })
-          .on("mouseover", function (evt, d) {
-            showTip(evt, "<strong>" + d.text + "</strong><br>Frequency: " + fmt(d.count));
-          })
-          .on("mouseout", hideTip);
+    function loadAndRender() {
+      var mode = document.getElementById("wordcloud-mode").value;
+      if (mode === "tags") {
+        fetchJSON(API.tags).then(function (data) {
+          hideLoading("loading-wordcloud");
+          renderCloud(data.tags.slice(0, 100));
+        });
+      } else if (mode === "schema") {
+        fetchJSON(API.technology).then(function (data) {
+          hideLoading("loading-wordcloud");
+          var items = (data.schema_type_frequency || []).map(function (t) {
+            return { tag: t.type, count: t.count };
+          });
+          renderCloud(items.slice(0, 80));
+        });
+      } else if (mode === "authors") {
+        fetchJSON(API.authorship).then(function (data) {
+          hideLoading("loading-wordcloud");
+          var items = (data.authors || []).map(function (a) {
+            return { tag: a.author, count: a.total_pages };
+          });
+          renderCloud(items.slice(0, 80));
+        });
       }
+    }
+
+    loadAndRender();
+    document.getElementById("wordcloud-mode").addEventListener("change", function () {
+      loadAndRender();
     });
   };
 
@@ -1441,7 +1563,10 @@
         { key: "error_count", label: "Errors" },
         { key: "total_assets", label: "Assets" },
         { key: "avg_internal_links", label: "Int Links" },
-        { key: "avg_external_links", label: "Ext Links" }
+        { key: "avg_external_links", label: "Ext Links" },
+        { key: "avg_extraction_coverage", label: "Coverage %" },
+        { key: "has_json_ld_pct", label: "JSON-LD %" },
+        { key: "has_microdata_pct", label: "Microdata %" }
       ];
 
       var margin = { top: 30, right: 30, bottom: 20, left: 30 };
@@ -2499,6 +2624,7 @@
       var container = d3.select("#viz-schemainsights");
       var hasAny = false;
 
+      // ── Products section with price histogram + rating scatter ──
       if (data.products) {
         hasAny = true;
         var sec = container.append("div").style("margin-bottom", "32px");
@@ -2506,58 +2632,165 @@
           .style("color", "var(--csj-headline)").style("margin", "0 0 8px")
           .text("Products (" + fmt(data.products.count) + " items)");
         var statsHtml = [
-          "Price range: " + data.products.price_min + " – " + data.products.price_max,
+          "Price range: " + data.products.price_min + " \u2013 " + data.products.price_max,
           "Average price: " + data.products.price_avg,
           "Domains: " + data.products.by_domain.length
-        ].join(" · ");
+        ].join(" \u00B7 ");
         sec.append("p").style("font-size", "13px").style("color", "var(--csj-body)")
           .style("margin", "0 0 12px").html(statsHtml);
 
         var avail = data.products.availability;
         if (avail && Object.keys(avail).length) {
-          var chips = Object.keys(avail).map(function (k) {
-            return '<span class="ndo-badge" style="margin-right:4px;">' + k + ': ' + avail[k] + '</span>';
-          }).join("");
-          sec.append("div").style("margin-bottom", "8px").html(chips);
+          sec.append("div").style("margin-bottom", "12px").html(
+            Object.keys(avail).map(function (k) {
+              return '<span class="ndo-badge" style="margin-right:4px;">' + k + ': ' + avail[k] + '</span>';
+            }).join("")
+          );
+        }
+
+        // Price histogram
+        var prices = (data.products.top_rated || []).concat(
+          (data.products.by_domain || []).length > 0 ? [] : []
+        );
+        var allPrices = [];
+        if (data.products.price_min > 0 && data.products.price_max > 0) {
+          var pRange = data.products.price_max - data.products.price_min;
+          var bucketSize = Math.max(1, Math.ceil(pRange / 10));
+          var pBuckets = {};
+          var byDom = data.products.by_domain || [];
+          sec.append("div").style("margin-bottom", "12px").html(
+            "<strong>By domain:</strong> " + byDom.slice(0, 8).map(function (d) {
+              return '<span class="ndo-badge" style="margin-right:4px;">' + shortDomain(d.domain) + ': ' + d.count + '</span>';
+            }).join("")
+          );
+        }
+
+        // Rating scatter (if top_rated has data)
+        var rated = (data.products.top_rated || []).filter(function (p) { return p.rating > 0; });
+        if (rated.length >= 3) {
+          var scW = 400, scH = 200;
+          var scM = { top: 10, right: 20, bottom: 30, left: 40 };
+          var scIW = scW - scM.left - scM.right, scIH = scH - scM.top - scM.bottom;
+          var scSvg = sec.append("svg").attr("width", scW).attr("height", scH);
+          var scG = scSvg.append("g").attr("transform", "translate(" + scM.left + "," + scM.top + ")");
+          var scX = d3.scaleLinear().domain([0, d3.max(rated, function (p) { return p.review_count; }) || 1]).range([0, scIW]);
+          var scY = d3.scaleLinear().domain([0, 5]).range([scIH, 0]);
+          scG.append("g").attr("transform", "translate(0," + scIH + ")").call(d3.axisBottom(scX).ticks(5));
+          scG.append("g").call(d3.axisLeft(scY).ticks(5));
+          scG.selectAll("circle").data(rated).enter().append("circle")
+            .attr("cx", function (d) { return scX(d.review_count); })
+            .attr("cy", function (d) { return scY(d.rating); })
+            .attr("r", 5).attr("fill", "#C4841D").attr("fill-opacity", 0.7)
+            .attr("stroke", "#fff").attr("stroke-width", 1)
+            .on("mouseover", function (evt, d) {
+              showTip(evt, "<strong>" + d.title + "</strong><br>Rating: " + d.rating +
+                "<br>Reviews: " + fmt(d.review_count) + "<br>Price: " + d.price);
+            })
+            .on("mouseout", hideTip);
+          scSvg.append("text").attr("x", scW / 2).attr("y", scH - 2)
+            .attr("text-anchor", "middle").attr("font-size", 10).attr("fill", "#5A5246").text("Review count");
+          scSvg.append("text").attr("transform", "rotate(-90)")
+            .attr("x", -scH / 2).attr("y", 12)
+            .attr("text-anchor", "middle").attr("font-size", 10).attr("fill", "#5A5246").text("Rating");
         }
       }
 
+      // ── Events section with timeline ──
       if (data.events) {
         hasAny = true;
         var sec2 = container.append("div").style("margin-bottom", "32px");
         sec2.append("h3").style("font-size", "15px").style("font-weight", "700")
           .style("color", "var(--csj-headline)").style("margin", "0 0 8px")
           .text("Events (" + fmt(data.events.count) + " items)");
-        var evList = (data.events.events || []).slice(0, 15);
-        var evHtml = evList.map(function (ev) {
-          return '<div style="padding:3px 0;font-size:12px;border-bottom:1px solid var(--csj-newsprint);">' +
-            '<strong>' + ev.date + '</strong> — ' + ev.title +
-            (ev.location ? ' <span style="color:var(--csj-body);">(' + ev.location + ')</span>' : '') +
-            '</div>';
-        }).join("");
-        sec2.append("div").html(evHtml);
+
+        // Event timeline bars
+        var evts = (data.events.events || []).slice(0, 30).filter(function (e) { return e.date; });
+        if (evts.length >= 2) {
+          var evW = 600, evH = Math.max(180, evts.length * 18 + 40);
+          var evM = { top: 20, right: 20, bottom: 10, left: 200 };
+          var evIW = evW - evM.left - evM.right;
+          var evDates = evts.map(function (e) { return new Date(e.date); }).filter(function (d) { return !isNaN(d); });
+          if (evDates.length >= 2) {
+            var evX = d3.scaleTime().domain(d3.extent(evDates)).range([0, evIW]);
+            var evSvg = sec2.append("svg").attr("width", evW).attr("height", evH);
+            var evG = evSvg.append("g").attr("transform", "translate(" + evM.left + "," + evM.top + ")");
+            evG.append("g").call(d3.axisTop(evX).ticks(6).tickFormat(d3.timeFormat("%b %Y")))
+              .selectAll("text").attr("font-size", 9);
+            evts.forEach(function (ev, i) {
+              var y = i * 18;
+              var evDate = new Date(ev.date);
+              if (isNaN(evDate)) return;
+              evSvg.append("text").attr("x", evM.left - 4).attr("y", evM.top + y + 10)
+                .attr("text-anchor", "end").attr("font-size", 9).attr("fill", "#1A1A1A")
+                .text((ev.title || "").slice(0, 28));
+              evG.append("circle").attr("cx", evX(evDate)).attr("cy", y + 8).attr("r", 5)
+                .attr("fill", "#2D6A4F").attr("fill-opacity", 0.8)
+                .on("mouseover", function (evt) {
+                  showTip(evt, "<strong>" + ev.title + "</strong><br>" + ev.date +
+                    (ev.location ? "<br>" + ev.location : ""));
+                })
+                .on("mouseout", hideTip);
+            });
+          }
+        } else {
+          sec2.append("div").html(evts.map(function (ev) {
+            return '<div style="padding:3px 0;font-size:12px;border-bottom:1px solid var(--csj-newsprint);">' +
+              '<strong>' + ev.date + '</strong> \u2014 ' + ev.title +
+              (ev.location ? ' <span style="color:var(--csj-body);">(' + ev.location + ')</span>' : '') + '</div>';
+          }).join(""));
+        }
       }
 
+      // ── Jobs section with location bar chart ──
       if (data.jobs) {
         hasAny = true;
         var sec3 = container.append("div").style("margin-bottom", "32px");
         sec3.append("h3").style("font-size", "15px").style("font-weight", "700")
           .style("color", "var(--csj-headline)").style("margin", "0 0 8px")
           .text("Job Postings (" + fmt(data.jobs.count) + " items)");
-        if (data.jobs.by_location && data.jobs.by_location.length) {
-          var locChips = data.jobs.by_location.slice(0, 10).map(function (loc) {
+
+        var locs = (data.jobs.by_location || []).slice(0, 12);
+        if (locs.length >= 2) {
+          var jW = 450, jBarH = 20, jGap = 3;
+          var jM = { top: 5, right: 50, bottom: 5, left: 150 };
+          var jIW = jW - jM.left - jM.right;
+          var jH = jM.top + jM.bottom + locs.length * (jBarH + jGap);
+          var jMax = d3.max(locs, function (d) { return d.count; }) || 1;
+          var jX = d3.scaleLinear().domain([0, jMax]).range([0, jIW]);
+          var jSvg = sec3.append("svg").attr("width", jW).attr("height", jH);
+          var jG = jSvg.append("g").attr("transform", "translate(" + jM.left + "," + jM.top + ")");
+          locs.forEach(function (loc, i) {
+            var y = i * (jBarH + jGap);
+            jG.append("text").attr("x", -4).attr("y", y + jBarH / 2 + 4)
+              .attr("text-anchor", "end").attr("font-size", 10).attr("fill", "#1A1A1A")
+              .text(loc.location.length > 22 ? loc.location.slice(0, 20) + "\u2026" : loc.location);
+            jG.append("rect").attr("x", 0).attr("y", y).attr("width", jX(loc.count))
+              .attr("height", jBarH).attr("fill", "#3A6B7E").attr("fill-opacity", 0.8).attr("rx", 2);
+            jG.append("text").attr("x", jX(loc.count) + 4).attr("y", y + jBarH / 2 + 4)
+              .attr("font-size", 10).attr("fill", "#5A5246").text(loc.count);
+          });
+        } else if (locs.length) {
+          sec3.append("div").html(locs.map(function (loc) {
             return '<span class="ndo-badge" style="margin-right:4px;">' + loc.location + ': ' + loc.count + '</span>';
-          }).join("");
-          sec3.append("div").style("margin-bottom", "8px").html("<strong>By location:</strong> " + locChips);
+          }).join(""));
         }
       }
 
+      // ── Recipes section ──
       if (data.recipes) {
         hasAny = true;
         var sec4 = container.append("div").style("margin-bottom", "32px");
         sec4.append("h3").style("font-size", "15px").style("font-weight", "700")
           .style("color", "var(--csj-headline)").style("margin", "0 0 8px")
           .text("Recipes (" + fmt(data.recipes.count) + " items)");
+        var recDoms = (data.recipes.by_domain || []).slice(0, 8);
+        if (recDoms.length) {
+          sec4.append("div").html(
+            "<strong>By domain:</strong> " + recDoms.map(function (d) {
+              return '<span class="ndo-badge" style="margin-right:4px;">' + shortDomain(d.domain) + ': ' + d.count + '</span>';
+            }).join("")
+          );
+        }
       }
 
       if (!hasAny) {

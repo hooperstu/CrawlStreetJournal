@@ -639,7 +639,14 @@
       <div class="viz-header">
         <div>
           <h2 class="viz-title">Domain Network Graph</h2>
-          <p class="viz-desc">Force-directed layout showing cross-domain linking relationships. Node size = page count, colour = ownership. Drag nodes to explore clusters.</p>
+          <p class="viz-desc">Force-directed layout showing cross-domain linking relationships. Node size = page count. Drag nodes to explore clusters.</p>
+        </div>
+        <div class="viz-controls">
+          <select id="network-colour-by">
+            <option value="ownership">Colour: Ownership</option>
+            <option value="cms">Colour: CMS Platform</option>
+            <option value="coverage">Colour: Extraction Coverage</option>
+          </select>
         </div>
       </div>
       <div class="viz-loading" id="loading-network">Loading network data&hellip;</div>
@@ -683,7 +690,14 @@
       <div class="viz-header">
         <div>
           <h2 class="viz-title">Site Size Treemap</h2>
-          <p class="viz-desc">Rectangle area = page count per domain, grouped by ownership category. Click to zoom into a group.</p>
+          <p class="viz-desc">Rectangle area = page count per domain. Click to zoom into a group.</p>
+        </div>
+        <div class="viz-controls">
+          <select id="treemap-group-by">
+            <option value="ownership">Group: Ownership</option>
+            <option value="cms">Group: CMS Platform</option>
+            <option value="content">Group: Content Kind</option>
+          </select>
         </div>
       </div>
       <div class="viz-loading" id="loading-treemap">Loading domain data&hellip;</div>
@@ -733,7 +747,14 @@
       <div class="viz-header">
         <div>
           <h2 class="viz-title">Content Freshness Timeline</h2>
-          <p class="viz-desc">Shows the latest and oldest content dates per domain. Red = stale, green = recently updated.</p>
+          <p class="viz-desc">Shows the latest and oldest content dates. Red = stale, green = recently updated.</p>
+        </div>
+        <div class="viz-controls">
+          <select id="freshness-group-by">
+            <option value="domain">Group: Domain</option>
+            <option value="cms">Group: CMS Platform</option>
+            <option value="content">Group: Content Kind</option>
+          </select>
         </div>
       </div>
       <div class="viz-loading" id="loading-freshness">Loading freshness data&hellip;</div>
@@ -809,7 +830,14 @@
       <div class="viz-header">
         <div>
           <h2 class="viz-title">Content Themes</h2>
-          <p class="viz-desc">Tag frequency word cloud showing the dominant content themes across the crawled estate.</p>
+          <p class="viz-desc">Frequency word cloud showing dominant themes across the crawled estate.</p>
+        </div>
+        <div class="viz-controls">
+          <select id="wordcloud-mode">
+            <option value="tags">Tags</option>
+            <option value="schema">Schema Types</option>
+            <option value="authors">Authors</option>
+          </select>
         </div>
       </div>
       <div class="viz-loading" id="loading-wordcloud">Loading tag data&hellip;</div>
