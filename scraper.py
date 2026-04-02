@@ -1,6 +1,34 @@
 """
-CSJ crawler: robots.txt, fetch, sitemap seeding, inventory rows,
-per-domain rate limiting, two-tier priority queue, and polite throttling.
+CSJ crawl engine — orchestrates fetching, parsing, and persistence.
+
+Architecture
+------------
+The crawler uses a **dual-queue** design:
+
+- ``crawl_queue``  — URLs discovered by following links on already-crawled pages.
+  These are processed **first** so that in-site BFS explores a domain's content
+  graph before moving to the next seed.
+- ``seed_queue``   — URLs from seeds and sitemaps.  Processed only when
+  ``crawl_queue`` is empty, ensuring seeds don't starve discovered links.
+
+**Resume:** Crawl progress is persisted to ``_state.json`` every
+``STATE_SAVE_INTERVAL`` pages.  On resume, the visited set is rebuilt from
+``pages.csv`` / ``crawl_errors.csv``, and the queue is restored from state.
+
+**Module-global caches** (thread-safety caveat):
+``_robots_cache``, ``_blocked_origins``, ``_domain_last_fetch``, and
+``_domain_fail_count`` are process-global dicts shared across concurrent
+GUI crawls.  This is acceptable for robots and rate-limit data (they are
+per-origin, not per-crawl) but means two crawls targeting the same origin
+will share back-off state.
+
+Key entry points:
+
+- ``crawl()``             — main loop; safe for concurrent use when *cfg*
+  and *ctx* are provided.
+- ``collect_start_items`` — gather seed + sitemap URLs before crawling.
+- ``fetch_page``          — GET with retries and exponential back-off.
+- ``normalise_url``       — heavy-duty URL canonicalisation for dedup.
 """
 
 from __future__ import annotations
@@ -8,9 +36,9 @@ from __future__ import annotations
 import logging
 import os
 import random
+import threading
 import time
 from collections import deque
-from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 from urllib.robotparser import RobotFileParser
@@ -23,6 +51,7 @@ import parser as parser_module
 import sitemap as sitemap_module
 import storage
 from storage import StorageContext
+import utils
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +81,19 @@ def normalise_url(url: str) -> str:
 
 # ── Robots.txt caching ────────────────────────────────────────────────────
 
+# Single lock protecting all four process-global crawl-state dicts below.
+# Required because the GUI runs Flask with threaded=True and concurrent
+# crawls can read/write these dicts from different threads simultaneously.
+_global_state_lock = threading.Lock()
+
+# Per-origin robots.txt parsers, populated lazily on first access.
 _robots_cache: Dict[str, RobotFileParser] = {}
+# Origins whose root path is fully disallowed — short-circuit future checks.
 _blocked_origins: Set[str] = set()
 
 
 def _origin_of(url: str) -> str:
+    """Extract ``scheme://netloc`` as the cache key for robots / rate-limit lookups."""
     try:
         p = urlparse(url)
         return f"{p.scheme}://{p.netloc}"
@@ -65,33 +102,49 @@ def _origin_of(url: str) -> str:
 
 
 def _robots_for_url(url: str) -> RobotFileParser:
+    """Return a cached ``RobotFileParser`` for *url*'s origin, fetching if needed."""
     origin = _origin_of(url)
-    if origin not in _robots_cache:
-        rp = RobotFileParser()
-        try:
-            rp.set_url(origin + "/robots.txt")
-            rp.read()
-        except Exception as e:
-            logger.debug("Could not fetch robots.txt for %s: %s", origin, e)
-        _robots_cache[origin] = rp
-    return _robots_cache[origin]
+    with _global_state_lock:
+        if origin in _robots_cache:
+            return _robots_cache[origin]
+    # Fetch outside the lock to avoid blocking other threads during I/O.
+    rp = RobotFileParser()
+    try:
+        rp.set_url(origin + "/robots.txt")
+        rp.read()
+    except Exception as e:
+        logger.debug("Could not fetch robots.txt for %s: %s", origin, e)
+    with _global_state_lock:
+        # Another thread may have populated the cache while we were fetching;
+        # prefer the already-cached entry to avoid redundant fetches.
+        if origin not in _robots_cache:
+            _robots_cache[origin] = rp
+        return _robots_cache[origin]
 
 
 def can_fetch(url: str, cfg: Optional[CrawlConfig] = None) -> bool:
+    """Check robots.txt permission for *url*.
+
+    Uses the ``_blocked_origins`` set as a fast-path: if an origin's root
+    path is disallowed, every URL under that origin is rejected without
+    re-parsing the robots.txt file.
+    """
     _respect = cfg.RESPECT_ROBOTS_TXT if cfg else config.RESPECT_ROBOTS_TXT
     _ua = cfg.USER_AGENT if cfg else config.USER_AGENT
     if not _respect:
         return True
     origin = _origin_of(url)
-    if origin in _blocked_origins:
-        return False
+    with _global_state_lock:
+        if origin in _blocked_origins:
+            return False
     rp = _robots_for_url(url)
     try:
         allowed = rp.can_fetch(_ua, url)
         if not allowed:
             root_blocked = not rp.can_fetch(_ua, origin + "/")
             if root_blocked:
-                _blocked_origins.add(origin)
+                with _global_state_lock:
+                    _blocked_origins.add(origin)
                 logger.info(
                     "Origin %s fully blocked by robots.txt — skipping all URLs", origin
                 )
@@ -103,30 +156,27 @@ def can_fetch(url: str, cfg: Optional[CrawlConfig] = None) -> bool:
 # ── Domain scope ──────────────────────────────────────────────────────────
 
 def is_allowed_domain(url: str, cfg: Optional[CrawlConfig] = None) -> bool:
-    """Match hostname at dot boundary (suffix match)."""
+    """Match *url*'s hostname against the configured allowed-domain list at a dot boundary.
+
+    Delegates to ``utils.is_allowed_domain`` using either *cfg*'s domain list
+    or the module-level ``config.ALLOWED_DOMAINS`` when *cfg* is ``None``.
+    """
     domains = cfg.ALLOWED_DOMAINS if cfg else config.ALLOWED_DOMAINS
-    try:
-        host = (urlparse(url).hostname or "").lower()
-        normalised_domains = [
-            str(d).strip().lower().lstrip(".")
-            for d in domains
-            if str(d).strip()
-        ]
-        return any(
-            host == d or host.endswith("." + d)
-            for d in normalised_domains
-        )
-    except Exception:
-        return False
+    return utils.is_allowed_domain(url, domains)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    """UTC timestamp string for ``discovered_at`` fields.
+
+    Thin wrapper around ``utils.now_iso`` kept so internal call-sites are unchanged.
+    """
+    return utils.now_iso()
 
 
 def _is_probably_html(content_type: str) -> bool:
+    """Return ``True`` if the Content-Type looks like HTML (or is absent)."""
     ct = (content_type or "").lower()
     if not ct:
         return True
@@ -135,22 +185,34 @@ def _is_probably_html(content_type: str) -> bool:
 
 # ── Per-domain rate limiting ──────────────────────────────────────────────
 
+# Monotonic timestamps of the last fetch per hostname (for polite delays).
 _domain_last_fetch: Dict[str, float] = {}
+# Consecutive failure count per hostname (drives adaptive back-off).
 _domain_fail_count: Dict[str, int] = {}
 
 
 def _record_domain_success(hostname: str) -> None:
-    _domain_fail_count.pop(hostname, None)
+    """Reset the failure counter on a successful fetch so back-off resets."""
+    with _global_state_lock:
+        _domain_fail_count.pop(hostname, None)
 
 
 def _record_domain_failure(hostname: str) -> None:
-    _domain_fail_count[hostname] = _domain_fail_count.get(hostname, 0) + 1
+    """Increment the failure counter, triggering exponential back-off."""
+    with _global_state_lock:
+        _domain_fail_count[hostname] = _domain_fail_count.get(hostname, 0) + 1
 
 
 def _per_domain_delay(hostname: str, base_delay: Union[float, Tuple[float, float]]) -> float:
-    """Base delay plus adaptive back-off for repeatedly failing domains."""
+    """Base delay plus adaptive back-off for repeatedly failing domains.
+
+    The back-off doubles with each consecutive failure (capped at 5
+    doublings / 60 s extra) so that flaky or rate-limiting hosts are
+    given progressively more breathing room.
+    """
     base = _resolve_delay(base_delay)
-    fails = _domain_fail_count.get(hostname, 0)
+    with _global_state_lock:
+        fails = _domain_fail_count.get(hostname, 0)
     if fails > 0:
         extra = min(base * (2 ** min(fails, 5)), 60)
         return base + extra
@@ -160,12 +222,13 @@ def _per_domain_delay(hostname: str, base_delay: Union[float, Tuple[float, float
 def _wait_for_domain(hostname: str, delay_cfg: Union[float, Tuple[float, float]]) -> None:
     """Sleep to respect per-domain rate limiting."""
     delay = _per_domain_delay(hostname, delay_cfg)
-    now = time.monotonic()
-    last = _domain_last_fetch.get(hostname, 0)
-    wait = max(0, delay - (now - last))
+    with _global_state_lock:
+        now = time.monotonic()
+        last = _domain_last_fetch.get(hostname, 0)
+        wait = max(0, delay - (now - last))
+        _domain_last_fetch[hostname] = now + wait
     if wait > 0:
         time.sleep(wait)
-    _domain_last_fetch[hostname] = time.monotonic()
 
 
 # ── Fetch with exponential back-off ──────────────────────────────────────
@@ -255,6 +318,7 @@ def head_asset(url: str, cfg: Optional[CrawlConfig] = None) -> Tuple[str, str]:
 def _sitemaps_from_robots(
     origin: str, cfg: Optional[CrawlConfig] = None,
 ) -> List[str]:
+    """Parse ``Sitemap:`` directives from *origin*'s ``robots.txt``."""
     _ua = cfg.USER_AGENT if cfg else config.USER_AGENT
     _timeout = cfg.REQUEST_TIMEOUT_SECONDS if cfg else config.REQUEST_TIMEOUT_SECONDS
     try:
@@ -266,12 +330,7 @@ def _sitemaps_from_robots(
     except Exception as e:
         logger.debug("robots.txt fetch failed for %s: %s", origin, e)
         return []
-    found: List[str] = []
-    for line in r.text.splitlines():
-        line = line.strip()
-        if line.lower().startswith("sitemap:"):
-            found.append(line.split(":", 1)[1].strip())
-    return found
+    return utils.parse_robots_for_sitemaps(r.text)
 
 
 def collect_start_items(
@@ -473,38 +532,42 @@ def _preflight_robots_report(
 
 # ── Main crawl loop ──────────────────────────────────────────────────────
 
-def crawl(
-    seed_urls: Optional[List[str]] = None,
-    max_pages: Optional[int] = None,
-    delay: Optional[Union[float, Tuple[float, float]]] = None,
-    on_progress: Optional[Callable[[int, int, str], None]] = None,
-    on_phase: Optional[Callable[[str, str], None]] = None,
-    should_stop: Optional[Callable[[], bool]] = None,
-    run_name: Optional[str] = None,
-    run_folder: Optional[str] = None,
-    resume: bool = False,
-    cfg: Optional[CrawlConfig] = None,
-    ctx: Optional[StorageContext] = None,
-) -> Tuple[int, int]:
+
+def _init_run(
+    cfg: CrawlConfig,
+    ctx: StorageContext,
+    seed_urls: Optional[List[str]],
+    run_name: Optional[str],
+    run_folder: Optional[str],
+    resume: bool,
+    max_pages: int,
+    delay_cfg: Any,
+    max_depth: Optional[int],
+    on_phase: Optional[Callable] = None,
+) -> Tuple[
+    str,                                       # run_dir
+    deque,                                     # crawl_queue
+    deque,                                     # seed_queue
+    Set[str],                                  # queued
+    Set[str],                                  # visited
+    Dict[str, Dict[str, str]],                 # sitemap_meta
+    int,                                       # pages_crawled
+    int,                                       # assets_from_pages
+    Optional[Dict[str, Any]],                  # saved_state
+    CrawlConfig,                               # possibly updated cfg
+]:
+    """Initialise (or resume) a crawl run directory and seed / restore the queues.
+
+    Returns a tuple of all mutable crawl-state components.
     """
-    Crawl HTML pages up to max_pages; record inventory and linked assets.
-    Returns (pages_crawled, assets_recorded_from_page_links).
-
-    When *cfg* and *ctx* are provided the crawl is fully isolated and safe
-    to run concurrently with other crawls in separate threads.  When
-    omitted, module-level globals are used (backward compat for CLI).
-    """
-    if cfg is None:
-        cfg = CrawlConfig.from_module()
-    if ctx is None:
-        ctx = StorageContext(cfg.OUTPUT_DIR, cfg)
-
-    max_pages = max_pages if max_pages is not None else cfg.MAX_PAGES_TO_CRAWL
-    delay_cfg = delay if delay is not None else cfg.REQUEST_DELAY_SECONDS
-    max_depth = cfg.MAX_DEPTH
-    state_interval = cfg.STATE_SAVE_INTERVAL
-
-    run_dir = None
+    crawl_queue: deque = deque()
+    seed_queue: deque = deque()
+    queued: Set[str] = set()
+    visited: Set[str] = set()
+    sitemap_meta: Dict[str, Dict[str, str]] = {}
+    pages_crawled = 0
+    assets_from_pages = 0
+    saved_state: Optional[Dict[str, Any]] = None
 
     if resume and run_folder:
         run_dir = os.path.join(ctx.output_dir, run_folder)
@@ -512,9 +575,6 @@ def crawl(
         if saved_cfg:
             cfg = CrawlConfig.from_dict(saved_cfg, base=cfg)
             ctx.cfg = cfg
-            max_pages = cfg.MAX_PAGES_TO_CRAWL
-            delay_cfg = cfg.REQUEST_DELAY_SECONDS
-            max_depth = cfg.MAX_DEPTH
         ctx.resume_outputs(run_folder)
     elif run_folder:
         run_dir = os.path.join(ctx.output_dir, run_folder)
@@ -522,23 +582,11 @@ def crawl(
         if saved_cfg:
             cfg = CrawlConfig.from_dict(saved_cfg, base=cfg)
             ctx.cfg = cfg
-            max_pages = cfg.MAX_PAGES_TO_CRAWL
-            delay_cfg = cfg.REQUEST_DELAY_SECONDS
-            max_depth = cfg.MAX_DEPTH
         ctx.initialise_outputs(run_folder=run_folder, run_name=run_name)
     else:
         ctx.initialise_outputs(run_name=run_name)
 
     run_dir = ctx.get_active_run_dir()
-
-    crawl_queue: deque[Tuple[str, str, int]] = deque()
-    seed_queue: deque[Tuple[str, str, int]] = deque()
-    queued: Set[str] = set()
-    visited: Set[str] = set()
-    sitemap_meta: Dict[str, Dict[str, str]] = {}
-    pages_crawled = 0
-    assets_from_pages = 0
-    saved_state: Optional[Dict[str, Any]] = None
 
     if resume and run_folder:
         visited = storage.rebuild_visited_from_csvs(run_dir)
@@ -561,35 +609,365 @@ def crawl(
             len(crawl_queue), len(seed_queue), pages_crawled,
         )
     else:
-        if seed_urls is not None:
-            start_items = [(normalise_url(u.strip()), "seed") for u in seed_urls if u.strip()]
-        else:
-            start_items, sitemap_meta = collect_start_items(cfg, ctx, on_phase)
+        _seed_queues(cfg, ctx, seed_urls, seed_queue, queued, sitemap_meta, on_phase)
 
-        now0 = _now_iso()
-        for u, ref in start_items:
-            if not is_allowed_domain(u, cfg):
-                continue
-            cat = parser_module.asset_category_for_url(u)
-            if cat is not None:
-                row = {
-                    "referrer_page_url": ref,
-                    "asset_url": u,
-                    "link_text": "",
-                    "category": cat,
-                    "head_content_type": "",
-                    "head_content_length": "",
-                    "discovered_at": now0,
-                }
-                if cfg.ASSET_HEAD_METADATA:
-                    ct, cl = head_asset(u, cfg)
-                    row["head_content_type"] = ct
-                    row["head_content_length"] = cl
-                ctx.write_asset(row, cat)
-                continue
-            if u not in queued:
-                seed_queue.append((u, ref, 0))
-                queued.add(u)
+    return (
+        run_dir, crawl_queue, seed_queue, queued, visited,
+        sitemap_meta, pages_crawled, assets_from_pages, saved_state, cfg,
+    )
+
+
+def _seed_queues(
+    cfg: CrawlConfig,
+    ctx: StorageContext,
+    seed_urls: Optional[List[str]],
+    seed_queue: deque,
+    queued: Set[str],
+    sitemap_meta: Dict[str, Dict[str, str]],
+    on_phase: Optional[Callable] = None,
+) -> None:
+    """Populate *seed_queue* from seed URLs or sitemap discovery.
+
+    Asset-only URLs are written to the asset CSV directly rather than being
+    enqueued for HTML crawling.  Mutates *seed_queue*, *queued*, and
+    *sitemap_meta* in-place.
+    """
+    if seed_urls is not None:
+        start_items: List[Tuple[str, str]] = [
+            (normalise_url(u.strip()), "seed") for u in seed_urls if u.strip()
+        ]
+        sitemap_meta.clear()
+    else:
+        start_items, new_sitemap_meta = collect_start_items(cfg, ctx, on_phase)
+        sitemap_meta.update(new_sitemap_meta)
+
+    now0 = _now_iso()
+    for u, ref in start_items:
+        if not is_allowed_domain(u, cfg):
+            continue
+        cat = parser_module.asset_category_for_url(u)
+        if cat is not None:
+            row = {
+                "referrer_page_url": ref,
+                "asset_url": u,
+                "link_text": "",
+                "category": cat,
+                "head_content_type": "",
+                "head_content_length": "",
+                "discovered_at": now0,
+            }
+            if cfg.ASSET_HEAD_METADATA:
+                ct, cl = head_asset(u, cfg)
+                row["head_content_type"] = ct
+                row["head_content_length"] = cl
+            ctx.write_asset(row, cat)
+            continue
+        if u not in queued:
+            seed_queue.append((u, ref, 0))
+            queued.add(u)
+
+
+def _process_one_url(
+    url: str,
+    referrer: str,
+    depth: int,
+    visited: Set[str],
+    queued: Set[str],
+    crawl_queue: deque,
+    sitemap_meta: Dict[str, Dict[str, str]],
+    cfg: CrawlConfig,
+    ctx: StorageContext,
+    max_depth: Optional[int],
+    delay_cfg: Any = None,
+) -> Tuple[bool, int, str]:
+    """Fetch and process one URL from the queue.
+
+    Returns ``(page_written, new_assets, final_url)`` where *page_written* is
+    ``True`` when a full inventory row was recorded, *new_assets* is the count
+    of newly discovered asset rows, and *final_url* is the resolved URL after
+    redirects (useful for progress callbacks).  Returns ``(False, 0, url)``
+    when the URL was skipped.
+    """
+    url_key = normalise_url(url)
+    if url_key in visited:
+        return False, 0, url
+    visited.add(url_key)
+
+    if not can_fetch(url, cfg):
+        ctx.write_error({
+            "url": url,
+            "error_type": "robots_disallowed",
+            "message": "Blocked by robots.txt",
+            "http_status": "",
+            "discovered_at": _now_iso(),
+        })
+        return False, 0, url
+
+    hostname = (urlparse(url).hostname or "").lower()
+    _effective_delay = delay_cfg if delay_cfg is not None else cfg.REQUEST_DELAY_SECONDS
+    _wait_for_domain(hostname, _effective_delay)
+
+    _render_js = cfg.RENDER_JAVASCRIPT
+
+    html, status, final_url, ctype, resp_meta, error_detail = fetch_page(url, cfg)
+    if html is None:
+        _record_domain_failure(hostname)
+        ctx.write_error({
+            "url": url,
+            "error_type": "fetch_failed",
+            "message": error_detail or "No response body or HTTP error",
+            "http_status": status,
+            "discovered_at": _now_iso(),
+        })
+        return False, 0, url
+
+    # A body was returned but the HTTP status was an error (e.g. a
+    # server that sends an HTML error page with a 4xx code).  Record
+    # the failure so back-off applies, then skip the page.
+    if status >= 400:
+        _record_domain_failure(hostname)
+        ctx.write_error({
+            "url": url,
+            "error_type": "fetch_failed",
+            "message": f"HTTP {status}",
+            "http_status": status,
+            "discovered_at": _now_iso(),
+        })
+        return False, 0, url
+
+    # JS rendering fallback: re-fetch via headless browser when the
+    # static HTML body is suspiciously thin (likely a JS-rendered SPA).
+    if _render_js and html and len(html.strip()) < 2000:
+        try:
+            import render as render_module
+            if render_module.is_available():
+                rendered = render_module.render_page(
+                    url,
+                    user_agent=cfg.USER_AGENT,
+                )
+                if rendered is not None:
+                    r_html, r_status, r_final, r_ct, r_headers = rendered
+                    if r_html and len(r_html.strip()) > len(html.strip()):
+                        html = r_html
+                        status = r_status
+                        final_url = r_final
+                        ctype = r_ct
+                        resp_meta.update({
+                            "x_robots_tag": (r_headers.get("x-robots-tag") or "").strip(),
+                            "server": (r_headers.get("server") or resp_meta.get("server", "")).strip(),
+                        })
+                        logger.debug("JS-rendered %s (%d → %d bytes)", url, len(html), len(r_html))
+        except ImportError:
+            pass
+        except Exception as render_err:
+            logger.debug("JS render fallback failed for %s: %s", url, render_err)
+
+    _record_domain_success(hostname)
+
+    if not _is_probably_html(ctype):
+        ctx.write_error({
+            "url": final_url,
+            "error_type": "non_html",
+            "message": f"Content-Type not HTML: {ctype}",
+            "http_status": status,
+            "discovered_at": _now_iso(),
+        })
+        return False, 0, final_url
+
+    sm = sitemap_meta.get(normalise_url(url)) or sitemap_meta.get(normalise_url(final_url)) or {}
+    now = _now_iso()
+    new_assets = 0
+
+    try:
+        page_row, tag_rows = parser_module.build_page_inventory_row(
+            html,
+            requested_url=url,
+            final_url=final_url,
+            http_status=status,
+            content_type=ctype,
+            referrer_url=referrer,
+            depth=depth,
+            discovered_at=now,
+            response_meta=resp_meta,
+            sitemap_meta=sm,
+        )
+        ctx.write_page(page_row)
+        for tr in tag_rows:
+            ctx.write_tag_row(tr)
+        if cfg.WRITE_NAV_LINKS_CSV:
+            try:
+                from bs4 import BeautifulSoup as _BS
+                nav_rows = parser_module.extract_nav_links(
+                    _BS(html, "lxml"), final_url, now,
+                )
+                for nr in nav_rows:
+                    ctx.write_nav_link(nr)
+            except Exception as nav_err:
+                logger.debug("Nav extraction failed for %s: %s", final_url, nav_err)
+    except Exception as e:
+        logger.exception("Inventory parse failed for %s: %s", final_url, e)
+        ctx.write_error({
+            "url": final_url,
+            "error_type": "parse_error",
+            "message": str(e)[:500],
+            "http_status": status,
+            "discovered_at": now,
+        })
+        return False, 0, final_url
+
+    try:
+        html_links, asset_rows, edge_rows = parser_module.extract_classified_links(
+            html, final_url, now
+        )
+    except Exception as e:
+        logger.debug("Link extraction error on %s: %s", final_url, e)
+        html_links, asset_rows, edge_rows = set(), [], []
+
+    for e_row in edge_rows:
+        ctx.write_edge(e_row)
+
+    if cfg.CHECK_OUTBOUND_LINKS and edge_rows:
+        _check_outbound_links(edge_rows, now, cfg, ctx)
+
+    for ar in asset_rows:
+        if cfg.ASSET_HEAD_METADATA:
+            ct, cl = head_asset(ar["asset_url"], cfg)
+            ar["head_content_type"] = ct
+            ar["head_content_length"] = cl
+        ctx.write_asset(ar, ar["category"])
+        new_assets += 1
+
+    try:
+        inline_assets = parser_module.extract_inline_assets(html, final_url, now)
+        for ia in inline_assets:
+            ctx.write_asset(ia, ia["category"])
+            new_assets += 1
+    except Exception as e:
+        logger.debug("Inline asset extraction error on %s: %s", final_url, e)
+
+    for link in html_links:
+        norm = normalise_url(link)
+        if norm in visited or norm in queued:
+            continue
+        if not is_allowed_domain(link, cfg):
+            continue
+        if parser_module.asset_category_for_url(link) is not None:
+            continue
+        new_depth = depth + 1
+        if max_depth is not None and new_depth > max_depth:
+            continue
+        crawl_queue.append((norm, final_url, new_depth))
+        queued.add(norm)
+
+    return True, new_assets, final_url
+
+
+def _persist_state_if_needed(
+    run_dir: str,
+    pages_crawled: int,
+    last_state_save: int,
+    state_interval: int,
+    assets_from_pages: int,
+    combined_queue_fn: Any,
+    started_at: str,
+) -> int:
+    """Save crawl state if *state_interval* pages have elapsed since last save.
+
+    Returns the updated *last_state_save* value (unchanged if no save occurred).
+    """
+    if state_interval and (pages_crawled - last_state_save) >= state_interval:
+        try:
+            storage.save_crawl_state(
+                run_dir,
+                status="running",
+                pages_crawled=pages_crawled,
+                assets_from_pages=assets_from_pages,
+                queue=combined_queue_fn(),
+                started_at=started_at,
+            )
+        except Exception as save_err:
+            logger.warning("Periodic state save failed: %s", save_err)
+        return pages_crawled
+    return last_state_save
+
+
+def _finalise_run(
+    run_dir: str,
+    interrupted: bool,
+    pages_crawled: int,
+    assets_from_pages: int,
+    combined_queue_fn: Any,
+    started_at: str,
+) -> None:
+    """Write the terminal crawl-state record (completed or interrupted)."""
+    final_status = "interrupted" if interrupted else "completed"
+    try:
+        storage.save_crawl_state(
+            run_dir,
+            status=final_status,
+            pages_crawled=pages_crawled,
+            assets_from_pages=assets_from_pages,
+            queue=combined_queue_fn(),
+            started_at=started_at,
+            stopped_at=_now_iso(),
+        )
+    except Exception as final_save_err:
+        logger.error("Final state save failed: %s", final_save_err)
+
+
+def crawl(
+    seed_urls: Optional[List[str]] = None,
+    max_pages: Optional[int] = None,
+    delay: Optional[Union[float, Tuple[float, float]]] = None,
+    on_progress: Optional[Callable[[int, int, str], None]] = None,
+    on_phase: Optional[Callable[[str, str], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+    run_name: Optional[str] = None,
+    run_folder: Optional[str] = None,
+    resume: bool = False,
+    cfg: Optional[CrawlConfig] = None,
+    ctx: Optional[StorageContext] = None,
+) -> Tuple[int, int]:
+    """Crawl HTML pages up to *max_pages*, recording inventory and linked assets.
+
+    Args:
+        seed_urls: Override seed URLs (bypasses ``config.SEED_URLS``).
+        max_pages: Cap on HTML pages to fetch (default from config).
+        delay: Per-request delay override (float or ``(min, max)`` tuple).
+        on_progress: Callback ``(pages, assets, last_url)`` after each page.
+        on_phase: Callback ``(phase_name, detail)`` for UI status updates.
+        should_stop: Callable returning ``True`` to abort early (GUI stop).
+        run_name: Human-friendly label written to the run folder.
+        run_folder: Existing folder name to use (or resume into).
+        resume: If ``True``, rebuild visited set and queue from prior state.
+        cfg: Isolated ``CrawlConfig`` — required for thread-safe concurrent
+            crawls.  Falls back to module-level globals when ``None``.
+        ctx: Isolated ``StorageContext`` — paired with *cfg* for concurrency.
+
+    Returns:
+        ``(pages_crawled, assets_from_pages)`` counts.
+    """
+    if cfg is None:
+        cfg = CrawlConfig.from_module()
+    if ctx is None:
+        ctx = StorageContext(cfg.OUTPUT_DIR, cfg)
+
+    _max_pages = max_pages if max_pages is not None else cfg.MAX_PAGES_TO_CRAWL
+    delay_cfg = delay if delay is not None else cfg.REQUEST_DELAY_SECONDS
+    max_depth = cfg.MAX_DEPTH
+    state_interval = cfg.STATE_SAVE_INTERVAL
+
+    (
+        run_dir, crawl_queue, seed_queue, queued, visited,
+        sitemap_meta, pages_crawled, assets_from_pages, saved_state, cfg,
+    ) = _init_run(
+        cfg, ctx, seed_urls, run_name, run_folder, resume,
+        _max_pages, delay_cfg, max_depth, on_phase=on_phase,
+    )
+
+    # Update per-request delay from possibly-reloaded cfg
+    delay_cfg = cfg.REQUEST_DELAY_SECONDS if delay is None else delay
+    max_depth = cfg.MAX_DEPTH
 
     all_queued = list(seed_queue) + list(crawl_queue)
     if all_queued and not (resume and saved_state):
@@ -620,7 +998,7 @@ def crawl(
         on_phase("crawling", f"Starting crawl — {queue_total:,} URLs queued")
 
     try:
-        while (crawl_queue or seed_queue) and pages_crawled < max_pages:
+        while (crawl_queue or seed_queue) and pages_crawled < _max_pages:
             if should_stop and should_stop():
                 interrupted = True
                 break
@@ -630,192 +1008,26 @@ def crawl(
             else:
                 url, referrer, depth = seed_queue.popleft()
 
-            url_key = normalise_url(url)
-            if url_key in visited:
-                continue
-            visited.add(url_key)
-
-            if not can_fetch(url, cfg):
-                ctx.write_error({
-                    "url": url,
-                    "error_type": "robots_disallowed",
-                    "message": "Blocked by robots.txt",
-                    "http_status": "",
-                    "discovered_at": _now_iso(),
-                })
-                continue
-
-            hostname = (urlparse(url).hostname or "").lower()
-            _wait_for_domain(hostname, delay_cfg)
-
-            _render_js = cfg.RENDER_JAVASCRIPT if cfg else config.RENDER_JAVASCRIPT
-
-            html, status, final_url, ctype, resp_meta, error_detail = fetch_page(url, cfg)
-            if html is None:
-                _record_domain_failure(hostname)
-                ctx.write_error({
-                    "url": url,
-                    "error_type": "fetch_failed",
-                    "message": error_detail or "No response body or HTTP error",
-                    "http_status": status,
-                    "discovered_at": _now_iso(),
-                })
-                continue
-
-            # JS rendering fallback: re-fetch via headless browser when the
-            # static HTML body is suspiciously thin (likely a JS-rendered SPA).
-            if _render_js and html and len(html.strip()) < 2000:
-                try:
-                    import render as render_module
-                    if render_module.is_available():
-                        rendered = render_module.render_page(
-                            url,
-                            user_agent=cfg.USER_AGENT if cfg else config.USER_AGENT,
-                        )
-                        if rendered is not None:
-                            r_html, r_status, r_final, r_ct, r_headers = rendered
-                            if r_html and len(r_html.strip()) > len(html.strip()):
-                                html = r_html
-                                status = r_status
-                                final_url = r_final
-                                ctype = r_ct
-                                resp_meta.update({
-                                    "x_robots_tag": (r_headers.get("x-robots-tag") or "").strip(),
-                                    "server": (r_headers.get("server") or resp_meta.get("server", "")).strip(),
-                                })
-                                logger.debug("JS-rendered %s (%d → %d bytes)", url, len(html), len(r_html))
-                except ImportError:
-                    pass
-                except Exception as render_err:
-                    logger.debug("JS render fallback failed for %s: %s", url, render_err)
-
-            _record_domain_success(hostname)
-
-            if not _is_probably_html(ctype):
-                ctx.write_error({
-                    "url": final_url,
-                    "error_type": "non_html",
-                    "message": f"Content-Type not HTML: {ctype}",
-                    "http_status": status,
-                    "discovered_at": _now_iso(),
-                })
-                continue
-
-            sm = sitemap_meta.get(normalise_url(url)) or sitemap_meta.get(normalise_url(final_url)) or {}
-
-            pages_crawled += 1
-            now = _now_iso()
-            try:
-                page_row, tag_rows = parser_module.build_page_inventory_row(
-                    html,
-                    requested_url=url,
-                    final_url=final_url,
-                    http_status=status,
-                    content_type=ctype,
-                    referrer_url=referrer,
-                    depth=depth,
-                    discovered_at=now,
-                    response_meta=resp_meta,
-                    sitemap_meta=sm,
+            page_written, new_assets, final_url = _process_one_url(
+                url, referrer, depth,
+                visited, queued, crawl_queue,
+                sitemap_meta, cfg, ctx, max_depth,
+                delay_cfg=delay_cfg,
+            )
+            if page_written:
+                pages_crawled += 1
+                assets_from_pages += new_assets
+                if on_progress:
+                    on_progress(pages_crawled, assets_from_pages, final_url)
+                last_state_save = _persist_state_if_needed(
+                    run_dir, pages_crawled, last_state_save, state_interval,
+                    assets_from_pages, _combined_queue, started_at,
                 )
-                ctx.write_page(page_row)
-                for tr in tag_rows:
-                    ctx.write_tag_row(tr)
-                if cfg.WRITE_NAV_LINKS_CSV:
-                    try:
-                        from bs4 import BeautifulSoup as _BS
-                        nav_rows = parser_module.extract_nav_links(
-                            _BS(html, "lxml"), final_url, now,
-                        )
-                        for nr in nav_rows:
-                            ctx.write_nav_link(nr)
-                    except Exception as nav_err:
-                        logger.debug("Nav extraction failed for %s: %s", final_url, nav_err)
-            except Exception as e:
-                logger.exception("Inventory parse failed for %s: %s", final_url, e)
-                ctx.write_error({
-                    "url": final_url,
-                    "error_type": "parse_error",
-                    "message": str(e)[:500],
-                    "http_status": status,
-                    "discovered_at": now,
-                })
-                continue
-
-            try:
-                html_links, asset_rows, edge_rows = parser_module.extract_classified_links(
-                    html, final_url, now
-                )
-            except Exception as e:
-                logger.debug("Link extraction error on %s: %s", final_url, e)
-                html_links, asset_rows, edge_rows = set(), [], []
-
-            for e_row in edge_rows:
-                ctx.write_edge(e_row)
-
-            if cfg.CHECK_OUTBOUND_LINKS and edge_rows:
-                _check_outbound_links(edge_rows, now, cfg, ctx)
-
-            for ar in asset_rows:
-                if cfg.ASSET_HEAD_METADATA:
-                    ct, cl = head_asset(ar["asset_url"], cfg)
-                    ar["head_content_type"] = ct
-                    ar["head_content_length"] = cl
-                ctx.write_asset(ar, ar["category"])
-                assets_from_pages += 1
-
-            try:
-                inline_assets = parser_module.extract_inline_assets(html, final_url, now)
-                for ia in inline_assets:
-                    ctx.write_asset(ia, ia["category"])
-                    assets_from_pages += 1
-            except Exception as e:
-                logger.debug("Inline asset extraction error on %s: %s", final_url, e)
-
-            for link in html_links:
-                norm = normalise_url(link)
-                if norm in visited or norm in queued:
-                    continue
-                if not is_allowed_domain(link, cfg):
-                    continue
-                if parser_module.asset_category_for_url(link) is not None:
-                    continue
-                new_depth = depth + 1
-                if max_depth is not None and new_depth > max_depth:
-                    continue
-                crawl_queue.append((norm, final_url, new_depth))
-                queued.add(norm)
-
-            if on_progress:
-                on_progress(pages_crawled, assets_from_pages, final_url)
-
-            if state_interval and (pages_crawled - last_state_save) >= state_interval:
-                last_state_save = pages_crawled
-                try:
-                    storage.save_crawl_state(
-                        run_dir,
-                        status="running",
-                        pages_crawled=pages_crawled,
-                        assets_from_pages=assets_from_pages,
-                        queue=_combined_queue(),
-                        started_at=started_at,
-                    )
-                except Exception as save_err:
-                    logger.warning("Periodic state save failed: %s", save_err)
 
     finally:
-        final_status = "interrupted" if interrupted else "completed"
-        try:
-            storage.save_crawl_state(
-                run_dir,
-                status=final_status,
-                pages_crawled=pages_crawled,
-                assets_from_pages=assets_from_pages,
-                queue=_combined_queue(),
-                started_at=started_at,
-                stopped_at=_now_iso(),
-            )
-        except Exception as final_save_err:
-            logger.error("Final state save failed: %s", final_save_err)
+        _finalise_run(
+            run_dir, interrupted, pages_crawled,
+            assets_from_pages, _combined_queue, started_at,
+        )
 
     return pages_crawled, assets_from_pages

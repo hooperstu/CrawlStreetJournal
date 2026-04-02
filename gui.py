@@ -6,6 +6,59 @@ Flask application providing a browser interface for managing projects,
 configuring crawls, running them, and reviewing results.
 
     python gui.py          # http://localhost:5001
+
+Serves on port **5001** (not the Flask default 5000) with ``threaded=True``
+so that SSE long-poll streams do not block other requests.
+
+Threading model
+~~~~~~~~~~~~~~~
+Each crawl runs in its own daemon ``threading.Thread``.  Per-project state
+is held in a ``CrawlSlot`` inside ``_active_crawls``, guarded by
+``_crawls_lock``.  Only one crawl may be active per project slug at a time;
+the lock is checked both before and after thread construction (double-check
+pattern) to prevent races.  ``CrawlSlot.status`` is a plain dict mutated by
+the worker thread and snapshot-copied by Flask request threads; individual
+key writes are atomic under CPython's GIL so no additional lock is needed
+for status reads.
+
+Route map
+~~~~~~~~~
+Projects::
+
+    GET  /                                        List all projects.
+    POST /projects/create                         Create a new project.
+    POST /projects/<slug>/delete                  Delete a project.
+
+Project pages::
+
+    GET  /p/<slug>                                Overview dashboard.
+    GET  /p/<slug>/defaults                       View project defaults.
+    POST /p/<slug>/defaults                       Save project defaults.
+    GET  /p/<slug>/runs                           List runs.
+    POST /p/<slug>/runs/create                    Create a new run.
+
+Run pages::
+
+    GET  /p/<slug>/runs/<run>/config              View run config.
+    POST /p/<slug>/runs/<run>/config              Save run config.
+    GET  /p/<slug>/runs/<run>/monitor             Live crawl monitor.
+    POST /p/<slug>/runs/<run>/start               Start / auto-resume crawl.
+    POST /p/<slug>/runs/<run>/resume              Explicitly resume crawl.
+    POST /p/<slug>/runs/<run>/stop                Signal crawl to stop.
+    GET  /p/<slug>/runs/<run>/results             Results dashboard.
+    GET  /p/<slug>/runs/<run>/results/<file>      Paginated CSV viewer.
+    GET  /p/<slug>/runs/<run>/download/<file>     Download single CSV.
+    GET  /p/<slug>/runs/<run>/download-all        Download all CSVs as ZIP.
+    POST /p/<slug>/runs/<run>/delete              Delete a run folder.
+    POST /p/<slug>/runs/<run>/rename              Rename a run.
+
+SSE streams (consumed by the front-end JavaScript)::
+
+    GET  /api/progress/<slug>                     Crawl progress events.
+    GET  /api/logs                                Global log tail.
+
+Additional visualisation endpoints are registered via the ``eco_bp``
+blueprint from ``viz_api``.
 """
 from __future__ import annotations
 
@@ -14,7 +67,6 @@ import io
 import json
 import logging
 import os
-import sys
 import threading
 import time
 import zipfile
@@ -36,6 +88,7 @@ import config
 from config import CrawlConfig
 import storage as storage_module
 from storage import StorageContext
+import utils
 
 app = Flask(
     __name__,
@@ -43,9 +96,35 @@ app = Flask(
     static_folder=os.path.join(config.BUNDLE_DIR, "static"),
     static_url_path="/static",
 )
-app.secret_key = os.urandom(24)
+
+
+def _load_secret_key() -> bytes:
+    """Return a persistent secret key, generating one on first run.
+
+    The key is stored in a ``secret_key`` file inside DATA_DIR so it
+    survives process restarts (keeping signed cookies valid).  Falls back
+    to a fresh random key only if the file cannot be read or written.
+    """
+    key_path = os.path.join(config.DATA_DIR, "secret_key")
+    try:
+        if os.path.isfile(key_path):
+            with open(key_path, "rb") as _f:
+                key = _f.read().strip()
+            if key:
+                return key
+        key = os.urandom(32)
+        os.makedirs(config.DATA_DIR, exist_ok=True)
+        with open(key_path, "wb") as _f:
+            _f.write(key)
+        return key
+    except OSError:
+        return os.urandom(32)
+
+
+app.secret_key = _load_secret_key()
 
 from viz_api import eco_bp  # noqa: E402
+# Visualisation endpoints (ecosystem charts, etc.) live in viz_api.py.
 app.register_blueprint(eco_bp)
 
 # ── Crawl state (per-project slots) ───────────────────────────────────────
@@ -67,7 +146,21 @@ _EMPTY_STATUS: Dict[str, Any] = {
 
 
 class CrawlSlot:
-    """Mutable state for a single in-progress crawl."""
+    """Mutable state for a single in-progress crawl.
+
+    One slot exists per actively-crawling project in ``_active_crawls``.
+    The ``status`` dict is read by Flask request threads (via snapshot
+    copy) and written by the crawl worker thread.  ``stop_event`` is the
+    cooperative cancellation signal checked by :func:`scraper.crawl`.
+
+    Attributes:
+        thread: The daemon thread running the crawl.
+        stop_event: Set by the ``/stop`` route to request graceful shutdown.
+        status: Live progress dict whose keys mirror ``_EMPTY_STATUS``.
+        cfg: Frozen crawl configuration for this run.
+        ctx: Storage context scoped to the project's runs directory.
+        start_mono: ``time.monotonic()`` timestamp used for elapsed-time display.
+    """
     __slots__ = ("thread", "stop_event", "status", "cfg", "ctx", "start_mono")
 
     def __init__(
@@ -86,6 +179,9 @@ class CrawlSlot:
         self.start_mono: Optional[float] = None
 
 
+# Keyed by project slug; only one crawl per project is permitted.
+# All mutations must hold _crawls_lock.  Status dicts inside individual
+# slots are an exception — see the module docstring for the rationale.
 _active_crawls: Dict[str, CrawlSlot] = {}
 _crawls_lock = threading.Lock()
 
@@ -105,6 +201,8 @@ _log_buffer: deque[Dict[str, str]] = deque(maxlen=2000)
 
 
 class _BufferHandler(logging.Handler):
+    """Appends formatted log records to the in-memory ring buffer for the ``/api/logs`` SSE stream."""
+
     def emit(self, record: logging.LogRecord) -> None:
         entry = {
             "time": datetime.fromtimestamp(record.created, tz=timezone.utc).strftime(
@@ -124,6 +222,7 @@ logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 
 def _apply_log_level() -> None:
+    """Re-sync the root logger level with the current ``config.LOG_LEVEL``."""
     level = getattr(logging, config.LOG_LEVEL, logging.INFO)
     logging.root.setLevel(level)
 
@@ -137,6 +236,25 @@ def _run_crawl(
     run_name: Optional[str] = None,
     resume: bool = False,
 ) -> None:
+    """Execute a crawl inside a worker thread.
+
+    This is the target function for the daemon thread created by
+    :func:`_start_crawl_thread`.  It delegates to :func:`scraper.crawl`,
+    forwarding two callbacks (``on_progress`` and ``on_phase``) that mutate
+    ``slot.status`` so the ``/api/progress`` SSE stream can relay live
+    updates to the browser.
+
+    On completion (normal or exception), the slot is removed from
+    ``_active_crawls`` under the lock so the project becomes available
+    for a new crawl.
+
+    Args:
+        slot: Pre-allocated crawl slot (thread, stop_event, status, cfg, ctx).
+        project_slug: Identifies the project; used as the ``_active_crawls`` key.
+        run_folder: Existing ``run_*`` directory name, or ``None`` for a new run.
+        run_name: Optional human-friendly label forwarded to :func:`scraper.crawl`.
+        resume: If ``True``, resume an interrupted crawl rather than starting fresh.
+    """
     import scraper
 
     start = time.monotonic()
@@ -189,6 +307,7 @@ def _run_crawl(
     finally:
         slot.status["running"] = False
         slot.status["stopping"] = False
+        # Release the project slot so a new crawl can be started.
         with _crawls_lock:
             _active_crawls.pop(project_slug, None)
 
@@ -199,18 +318,38 @@ def _start_crawl_thread(
     run_name: Optional[str] = None,
     resume: bool = False,
 ) -> bool:
-    """Start a crawl for *project_slug*. Returns True if started."""
+    """Spin up a daemon thread to crawl *project_slug*.
+
+    Uses a double-check locking pattern: the lock is acquired once to
+    reject an already-running project, then again after the thread and
+    slot are fully constructed, to atomically register the slot.  This
+    avoids holding the lock during potentially expensive config loading.
+
+    Args:
+        project_slug: Project identifier (also the ``_active_crawls`` key).
+        run_folder: Name of an existing ``run_*`` directory, or ``None``.
+        run_name: Human-friendly label stored alongside the run.
+        resume: If ``True``, resume from the last checkpoint.
+
+    Returns:
+        ``True`` if the crawl was started, ``False`` if one was already active.
+    """
     with _crawls_lock:
         if project_slug in _active_crawls:
             return False
 
     runs_dir = storage_module.get_project_runs_dir(project_slug)
+    # Snapshot current module-level globals as the baseline configuration.
     cfg = CrawlConfig.from_module()
     if run_folder:
         run_dir = os.path.join(runs_dir, run_folder)
         saved = storage_module.load_run_config(run_dir)
         if saved:
+            # Overlay the run's saved settings onto the baseline; any keys
+            # absent from the saved dict fall back to the module defaults.
             cfg = CrawlConfig.from_dict(saved, base=cfg)
+    # Force output into the project-specific runs directory regardless of
+    # what the module-level OUTPUT_DIR says.
     cfg.OUTPUT_DIR = runs_dir
     ctx = StorageContext(runs_dir, cfg)
 
@@ -222,6 +361,8 @@ def _start_crawl_thread(
     }
 
     stop_event = threading.Event()
+    # Thread is set to None initially and patched after creation because
+    # the Thread target needs a reference to the slot (circular dependency).
     slot = CrawlSlot(
         thread=None,  # type: ignore[arg-type]
         stop_event=stop_event,
@@ -238,6 +379,8 @@ def _start_crawl_thread(
     )
     slot.thread = t
 
+    # Second lock acquisition: atomically register the slot only if no
+    # other thread has started a crawl for this project in the meantime.
     with _crawls_lock:
         if project_slug in _active_crawls:
             return False
@@ -250,6 +393,7 @@ def _start_crawl_thread(
 # ── CSV / metrics helpers ────────────────────────────────────────────────
 
 def _human_size(nbytes: int) -> str:
+    """Format a byte count as a human-readable string (e.g. ``4.2 MB``)."""
     for unit in ("B", "KB", "MB", "GB"):
         if nbytes < 1024:
             return f"{nbytes:.1f} {unit}" if unit != "B" else f"{nbytes} {unit}"
@@ -258,16 +402,15 @@ def _human_size(nbytes: int) -> str:
 
 
 def _count_csv_rows(filepath: str) -> int:
-    if not os.path.isfile(filepath):
-        return 0
-    try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            return max(sum(1 for _ in f) - 1, 0)
-    except Exception:
-        return 0
+    """Return the number of data rows in *filepath* (excluding the header), or 0 on any error.
+
+    Delegates to ``utils.count_csv_rows``.
+    """
+    return utils.count_csv_rows(filepath)
 
 
 def _output_csvs(run_dir: str) -> List[Dict[str, Any]]:
+    """List every CSV in *run_dir* with row count and human-readable size."""
     if not os.path.isdir(run_dir):
         return []
     files = []
@@ -322,18 +465,123 @@ def _grouped_output_csvs(run_dir: str) -> Dict[str, List[Dict[str, Any]]]:
 def _read_csv_page(
     filepath: str, page: int = 1, per_page: int = 100
 ) -> Tuple[List[str], List[Dict[str, str]], int, int]:
+    """Read a single page of rows from a CSV file without loading the whole file.
+
+    Uses a two-pass approach: the first pass counts lines (cheap, no CSV
+    parsing), the second reads only the needed slice via ``itertools.islice``.
+
+    Returns:
+        A 4-tuple of (headers, rows_on_page, total_rows, total_pages).
+        All values are empty/zero when the file does not exist.
+    """
+    import itertools
     if not os.path.isfile(filepath):
         return [], [], 0, 0
+
+    # Pass 1: count data rows (subtract 1 for header line).
     with open(filepath, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        headers = reader.fieldnames or []
-        all_rows = list(reader)
-    total = len(all_rows)
+        total = max(sum(1 for _ in f) - 1, 0)
+
     page = max(1, page)
     per_page = max(1, per_page)
     total_pages = max(1, (total + per_page - 1) // per_page)
     start = (page - 1) * per_page
-    return headers, all_rows[start : start + per_page], total, total_pages
+
+    # Pass 2: read only the required slice.
+    with open(filepath, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        headers = list(reader.fieldnames or [])
+        rows = list(itertools.islice(
+            itertools.islice(reader, start, None),
+            per_page,
+        ))
+    return headers, rows, total, total_pages
+
+
+def _metrics_from_pages(
+    pages_rows: List[Dict[str, str]],
+) -> Dict[str, Any]:
+    """Aggregate counters from page rows. Returns a partial metrics dict."""
+    domain_ctr: Counter[str] = Counter()
+    status_ctr: Counter[str] = Counter()
+    kind_ctr: Counter[str] = Counter()
+    lang_ctr: Counter[str] = Counter()
+    total_words = 0
+    total_imgs = 0
+    imgs_no_alt = 0
+    training = 0
+
+    for r in pages_rows:
+        domain_ctr[r.get("domain", "unknown")] += 1
+        status_ctr[r.get("http_status", "")] += 1
+        kind = r.get("content_kind_guess", "").strip()
+        kind_ctr[kind if kind else "(unclassified)"] += 1
+        lang = r.get("lang", "").strip() or "(not set)"
+        lang_ctr[lang] += 1
+        wc = r.get("word_count", "0")
+        total_words += int(wc) if wc and wc.isdigit() else 0
+        ic = r.get("img_count", "0")
+        total_imgs += int(ic) if ic and ic.isdigit() else 0
+        ma = r.get("img_missing_alt_count", "0")
+        imgs_no_alt += int(ma) if ma and ma.isdigit() else 0
+        if r.get("training_related_flag", "").strip():
+            training += 1
+
+    return {
+        "pages": len(pages_rows),
+        "domains": len(domain_ctr),
+        "avg_word_count": round(total_words / len(pages_rows)) if pages_rows else 0,
+        "total_images": total_imgs,
+        "images_missing_alt": imgs_no_alt,
+        "training_pages": training,
+        "domain_breakdown": sorted(domain_ctr.items(), key=lambda x: (-x[1], x[0]))[:15],
+        "status_breakdown": sorted(status_ctr.items(), key=lambda x: (-x[1], x[0])),
+        "content_breakdown": sorted(kind_ctr.items(), key=lambda x: (-x[1], x[0])),
+        "lang_breakdown": sorted(lang_ctr.items(), key=lambda x: (-x[1], x[0])),
+        "_status_ctr": status_ctr,
+    }
+
+
+def _metrics_from_assets(run_dir: str) -> Dict[str, Any]:
+    """Count asset rows by category from per-type asset CSVs in *run_dir*."""
+    asset_ctr: Counter[str] = Counter()
+    for name in sorted(os.listdir(run_dir)):
+        if name.startswith("assets_") and name.endswith(".csv"):
+            cat = name[len("assets_"):-len(".csv")]
+            count = _count_csv_rows(os.path.join(run_dir, name))
+            if count > 0:
+                asset_ctr[cat] = count
+    return {
+        "total_assets": sum(asset_ctr.values()),
+        "asset_breakdown": sorted(asset_ctr.items(), key=lambda x: (-x[1], x[0])),
+    }
+
+
+def _metrics_from_errors(
+    run_dir: str,
+    status_ctr: "Counter[str]",
+) -> Dict[str, Any]:
+    """Count error rows by type from crawl_errors.csv in *run_dir*.
+
+    Also folds error HTTP status codes into the provided *status_ctr* so the
+    results dashboard can show a combined HTTP status breakdown.
+    """
+    errors_path = os.path.join(run_dir, config.ERRORS_CSV)
+    error_ctr: Counter[str] = Counter()
+    if os.path.isfile(errors_path):
+        try:
+            with open(errors_path, "r", encoding="utf-8") as f:
+                for r in csv.DictReader(f):
+                    error_ctr[r.get("error_type", "unknown")] += 1
+                    err_status = r.get("http_status", "").strip()
+                    if err_status and err_status != "0":
+                        status_ctr[err_status] += 1
+        except Exception:
+            pass
+    return {
+        "total_errors": sum(error_ctr.values()),
+        "error_breakdown": sorted(error_ctr.items(), key=lambda x: (-x[1], x[0])),
+    }
 
 
 def _run_metrics(run_dir: str) -> Dict[str, Any]:
@@ -371,69 +619,16 @@ def _run_metrics(run_dir: str) -> Dict[str, Any]:
     if not pages_rows:
         return m
 
+    page_metrics = _metrics_from_pages(pages_rows)
+    status_ctr = page_metrics.pop("_status_ctr")
+    m.update(page_metrics)
     m["has_data"] = True
-    m["pages"] = len(pages_rows)
 
-    domain_ctr: Counter[str] = Counter()
-    status_ctr: Counter[str] = Counter()
-    kind_ctr: Counter[str] = Counter()
-    lang_ctr: Counter[str] = Counter()
-    total_words = 0
-    total_imgs = 0
-    imgs_no_alt = 0
-    training = 0
+    m.update(_metrics_from_assets(run_dir))
+    m.update(_metrics_from_errors(run_dir, status_ctr))
 
-    for r in pages_rows:
-        domain_ctr[r.get("domain", "unknown")] += 1
-        status_ctr[r.get("http_status", "")] += 1
-        kind = r.get("content_kind_guess", "").strip()
-        kind_ctr[kind if kind else "(unclassified)"] += 1
-        lang = r.get("lang", "").strip() or "(not set)"
-        lang_ctr[lang] += 1
-        wc = r.get("word_count", "0")
-        total_words += int(wc) if wc and wc.isdigit() else 0
-        ic = r.get("img_count", "0")
-        total_imgs += int(ic) if ic and ic.isdigit() else 0
-        ma = r.get("img_missing_alt_count", "0")
-        imgs_no_alt += int(ma) if ma and ma.isdigit() else 0
-        if r.get("training_related_flag", "").strip():
-            training += 1
-
-    m["domains"] = len(domain_ctr)
-    m["avg_word_count"] = round(total_words / len(pages_rows)) if pages_rows else 0
-    m["total_images"] = total_imgs
-    m["images_missing_alt"] = imgs_no_alt
-    m["training_pages"] = training
-
-    m["domain_breakdown"] = sorted(domain_ctr.items(), key=lambda x: (-x[1], x[0]))[:15]
+    # Update status_breakdown to include error-page HTTP codes.
     m["status_breakdown"] = sorted(status_ctr.items(), key=lambda x: (-x[1], x[0]))
-    m["content_breakdown"] = sorted(kind_ctr.items(), key=lambda x: (-x[1], x[0]))
-    m["lang_breakdown"] = sorted(lang_ctr.items(), key=lambda x: (-x[1], x[0]))
-
-    asset_ctr: Counter[str] = Counter()
-    for name in sorted(os.listdir(run_dir)):
-        if name.startswith("assets_") and name.endswith(".csv"):
-            cat = name[len("assets_"):-len(".csv")]
-            count = _count_csv_rows(os.path.join(run_dir, name))
-            if count > 0:
-                asset_ctr[cat] = count
-    m["total_assets"] = sum(asset_ctr.values())
-    m["asset_breakdown"] = sorted(asset_ctr.items(), key=lambda x: (-x[1], x[0]))
-
-    errors_path = os.path.join(run_dir, config.ERRORS_CSV)
-    error_ctr: Counter[str] = Counter()
-    if os.path.isfile(errors_path):
-        try:
-            with open(errors_path, "r", encoding="utf-8") as f:
-                for r in csv.DictReader(f):
-                    error_ctr[r.get("error_type", "unknown")] += 1
-                    err_status = r.get("http_status", "").strip()
-                    if err_status and err_status != "0":
-                        status_ctr[err_status] += 1
-        except Exception:
-            pass
-    m["total_errors"] = sum(error_ctr.values())
-    m["error_breakdown"] = sorted(error_ctr.items(), key=lambda x: (-x[1], x[0]))
 
     m["total_links"] = _count_csv_rows(os.path.join(run_dir, config.EDGES_CSV))
     m["total_tags"] = _count_csv_rows(os.path.join(run_dir, config.TAGS_CSV))
@@ -491,7 +686,43 @@ def _project_overview_metrics(slug: str) -> Dict[str, Any]:
 
 # ── Config form helpers ──────────────────────────────────────────────────
 
+def _int_form(form, key: str, default: int) -> int:
+    """Read an integer field from a form, falling back to *default* on blank/invalid input."""
+    raw = form.get(key, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
+
+def _float_form(form, key: str, default: float) -> float:
+    """Read a float field from a form, falling back to *default* on blank/invalid input."""
+    raw = form.get(key, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return default
+
+
 def _build_config_dict_from_form(form) -> Dict[str, Any]:
+    """Translate a Flask form submission into a config dict for :class:`CrawlConfig`.
+
+    Checkbox fields are detected by presence (``"field_name" in form``);
+    text fields fall back to sensible defaults when blank.  The returned
+    dict uses the same key names as :class:`config.CrawlConfig` so it can
+    be persisted directly and later loaded with ``CrawlConfig.from_dict``.
+
+    Args:
+        form: ``request.form`` (a Werkzeug ``MultiDict``).
+
+    Returns:
+        Config dict ready for ``storage_module.save_run_config`` or
+        ``storage_module.save_project_defaults``.
+    """
     seed_urls = [
         u for u in form.get("seed_urls", "").strip().splitlines() if u.strip()
     ]
@@ -503,28 +734,31 @@ def _build_config_dict_from_form(form) -> Dict[str, Any]:
         for d in form.get("allowed_domains", "").strip().splitlines()
         if d.strip()
     ]
-    delay_min = float(form.get("delay_min", 3))
-    delay_max = float(form.get("delay_max", 5))
+    delay_min = _float_form(form, "delay_min", 3.0)
+    delay_max = _float_form(form, "delay_max", 5.0)
 
     max_depth_raw = form.get("max_depth", "").strip()
-    max_depth = int(max_depth_raw) if max_depth_raw else None
+    try:
+        max_depth: Optional[int] = int(max_depth_raw) if max_depth_raw else None
+    except (ValueError, TypeError):
+        max_depth = None
 
     return {
         "SEED_URLS": seed_urls,
         "SITEMAP_URLS": sitemap_urls,
         "LOAD_SITEMAPS_FROM_ROBOTS": "load_sitemaps_from_robots" in form,
         "RESPECT_ROBOTS_TXT": "respect_robots_txt" in form,
-        "MAX_SITEMAP_URLS": int(form.get("max_sitemap_urls", 1_000_000)),
-        "MAX_PAGES_TO_CRAWL": int(form.get("max_pages", 1_000_000)),
+        "MAX_SITEMAP_URLS": _int_form(form, "max_sitemap_urls", 1_000_000),
+        "MAX_PAGES_TO_CRAWL": _int_form(form, "max_pages", 1_000_000),
         "MAX_DEPTH": max_depth,
         "REQUEST_DELAY_SECONDS": [delay_min, delay_max],
-        "REQUEST_TIMEOUT_SECONDS": int(form.get("request_timeout", 20)),
-        "MAX_RETRIES": int(form.get("max_retries", 3)),
-        "STATE_SAVE_INTERVAL": int(form.get("state_save_interval", 50)),
+        "REQUEST_TIMEOUT_SECONDS": _int_form(form, "request_timeout", 20),
+        "MAX_RETRIES": _int_form(form, "max_retries", 3),
+        "STATE_SAVE_INTERVAL": _int_form(form, "state_save_interval", 50),
         "WRITE_EDGES_CSV": "write_edges" in form,
         "WRITE_TAGS_CSV": "write_tags" in form,
         "ASSET_HEAD_METADATA": "asset_head" in form,
-        "HEAD_TIMEOUT_SECONDS": int(form.get("head_timeout", 10)),
+        "HEAD_TIMEOUT_SECONDS": _int_form(form, "head_timeout", 10),
         "CAPTURE_RESPONSE_HEADERS": "capture_headers" in form,
         "WRITE_SITEMAP_URLS_CSV": "write_sitemap_urls" in form,
         "WRITE_NAV_LINKS_CSV": "write_nav_links" in form,
@@ -544,12 +778,21 @@ def _build_config_dict_from_form(form) -> Dict[str, Any]:
 
 @app.route("/")
 def projects_list():
+    """``GET /`` — Render the top-level project listing page."""
     projects = storage_module.list_projects()
     return render_template("projects.html", projects=projects)
 
 
 @app.route("/projects/create", methods=["POST"])
 def create_project_route():
+    """``POST /projects/create`` — Create a new project from the form.
+
+    Form fields:
+        name: Required project display name; silently redirects home if blank.
+        description: Optional free-text description.
+
+    Redirects to the new project's overview page on success.
+    """
     name = request.form.get("name", "").strip()
     description = request.form.get("description", "").strip()
     if not name:
@@ -560,8 +803,59 @@ def create_project_route():
 
 @app.route("/projects/<slug>/delete", methods=["POST"])
 def delete_project_route(slug: str):
+    """``POST /projects/<slug>/delete`` — Permanently delete a project and all its runs.
+
+    Blocked while a crawl is running for this project to prevent deleting
+    a directory that a worker thread is actively writing to.
+    """
+    with _crawls_lock:
+        slot = _active_crawls.get(slug)
+        if slot and slot.status.get("running"):
+            return (
+                "Cannot delete a project while a crawl is running. "
+                "Please stop the crawl first."
+            ), 409
     storage_module.delete_project(slug)
     return redirect(url_for("projects_list"))
+
+
+@app.route("/p/<slug>/export")
+def export_project_route(slug: str):
+    project = storage_module.load_project(slug)
+    if not project:
+        return "Project not found", 404
+    with _crawls_lock:
+        slot = _active_crawls.get(slug)
+        if slot and slot.status.get("running"):
+            return (
+                "Cannot export while a crawl is running. "
+                "Please stop the crawl first."
+            ), 409
+    try:
+        buf = storage_module.export_project(slug)
+    except (FileNotFoundError, ValueError) as exc:
+        return str(exc), 400
+    return Response(
+        buf.getvalue(),
+        mimetype="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename={slug}.zip",
+        },
+    )
+
+
+@app.route("/projects/import", methods=["POST"])
+def import_project_route():
+    uploaded = request.files.get("zipfile")
+    if not uploaded or not uploaded.filename:
+        return redirect(url_for("projects_list"))
+    if not uploaded.filename.lower().endswith(".zip"):
+        return "Only .zip files are accepted", 400
+    try:
+        slug = storage_module.import_project(uploaded)
+    except ValueError as exc:
+        return str(exc), 400
+    return redirect(url_for("project_overview", slug=slug))
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -570,6 +864,7 @@ def delete_project_route(slug: str):
 
 @app.route("/p/<slug>")
 def project_overview(slug: str):
+    """``GET /p/<slug>`` — Project overview dashboard with aggregated run metrics."""
     project = storage_module.load_project(slug)
     if not project:
         return "Project not found", 404
@@ -583,6 +878,11 @@ def project_overview(slug: str):
 
 @app.route("/p/<slug>/defaults", methods=["GET"])
 def project_defaults(slug: str):
+    """``GET /p/<slug>/defaults`` — Show the project's default crawl configuration.
+
+    Falls back to a snapshot of the current module-level ``config`` values
+    when no project defaults have been saved yet.
+    """
     project = storage_module.load_project(slug)
     if not project:
         return "Project not found", 404
@@ -593,6 +893,11 @@ def project_defaults(slug: str):
 
 @app.route("/p/<slug>/defaults", methods=["POST"])
 def save_project_defaults_route(slug: str):
+    """``POST /p/<slug>/defaults`` — Persist the project-level default config.
+
+    These defaults are applied as the baseline whenever a new run is
+    created under this project (see :func:`create_run_route`).
+    """
     project = storage_module.load_project(slug)
     if not project:
         return "Project not found", 404
@@ -604,6 +909,12 @@ def save_project_defaults_route(slug: str):
 
 @app.route("/p/<slug>/runs")
 def project_runs(slug: str):
+    """``GET /p/<slug>/runs`` — List all run folders for this project.
+
+    Side-effect: calls ``activate_project`` to point the module-level
+    ``config.OUTPUT_DIR`` at this project's runs directory, which
+    ``list_run_dirs`` depends on.
+    """
     project = storage_module.load_project(slug)
     if not project:
         return "Project not found", 404
@@ -617,9 +928,20 @@ def project_runs(slug: str):
 
 @app.route("/p/<slug>/runs/create", methods=["POST"])
 def create_run_route(slug: str):
+    """``POST /p/<slug>/runs/create`` — Create a new timestamped run directory.
+
+    If the project has saved defaults they are applied to the module-level
+    config globals *before* the run is created, so that the initial
+    ``_config.json`` snapshot written to the run folder inherits them.
+
+    Form fields:
+        run_name: Optional human-friendly label for the new run.
+    """
     storage_module.activate_project(slug)
     defaults = storage_module.load_project_defaults(slug)
     if defaults:
+        # Writes project defaults into the module-level config globals so that
+        # parsers and helpers that read globals directly pick them up.
         storage_module.apply_run_config(defaults)
     name = request.form.get("run_name", "").strip() or None
     folder = storage_module.create_run(name)
@@ -632,6 +954,7 @@ def create_run_route(slug: str):
 
 @app.route("/p/<slug>/runs/<run_name>/config", methods=["GET"])
 def run_config(slug: str, run_name: str):
+    """``GET /p/<slug>/runs/<run_name>/config`` — Show the configuration editor for a run."""
     project = storage_module.load_project(slug)
     if not project:
         return "Project not found", 404
@@ -653,6 +976,12 @@ def run_config(slug: str, run_name: str):
 
 @app.route("/p/<slug>/runs/<run_name>/config", methods=["POST"])
 def save_run_config_route(slug: str, run_name: str):
+    """``POST /p/<slug>/runs/<run_name>/config`` — Save run config and optional friendly name.
+
+    Form fields:
+        friendly_name: Optional display label persisted alongside the run.
+        (remaining): Crawl settings parsed by :func:`_build_config_dict_from_form`.
+    """
     storage_module.activate_project(slug)
     run_dir = os.path.join(config.OUTPUT_DIR, run_name)
     if not os.path.isdir(run_dir):
@@ -671,6 +1000,11 @@ def save_run_config_route(slug: str, run_name: str):
 
 @app.route("/p/<slug>/runs/<run_name>/monitor")
 def run_monitor(slug: str, run_name: str):
+    """``GET /p/<slug>/runs/<run_name>/monitor`` — Live crawl monitor page.
+
+    The page connects to the ``/api/progress/<slug>`` SSE stream via
+    JavaScript to display real-time crawl metrics.
+    """
     project = storage_module.load_project(slug)
     if not project:
         return "Project not found", 404
@@ -690,6 +1024,12 @@ def run_monitor(slug: str, run_name: str):
 
 @app.route("/p/<slug>/runs/<run_name>/start", methods=["POST"])
 def start_run_route(slug: str, run_name: str):
+    """``POST /p/<slug>/runs/<run_name>/start`` — Start (or auto-resume) a crawl.
+
+    If the run's on-disk status is ``"interrupted"`` the crawl resumes
+    from its last checkpoint rather than starting from scratch.  Silently
+    redirects to the monitor if a crawl is already running for this project.
+    """
     with _crawls_lock:
         if slug in _active_crawls:
             return redirect(url_for("run_monitor", slug=slug, run_name=run_name))
@@ -703,6 +1043,11 @@ def start_run_route(slug: str, run_name: str):
 
 @app.route("/p/<slug>/runs/<run_name>/resume", methods=["POST"])
 def resume_run_route(slug: str, run_name: str):
+    """``POST /p/<slug>/runs/<run_name>/resume`` — Explicitly resume an interrupted crawl.
+
+    Unlike ``start_run_route``, this always passes ``resume=True``
+    regardless of the on-disk run status.
+    """
     with _crawls_lock:
         if slug in _active_crawls:
             return redirect(url_for("run_monitor", slug=slug, run_name=run_name))
@@ -712,6 +1057,12 @@ def resume_run_route(slug: str, run_name: str):
 
 @app.route("/p/<slug>/runs/<run_name>/stop", methods=["POST"])
 def stop_run_route(slug: str, run_name: str):
+    """``POST /p/<slug>/runs/<run_name>/stop`` — Signal the active crawl to stop gracefully.
+
+    Sets the slot's ``stop_event`` so the crawler's ``should_stop``
+    callback returns ``True`` on the next check.  The crawl thread will
+    finish its current page and then exit.
+    """
     with _crawls_lock:
         slot = _active_crawls.get(slug)
         if not slot:
@@ -723,6 +1074,7 @@ def stop_run_route(slug: str, run_name: str):
 
 @app.route("/p/<slug>/runs/<run_name>/results")
 def run_results(slug: str, run_name: str):
+    """``GET /p/<slug>/runs/<run_name>/results`` — Results dashboard with grouped CSVs and metrics."""
     project = storage_module.load_project(slug)
     if not project:
         return "Project not found", 404
@@ -743,6 +1095,12 @@ def run_results(slug: str, run_name: str):
 
 @app.route("/p/<slug>/runs/<run_name>/results/<filename>")
 def run_results_detail(slug: str, run_name: str, filename: str):
+    """``GET /p/<slug>/runs/<run_name>/results/<filename>`` — Paginated CSV viewer.
+
+    Query params:
+        page: 1-based page number (default 1).
+        per_page: Rows per page (default 100).
+    """
     if not filename.endswith(".csv"):
         return "Not found", 404
     project = storage_module.load_project(slug)
@@ -786,6 +1144,11 @@ def _is_run_active(slug: str, run_name: str) -> bool:
 
 @app.route("/p/<slug>/runs/<run_name>/download/<filename>")
 def run_download(slug: str, run_name: str, filename: str):
+    """``GET /p/<slug>/runs/<run_name>/download/<filename>`` — Download a single CSV.
+
+    Returns HTTP 409 if the run is still active, to prevent serving
+    partially-written files.
+    """
     if not filename.endswith(".csv"):
         return "Not found", 404
     if _is_run_active(slug, run_name):
@@ -801,6 +1164,12 @@ def run_download(slug: str, run_name: str, filename: str):
 
 @app.route("/p/<slug>/runs/<run_name>/download-all")
 def run_download_all(slug: str, run_name: str):
+    """``GET /p/<slug>/runs/<run_name>/download-all`` — Stream all CSVs as a single ZIP archive.
+
+    The ZIP is built in-memory (``io.BytesIO``), so very large crawls
+    may consume significant RAM.  Returns HTTP 409 while the crawl is
+    still running.
+    """
     if _is_run_active(slug, run_name):
         return (
             "This run is still in progress. Please stop the crawl before "
@@ -832,6 +1201,12 @@ def run_download_all(slug: str, run_name: str):
 
 @app.route("/p/<slug>/runs/<run_name>/delete", methods=["POST"])
 def delete_run_route(slug: str, run_name: str):
+    """``POST /p/<slug>/runs/<run_name>/delete`` — Permanently delete a run directory.
+
+    Guards against path-traversal by verifying the resolved path stays
+    inside ``config.OUTPUT_DIR``, and rejects folders that do not start
+    with the ``run_`` prefix.
+    """
     import shutil
     if not run_name.startswith("run_"):
         return "Cannot delete this entry", 400
@@ -848,6 +1223,11 @@ def delete_run_route(slug: str, run_name: str):
 
 @app.route("/p/<slug>/runs/<run_name>/rename", methods=["POST"])
 def rename_run_route(slug: str, run_name: str):
+    """``POST /p/<slug>/runs/<run_name>/rename`` — Update the human-friendly label for a run.
+
+    Form fields:
+        friendly_name: New display name; an empty string clears it.
+    """
     new_name = request.form.get("friendly_name", "").strip()
     storage_module.activate_project(slug)
     storage_module.rename_run(run_name, new_name)
@@ -861,6 +1241,16 @@ def rename_run_route(slug: str, run_name: str):
 
 @app.route("/api/progress/<slug>")
 def progress_stream(slug: str):
+    """``GET /api/progress/<slug>`` — Server-Sent Events stream of crawl progress.
+
+    Yields one JSON-encoded ``data:`` frame per second containing the
+    current ``CrawlSlot.status`` snapshot.  The stream terminates when
+    the crawl finishes (``running`` becomes ``False``), signalling the
+    front-end to stop reconnecting.
+    """
+    # SSE generator — runs in its own thread courtesy of Flask's
+    # ``threaded=True`` mode.  Each iteration snapshots the status dict
+    # under the lock, then yields it as an SSE frame.
     def generate():
         while True:
             with _crawls_lock:
@@ -887,6 +1277,14 @@ def progress_stream(slug: str):
 
 @app.route("/api/logs")
 def logs_stream():
+    """``GET /api/logs`` — Server-Sent Events stream of application log entries.
+
+    Streams new entries from the in-memory ``_log_buffer`` ring buffer.
+    Unlike ``progress_stream``, this stream never terminates on its own;
+    the client is expected to close the connection when the page is left.
+    A keepalive comment is sent every ~15 seconds to prevent proxy
+    timeouts.
+    """
     def generate():
         sent = 0
         heartbeat = 0
@@ -899,6 +1297,7 @@ def logs_stream():
                 sent = len(buf_list)
                 heartbeat += 1
                 if heartbeat >= 30:
+                    # Proxies/load balancers may close idle connections without periodic activity.
                     yield ": keepalive\n\n"
                     heartbeat = 0
                 time.sleep(0.5)
@@ -916,6 +1315,7 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    # Move any flat-file data from pre-project-era layouts into the new structure.
     storage_module.migrate_legacy_data()
     print("The Crawl Street Journal: http://localhost:5001")
     app.run(host="0.0.0.0", port=5001, debug=False, threaded=True)

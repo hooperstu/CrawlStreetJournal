@@ -1,3 +1,27 @@
+/**
+ * @file ecosystem.js — Ecosystem Dashboard visualisations
+ *
+ * Powers the D3-based ecosystem dashboard for The Crawl Street Journal.
+ * Each tab in the UI corresponds to a named entry in the `VIZ` registry
+ * (e.g. VIZ.network, VIZ.treemap).  Tabs are lazy-rendered: the first
+ * time a tab becomes active its VIZ function fires, fetches data from
+ * the Flask viz_api.py endpoints (domains, graph, freshness, chord,
+ * navigation, tags, technology, authorship, schema_insights,
+ * filter_options), and draws into its panel's SVG container.
+ *
+ * Data flow:
+ *   1. `window.ECO_API` (set in the HTML template) holds endpoint URLs.
+ *   2. `fetchJSON()` wraps `d3.json()` with an in-memory `cache` map so
+ *      repeat calls for the same URL avoid redundant network requests.
+ *   3. The global filter system (bottom of file) monkey-patches
+ *      `fetchJSON` to append filter query-string params automatically.
+ *   4. When filters change, `cache` and `rendered` are cleared so every
+ *      panel re-fetches with the new filter state on next activation.
+ *
+ * Key libraries: D3 v7, d3-cloud (word cloud layout), d3-sankey.
+ *
+ * @see viz_api.py for the Flask endpoints that supply JSON data.
+ */
 /* ================================================================
    Ecosystem Dashboard — D3.js Visualisations
    ================================================================
@@ -7,20 +31,47 @@
 (function () {
   "use strict";
 
+  /** Base URLs for every viz_api endpoint, injected by the Jinja template. */
   var API = window.ECO_API;
+
+  /**
+   * In-memory response cache keyed by full URL (including query string).
+   * Cleared wholesale when the global filter bar changes so stale data
+   * is never re-used after a filter toggle.
+   * @type {Object.<string, *>}
+   */
   var cache = {};
+
+  /**
+   * Tracks which panels have already been rendered so each VIZ function
+   * runs at most once per filter cycle.  Cleared alongside `cache`.
+   * @type {Object.<string, boolean>}
+   */
   var rendered = {};
 
   // ── Colour palettes ─────────────────────────────────────────────
+
+  /** Lazily-built map of ownership group name → hex colour. */
   var OWNER_COLOURS = {};
   var _ownerIndex = 0;
+
+  /** HTTP status-code family colours: 2xx green, 3xx/4xx amber, 5xx red. */
   var STATUS_COLOURS = { "2": "#2D6A4F", "3": "#C4841D", "4": "#B8860B", "5": "#A4243B" };
+
+  /** Shared 15-colour brand palette used across all charts as a fallback. */
   var CSJ_PALETTE = [
     "#1A1A1A", "#C4841D", "#2D6A4F", "#A4243B", "#5A5246",
     "#7B6D53", "#3A6B7E", "#8B5E3C", "#6B4226", "#4A6741",
     "#9B7042", "#B07D3A", "#3D5A4C", "#7A4F5A", "#5C7A6B"
   ];
 
+  /**
+   * Walk an array of domain objects and assign a stable colour to each
+   * unique ownership group.  Colours cycle through CSJ_PALETTE so the
+   * same group always gets the same colour within one page session.
+   *
+   * @param {Array.<{ownership: string}>} domains - Domain summary objects.
+   */
   function _assignOwnerColours(domains) {
     domains.forEach(function (d) {
       var o = d.ownership;
@@ -32,28 +83,80 @@
   }
 
   // ── Tooltip ─────────────────────────────────────────────────────
+
+  // Single shared tooltip element reused by every chart — avoids creating
+  // per-chart tooltip divs and keeps z-index management simple.
   var tip = d3.select("#vizTooltip");
 
+  /**
+   * Position and show the shared tooltip near the cursor.
+   * Clamped horizontally so the tooltip never overflows the viewport.
+   *
+   * @param {MouseEvent} evt  - The triggering mouse event (used for pageX/Y).
+   * @param {string}     html - Inner HTML content to display.
+   */
   function showTip(evt, html) {
     tip.html(html).classed("visible", true);
+    // Prevent the tooltip from being clipped by the right edge of the viewport.
     var tx = Math.min(evt.pageX + 14, window.innerWidth - 340);
     var ty = evt.pageY - 10;
     tip.style("left", tx + "px").style("top", ty + "px");
   }
+
+  /** Hide the shared tooltip by toggling its CSS visibility class. */
   function hideTip() { tip.classed("visible", false); }
 
   // ── Helpers ─────────────────────────────────────────────────────
+
+  /**
+   * Format a number with locale-style comma grouping (e.g. 1,234).
+   * @param {number} n
+   * @returns {string}
+   */
   function fmt(n) { return d3.format(",")(n); }
+
+  /**
+   * Strip leading "www." for display labels so domain names stay compact.
+   * @param {string} d - Fully-qualified domain name.
+   * @returns {string}
+   */
   function shortDomain(d) { return d.replace(/^www\./, ""); }
+
+  /**
+   * Hide a loading spinner by adding the "hidden" CSS class.
+   * @param {string} id - DOM id of the loading element.
+   */
   function hideLoading(id) { var el = document.getElementById(id); if (el) el.classList.add("hidden"); }
 
+  /**
+   * Fetch JSON from a viz_api endpoint, returning a cached copy when
+   * one exists.  This is the *original* implementation; the global
+   * filter system later replaces it with a wrapper that appends filter
+   * query-string params before delegating back here (see bottom of file).
+   *
+   * @param {string} url - Absolute or relative endpoint URL.
+   * @returns {Promise<*>} Parsed JSON payload.
+   */
   function fetchJSON(url) {
     if (cache[url]) return Promise.resolve(cache[url]);
     return d3.json(url).then(function (d) { cache[url] = d; return d; });
   }
 
+  /**
+   * Look up the colour assigned to an ownership group, falling back to
+   * the muted taupe default when the group has not been seen before.
+   *
+   * @param {string} o - Ownership group name.
+   * @returns {string} Hex colour.
+   */
   function ownerColour(o) { return OWNER_COLOURS[o] || "#5A5246"; }
 
+  /**
+   * Populate a legend container with colour swatches and labels.
+   *
+   * @param {string} id    - DOM id of the legend wrapper element.
+   * @param {Array.<{label: string, colour: string}>} items - Legend entries.
+   */
   function buildLegend(id, items) {
     var el = document.getElementById(id);
     if (!el) return;
@@ -63,6 +166,14 @@
     }).join("");
   }
 
+  /**
+   * Measure the available width of a chart container and derive a
+   * height that keeps a roughly 16:10 aspect ratio, clamped between
+   * 500 px and 700 px.
+   *
+   * @param {string} id - DOM id of the chart container.
+   * @returns {{w: number, h: number}}
+   */
   function vizSize(id) {
     var el = document.getElementById(id);
     var w = el ? el.clientWidth : 900;
@@ -70,6 +181,12 @@
   }
 
   // ── Tab controller ──────────────────────────────────────────────
+  // Each `.viz-tab` button carries a `data-panel` attribute whose value
+  // matches a key in the VIZ registry *and* corresponds to a panel id
+  // of the form "panel-{name}".  Clicking a tab swaps the active class
+  // on both the button row and the panel container, then calls
+  // `renderPanel` to lazy-initialise the chart if it hasn't been drawn.
+
   var tabs = document.querySelectorAll(".viz-tab");
   var panels = document.querySelectorAll(".viz-panel");
 
@@ -84,6 +201,13 @@
     });
   });
 
+  /**
+   * Render a panel's chart if it has not already been drawn.  The
+   * `rendered` guard ensures each chart is built only once per filter
+   * cycle (cleared when global filters change).
+   *
+   * @param {string} name - Panel key, must match a property on VIZ.
+   */
   function renderPanel(name) {
     if (rendered[name]) return;
     rendered[name] = true;
@@ -92,12 +216,25 @@
   }
 
   // ── Viz implementations ─────────────────────────────────────────
+  /** Registry of chart-builder functions, keyed by panel name. */
   var VIZ = {};
 
   // ────────────────────────────────────────────────────────────────
   // 1. Force-Directed Network Graph
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Build an interactive force-directed network graph showing
+   * cross-domain link relationships.  Fetches from both the
+   * `domains` and `graph` endpoints in parallel.
+   *
+   * Features: zoom/pan, node-click selection with 2-hop
+   * neighbourhood highlighting, detail overlay panel, and a
+   * colour-by dropdown (ownership / CMS / extraction coverage).
+   */
   VIZ.network = function () {
+    // Fast lookup from domain string to its full summary object,
+    // populated once the domains endpoint resolves.
     var domainLookup = {};
 
     Promise.all([fetchJSON(API.domains), fetchJSON(API.graph)]).then(function (results) {
@@ -112,9 +249,15 @@
       var W = sz.w, H = sz.h;
 
       // ── Adjacency map ────────────────────────────────────────
+      // Pre-compute an adjacency set per node so the selection
+      // logic can walk 1-hop and 2-hop neighbours in O(degree)
+      // rather than scanning every link on each click.
       var adj = {};
       data.nodes.forEach(function (n) { adj[n.id] = new Set(); });
       data.links.forEach(function (l) {
+        // After the simulation mutates link objects, source/target
+        // become node objects with an `.id`; before that they are
+        // plain strings.  Handle both forms.
         var s = l.source.id || l.source;
         var t = l.target.id || l.target;
         if (!adj[s]) adj[s] = new Set();
@@ -130,16 +273,23 @@
         .attr("width", W).attr("height", H)
         .attr("viewBox", [0, 0, W, H]);
 
+      // All visual elements live inside `g` so that the zoom transform
+      // can be applied to a single group rather than individual shapes.
       var g = svg.append("g");
 
+      // d3.zoom wired to the SVG; transforms the inner <g> so nodes,
+      // links, and labels all pan/zoom together.
       svg.call(d3.zoom().scaleExtent([0.2, 5]).on("zoom", function (evt) {
         g.attr("transform", evt.transform);
       }));
 
       var maxPages = d3.max(data.nodes, function (n) { return n.pages; }) || 1;
+      // Square-root scale so area grows linearly with page count.
       var rScale = d3.scaleSqrt().domain([0, maxPages]).range([3, 40]);
       var maxWeight = d3.max(data.links, function (l) { return l.weight; }) || 1;
 
+      // Force simulation: link distance shrinks and strength grows with
+      // link weight so heavily-connected nodes cluster closer together.
       var sim = d3.forceSimulation(data.nodes)
         .force("link", d3.forceLink(data.links).id(function (d) { return d.id; })
           .distance(function (d) { return 120 - Math.min(d.weight / maxWeight * 60, 50); })
@@ -148,11 +298,13 @@
         .force("center", d3.forceCenter(W / 2, H / 2))
         .force("collision", d3.forceCollide().radius(function (d) { return rScale(d.pages) + 2; }));
 
+      // D3 enter-selection: one <line> per link, width proportional to weight.
       var link = g.selectAll("line").data(data.links).enter().append("line")
         .attr("stroke", "#ccc")
         .attr("stroke-width", function (d) { return Math.max(0.5, Math.min(d.weight / maxWeight * 4, 6)); })
         .attr("stroke-opacity", 0.4);
 
+      // D3 enter-selection: one <circle> per node (domain).
       var node = g.selectAll("circle").data(data.nodes).enter().append("circle")
         .attr("r", function (d) { return rScale(d.pages); })
         .attr("fill", function (d) { return ownerColour(d.ownership); })
@@ -176,6 +328,7 @@
           .on("end", function (evt, d) { if (!evt.active) sim.alphaTarget(0); d.fx = null; d.fy = null; })
         );
 
+      // Only label nodes with >20 pages to avoid visual clutter.
       var labels = g.selectAll("text").data(data.nodes.filter(function (n) { return n.pages > 20; }))
         .enter().append("text")
         .text(function (d) { return shortDomain(d.id); })
@@ -185,6 +338,8 @@
         .attr("dy", function (d) { return rScale(d.pages) + 12; })
         .attr("pointer-events", "none");
 
+      // On every simulation tick, update the x/y positions of all
+      // lines, circles, and text elements from the simulation state.
       sim.on("tick", function () {
         link.attr("x1", function (d) { return d.source.x; })
           .attr("y1", function (d) { return d.source.y; })
@@ -197,13 +352,24 @@
       });
 
       // ── Selection logic ──────────────────────────────────────
+
+      /**
+       * Select a node and highlight its 2-hop neighbourhood.
+       * "Primary" = directly connected (1 hop).
+       * "Secondary" = 2 hops away (neighbours of neighbours).
+       * Everything else fades to near-transparent.
+       *
+       * @param {Object} d - D3 datum for the clicked node.
+       */
       function selectNode(d) {
+        // Clicking the already-selected node toggles selection off.
         if (selectedNode && selectedNode.id === d.id) {
           clearSelection();
           return;
         }
         selectedNode = d;
         var primary = adj[d.id] || new Set();
+        // Walk each primary neighbour's adjacency to build the 2-hop set.
         var secondary = new Set();
         primary.forEach(function (nid) {
           (adj[nid] || new Set()).forEach(function (nid2) {
@@ -270,6 +436,7 @@
         populateOverlay(d, primary, secondary);
       }
 
+      /** Reset all nodes, links, and labels to their default visual state. */
       function clearSelection() {
         selectedNode = null;
         node
@@ -284,10 +451,20 @@
         overlay.classList.remove("open");
       }
 
+      // Clicking empty SVG space or the overlay close button deselects.
       svg.on("click", function () { clearSelection(); });
       document.getElementById("ndo-close").addEventListener("click", function () { clearSelection(); });
 
       // ── Overlay population ───────────────────────────────────
+
+      /**
+       * Fill the side-panel overlay with stats, signals, and
+       * connection lists for the selected domain node.
+       *
+       * @param {Object} d         - Selected node datum.
+       * @param {Set}    primary   - Set of directly-connected node ids.
+       * @param {Set}    secondary - Set of 2-hop node ids.
+       */
       function populateOverlay(d, primary, secondary) {
         document.getElementById("ndo-domain").textContent = shortDomain(d.id);
         var ownerEl = document.getElementById("ndo-owner");
@@ -372,14 +549,24 @@
       }
 
       // ── Colour-by toggle ─────────────────────────────────────
+      // Pre-build CMS colour assignments so the dropdown can
+      // switch colour modes without re-fetching data.
       var CMS_COLOURS = {};
       var _cmsIdx = 0;
       domains.forEach(function (d) {
         var c = d.cms_generator || "(undetected)";
         if (!CMS_COLOURS[c]) { CMS_COLOURS[c] = CSJ_PALETTE[_cmsIdx % CSJ_PALETTE.length]; _cmsIdx++; }
       });
+      // Viridis gives a perceptually-uniform ramp for continuous coverage %.
       var covScale = d3.scaleSequential(d3.interpolateViridis).domain([0, 100]);
 
+      /**
+       * Determine fill colour for a node based on the current
+       * colour-by dropdown value (ownership, CMS, or coverage).
+       *
+       * @param {Object} d - Node datum.
+       * @returns {string} CSS colour string.
+       */
       function nodeColour(d) {
         var mode = document.getElementById("network-colour-by").value;
         var detail = domainLookup[d.id] || {};
@@ -388,6 +575,7 @@
         return ownerColour(d.ownership);
       }
 
+      /** Re-apply node fills and rebuild the legend to match the active colour mode. */
       function recolourNodes() {
         node.attr("fill", nodeColour);
         var mode = document.getElementById("network-colour-by").value;
@@ -419,18 +607,29 @@
   // ────────────────────────────────────────────────────────────────
   // 2. Zoomable Treemap
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Render a treemap where rectangle area is proportional to page count.
+   * The user can switch between grouping by ownership, CMS, or primary
+   * content kind via a dropdown.  Fully redrawn on group-by change
+   * because d3.treemap layout depends on the hierarchy shape.
+   */
   VIZ.treemap = function () {
     fetchJSON(API.domains).then(function (data) {
       hideLoading("loading-treemap");
       _assignOwnerColours(data);
 
+      // Treemap-local colour map; reset on each redraw so the
+      // palette cycles from index 0 every time the grouping changes.
       var TM_COLOURS = {};
       var _tmIdx = 0;
+      /** @param {string} key - Group name. @returns {string} */
       function tmColour(key) {
         if (!TM_COLOURS[key]) { TM_COLOURS[key] = CSJ_PALETTE[_tmIdx % CSJ_PALETTE.length]; _tmIdx++; }
         return TM_COLOURS[key];
       }
 
+      /** Tear down the existing treemap SVG and rebuild from scratch. */
       function drawTreemap() {
         d3.select("#viz-treemap").selectAll("*").remove();
         TM_COLOURS = {}; _tmIdx = 0;
@@ -455,6 +654,7 @@
 
         var colourFn = mode === "ownership" ? ownerColour : tmColour;
 
+        // Build a two-level hierarchy: root → group → leaf (domain).
         var root = d3.hierarchy({
           name: "estate",
           children: Object.keys(grouped).map(function (k) {
@@ -468,9 +668,12 @@
         }).sum(function (d) { return d.value || 0; })
           .sort(function (a, b) { return b.value - a.value; });
 
+        // paddingTop reserves space for the group label rendered above each cluster.
         d3.treemap().size([W, H]).padding(2).paddingTop(18).round(true)(root);
         var svg = d3.select("#viz-treemap").append("svg").attr("width", W).attr("height", H);
 
+        // Group-level rects (outlines) and labels drawn first so leaf
+        // rects sit on top in z-order.
         var groups = svg.selectAll("g").data(root.children).enter().append("g");
         groups.append("rect")
           .attr("x", function (d) { return d.x0; }).attr("y", function (d) { return d.y0; })
@@ -515,6 +718,14 @@
   // ────────────────────────────────────────────────────────────────
   // 3. Stacked Bar Chart — Status & Errors
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Horizontal stacked bar chart showing the HTTP status-code
+   * distribution per domain.  Each bar segment represents a status
+   * family (2xx, 3xx, 4xx, 5xx, unknown).  Re-sorts and redraws
+   * fully when the sort dropdown changes because bar layout is
+   * computed imperatively (no D3 general-update pattern).
+   */
   VIZ.status = function () {
     fetchJSON(API.domains).then(function (data) {
       hideLoading("loading-status");
@@ -534,8 +745,13 @@
       var categories = ["2", "3", "4", "5", "?"];
       var catColours = { "2": "#2D6A4F", "3": "#C4841D", "4": "#B8860B", "5": "#A4243B", "?": "#5A5246" };
 
+      /**
+       * Sort the top-40 domain slice in place according to the chosen mode.
+       * @param {string} mode - "errors" | "pages" | "alpha".
+       */
       function sortData(mode) {
         if (mode === "errors") {
+          // Error rate = error_count / page_count; highest rate first.
           top.sort(function (a, b) {
             var ae = (a.error_count || 0) / (a.page_count || 1);
             var be = (b.error_count || 0) / (b.page_count || 1);
@@ -549,6 +765,8 @@
       }
       sortData("errors");
 
+      // Build bars imperatively — one row per domain, segments stacked
+      // left-to-right by status family.
       top.forEach(function (d, i) {
         var y = i * (barH + gap);
         g.append("text")
@@ -559,6 +777,8 @@
         var cumX = 0;
         var sc = d.status_codes || {};
         categories.forEach(function (cat) {
+          // Aggregate all HTTP codes whose first digit matches this
+          // category; "?" catches anything that doesn't start 1-5.
           var count = 0;
           Object.keys(sc).forEach(function (code) {
             if (code.charAt(0) === cat || (cat === "?" && !("12345".includes(code.charAt(0))))) count += sc[code];
@@ -580,6 +800,8 @@
         });
       });
 
+      // Changing sort tears down and re-renders by clearing the rendered
+      // flag so VIZ.status runs from scratch with the new sort order.
       document.getElementById("status-sort").addEventListener("change", function () {
         rendered["status"] = false;
         d3.select("#viz-status").selectAll("*").remove();
@@ -591,10 +813,20 @@
   // ────────────────────────────────────────────────────────────────
   // 4. Analytics & Governance Matrix Heatmap
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Render a heatmap matrix: rows = domains (top 50 by signal count),
+   * columns = analytics/governance signals.  Cell colour intensity
+   * reflects coverage (proportion of pages where the signal was found).
+   * A summary row at the bottom counts how many domains adopt each
+   * signal, and a summary column on the right counts signals per domain.
+   */
   VIZ.analytics = function () {
     fetchJSON(API.domains).then(function (data) {
       hideLoading("loading-analytics");
 
+      // Collect the union of all analytics_tools values across all
+      // domains to form the column set, plus a synthetic "privacy_policy".
       var signalSet = new Set();
       data.forEach(function (d) {
         (d.analytics_tools || []).forEach(function (s) { signalSet.add(s); });
@@ -638,20 +870,43 @@
 
       var colourScale = d3.scaleSequential(d3.interpolateBlues).domain([0, 1]);
 
+      /**
+       * Truncated signal label sized to fit inside a column header.
+       * @param {string} sig
+       * @returns {string}
+       */
       function signalLabel(sig) {
         if (sig === "privacy_policy") return "Privacy Policy";
         var label = sig.replace(/_/g, " ");
         var maxLen = Math.max(12, Math.floor(cellSize / 4.5));
         return label.length > maxLen ? label.substring(0, maxLen - 1) + "\u2026" : label;
       }
+
+      /** @param {string} sig @returns {string} Full human-readable label. */
       function signalFullLabel(sig) {
         return sig === "privacy_policy" ? "Privacy Policy" : sig.replace(/_/g, " ");
       }
+
+      /**
+       * Compute coverage ratio for a given domain and signal (0–1).
+       * Privacy policy is a special case — its per-page count lives in
+       * `privacy_policy_pages`, not in `analytics_tool_pages`.
+       * @param {Object} d   - Domain summary object.
+       * @param {string} sig - Signal key.
+       * @returns {number}
+       */
       function coverage(d, sig) {
         if (!d.page_count) return 0;
         if (sig === "privacy_policy") return (d.privacy_policy_pages || 0) / d.page_count;
         return ((d.analytics_tool_pages || {})[sig] || 0) / d.page_count;
       }
+
+      /**
+       * Boolean presence check: does this domain have the signal at all?
+       * @param {Object} d   - Domain summary object.
+       * @param {string} sig - Signal key.
+       * @returns {boolean}
+       */
       function isPresent(d, sig) {
         if (sig === "privacy_policy") return !!d.has_privacy_policy;
         return (d.analytics_tools || []).indexOf(sig) !== -1;
@@ -759,12 +1014,20 @@
   // ────────────────────────────────────────────────────────────────
   // 5. Freshness Timeline
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Horizontal Gantt-style timeline showing the date range (oldest →
+   * latest) per domain or grouped by CMS / content kind.  Bar colour
+   * is a Red-Yellow-Green ramp driven by days since the most recent
+   * update (green = fresh, red = stale, 730-day window).
+   */
   VIZ.freshness = function () {
     Promise.all([fetchJSON(API.freshness), fetchJSON(API.domains)]).then(function (results) {
       var data = results[0];
       var domainData = results[1];
       hideLoading("loading-freshness");
 
+      /** Full teardown + redraw required when the group-by dropdown changes. */
       function drawFreshness() {
         d3.select("#viz-freshness").selectAll("*").remove();
         var mode = document.getElementById("freshness-group-by").value;
@@ -808,6 +1071,7 @@
         var xMin = d3.min(allDates) || new Date("2020-01-01");
         var xMax = new Date(data.today);
         var x = d3.scaleTime().domain([xMin, xMax]).range([0, innerW]);
+        // RdYlGn diverging ramp: 0 (stale) → red, 1 (fresh) → green.
         var freshColour = d3.scaleSequential(d3.interpolateRdYlGn).domain([0, 1]);
 
         var svg = d3.select("#viz-freshness").append("svg").attr("width", W).attr("height", H);
@@ -852,6 +1116,14 @@
   // ────────────────────────────────────────────────────────────────
   // 6. Chord Diagram
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Circular chord diagram of inter-domain linking.  The `chord`
+   * endpoint returns a square matrix and a domain list; d3.chord
+   * converts this into arc + ribbon geometry.  The "top N" dropdown
+   * controls how many domains appear; changing it invalidates the
+   * cache entry for that URL so a fresh matrix is fetched.
+   */
   VIZ.chord = function () {
     var topN = document.getElementById("chord-top").value || 20;
     fetchJSON(API.chord + "?top=" + topN).then(function (data) {
@@ -910,6 +1182,8 @@
         .on("mouseout", hideTip);
     });
 
+    // Evict the old cache entry so the next render fetches the matrix
+    // with the new top-N value from the server.
     document.getElementById("chord-top").addEventListener("change", function () {
       rendered["chord"] = false;
       cache[API.chord + "?top=" + this.value] = null;
@@ -920,6 +1194,15 @@
   // ────────────────────────────────────────────────────────────────
   // 7. Sunburst — Navigation Structure  (zoomable)
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Zoomable sunburst that visualises the navigation tree for a single
+   * domain.  The domain selector is populated from the `navigation`
+   * endpoint; choosing a domain fetches its tree and calls
+   * `renderSunburst`.  Zooming is animated via `d3.interpolate` on
+   * the arc start/end angles and radii, storing interpolation targets
+   * in `d._target` and the current state in `d._current`.
+   */
   VIZ.sunburst = function () {
     fetchJSON(API.navigation).then(function (data) {
       hideLoading("loading-sunburst");
@@ -948,11 +1231,23 @@
     var SB_INTERNAL_HUE = 30;    // warm ink/amber family
     var SB_EXTERNAL_HUE = 160;   // muted teal family
 
+    /**
+     * Derive an HSL colour for a sunburst arc.  Internal and external
+     * links start from different base hues; sibling index drives a
+     * hue shift so adjacent segments are visually distinct.  Lightness
+     * increases with depth so deeper levels feel "further away".
+     *
+     * @param {d3.HierarchyNode} d
+     * @returns {string} CSS HSL colour.
+     */
     function sbColour(d) {
       if (!d.parent) return "#F2EFEB";
       var isExt = d.data.external || (d.parent && d.parent.data.external);
       var baseHue = isExt ? SB_EXTERNAL_HUE : SB_INTERNAL_HUE;
 
+      // Walk ancestors to accumulate a hue offset based on each node's
+      // position among its siblings — deeper levels contribute smaller
+      // shifts to keep the overall hue band coherent.
       var ancestors = d.ancestors().reverse();
       var hueShift = 0;
       for (var i = 1; i < ancestors.length; i++) {
@@ -970,6 +1265,14 @@
     /* ---- breadcrumbs ---- */
     var breadcrumbEl = document.getElementById("sunburst-breadcrumbs");
 
+    /**
+     * Rebuild the breadcrumb trail for the current zoom target.
+     * Each ancestor becomes a clickable span; the last item is
+     * styled as "current" and is not interactive.
+     *
+     * @param {d3.HierarchyNode} node          - Current zoom target.
+     * @param {Function}         clickHandler   - Called with a node to zoom into.
+     */
     function updateBreadcrumbs(node, clickHandler) {
       if (!breadcrumbEl) return;
       var chain = node.ancestors().reverse();
@@ -994,15 +1297,34 @@
     }
 
     /* ---- arc label helper ---- */
+
+    /**
+     * Determine whether the arc segment is large enough to display a text label.
+     * @param {Object} d - Node with partition layout coords (x0, x1, y0, y1).
+     * @returns {boolean}
+     */
     function labelFits(d) {
       return (d.y1 - d.y0) > 28 && (d.x1 - d.x0) > 0.06;
     }
+
+    /**
+     * Compute an SVG transform string that places a text label at the
+     * midpoint of a partition arc, rotated to follow the arc's angle.
+     *
+     * @param {Object} d - Node with partition coords.
+     * @param {number} R - Outer radius of the sunburst.
+     * @returns {string} SVG transform.
+     */
     function labelTransform(d, R) {
       var x = ((d.x0 + d.x1) / 2) * 180 / Math.PI;
       var y = (d.y0 + d.y1) / 2;
       return "rotate(" + (x - 90) + ") translate(" + y + ",0) rotate(" + (x < 180 ? 0 : 180) + ")";
     }
 
+    /**
+     * Draw (or redraw) the sunburst for a given navigation tree.
+     * @param {Object} tree - Hierarchical tree returned by the navigation endpoint.
+     */
     function renderSunburst(tree) {
       if (!tree) return;
       d3.select("#viz-sunburst").selectAll("svg").remove();
@@ -1033,7 +1355,8 @@
 
       var currentRoot = root;
 
-      /* Centre circle for click-to-zoom-out */
+      /* Centre circle acts as a "zoom out" button — clicking it
+         navigates one level up in the hierarchy. */
       var centreCircle = svg.append("circle")
         .attr("r", root.y1 ? root.y1 : R * 0.18)
         .attr("fill", "#F2EFEB")
@@ -1113,6 +1436,15 @@
       updateBreadcrumbs(root, zoomTo);
 
       /* ---- Zoom ---- */
+
+      /**
+       * Animate the sunburst so `target` fills the full ring.
+       * Rescales every node's angular and radial extents relative to
+       * the target, storing the result in `d._target`.  A D3 transition
+       * then interpolates from `d._current` → `d._target`.
+       *
+       * @param {d3.HierarchyNode} target - Node to zoom into (or root to zoom out).
+       */
       function zoomTo(target) {
         if (!target) target = root;
         currentRoot = target;
@@ -1122,10 +1454,13 @@
           target.value + " items"
         );
 
+        // Map the target's angular span to a full circle and its
+        // radial origin to zero so the zoomed node fills the ring.
         var t0 = target.x0, t1 = target.x1, ty0 = target.y0;
         var xScale = 2 * Math.PI / (t1 - t0 || 1);
         var yScale = R / (R - ty0 || 1);
 
+        // Pre-compute every node's destination layout coordinates.
         root.each(function (d) {
           d._target = {
             x0: Math.max(0, Math.min(2 * Math.PI, (d.x0 - t0) * xScale)),
@@ -1190,6 +1525,17 @@
   // ────────────────────────────────────────────────────────────────
   // 8. Radar / Spider Chart — Quality
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Multi-axis radar (spider) chart comparing quality metrics across
+   * up to ~40 domains (only those with ≥10 pages are eligible).
+   * The user picks domains via a checkbox list; each checked domain
+   * draws a closed polygon on the same set of radial axes.
+   *
+   * Quality scores (_q) are normalised to 0–1 from heterogeneous
+   * raw values (FK grade, percentages, counts, dates) so they are
+   * directly comparable on the same radial scale.
+   */
   VIZ.radar = function () {
     fetchJSON(API.domains).then(function (data) {
       hideLoading("loading-radar");
@@ -1200,6 +1546,11 @@
       var maxWords = d3.max(eligible, function (d) { return d.avg_word_count; }) || 1;
       var maxLinks = d3.max(eligible, function (d) { return d.avg_internal_links; }) || 1;
 
+      // Pre-compute a normalised 0–1 quality profile (_q) for each
+      // domain.  Each metric uses a different normalisation strategy:
+      // FK readability is inverted (lower grade = easier to read),
+      // percentages are divided by 100, counts are relative to the
+      // dataset maximum, and freshness decays linearly over 730 days.
       eligible.forEach(function (d) {
         d.alt_compliance = d.total_images > 0 ? 100 - d.alt_missing_pct : 100;
         var grade = d.avg_readability || 0;
@@ -1247,8 +1598,11 @@
         { key: "extractionCoverage", label: "Extraction Coverage", tip: function (d) { return (d.avg_extraction_coverage || 0).toFixed(1) + "% avg fields populated"; } }
       ];
 
+      // Colour by index in the eligible array so each domain keeps
+      // its swatch colour stable regardless of checkbox order.
       var stableColour = d3.scaleOrdinal(CSJ_PALETTE);
 
+      // Build the checkbox picker; first three domains pre-selected.
       var pickerEl = document.getElementById("radar-domains");
       pickerEl.innerHTML = "";
       eligible.forEach(function (d, i) {
@@ -1268,6 +1622,7 @@
         cb.addEventListener("change", draw);
       });
 
+      /** Redraw the radar SVG from the current checkbox state. */
       function draw() {
         d3.select("#viz-radar").selectAll("svg").remove();
         var selected = [];
@@ -1280,6 +1635,7 @@
         var sz = vizSize("viz-radar");
         var W = Math.min(sz.w, 720), H = W;
         var R = W / 2 - 90;
+        // Equal angular spacing between quality axes.
         var angleSlice = 2 * Math.PI / axes.length;
 
         var svg = d3.select("#viz-radar").append("svg")
@@ -1361,7 +1717,20 @@
   // ────────────────────────────────────────────────────────────────
   // 9. Word Cloud — Content Themes
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Word cloud rendered via d3-cloud (d3.layout.cloud).  Supports
+   * three data modes — tags, schema types, and authors — each
+   * fetched from a different API endpoint.  The cloud is fully
+   * rebuilt on mode change because the word list changes entirely.
+   */
   VIZ.wordcloud = function () {
+    /**
+     * Clear the container and render a cloud from an array of
+     * {tag, count} items.
+     *
+     * @param {Array.<{tag: string, count: number}>} items
+     */
     function renderCloud(items) {
       d3.select("#viz-wordcloud").selectAll("*").remove();
       if (!items.length) {
@@ -1403,6 +1772,7 @@
         .start();
     }
 
+    /** Read the mode dropdown and fetch the appropriate endpoint. */
     function loadAndRender() {
       var mode = document.getElementById("wordcloud-mode").value;
       if (mode === "tags") {
@@ -1438,12 +1808,22 @@
   // ────────────────────────────────────────────────────────────────
   // 10. Sankey — Cross-Domain Journey Flow
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Left-to-right Sankey diagram showing the heaviest cross-domain
+   * link flows.  Because d3-sankey requires an acyclic graph,
+   * source and target nodes are duplicated into separate columns
+   * (so domain X can appear on both sides if it links and is
+   * linked-to).  The "top N" slider controls how many links to show.
+   */
   VIZ.sankey = function () {
     fetchJSON(API.graph).then(function (data) {
       hideLoading("loading-sankey");
       var topN = parseInt(document.getElementById("sankey-count").value) || 25;
 
-      // Normalise — force simulation may have mutated source/target to objects
+      // After the force simulation in VIZ.network has run, link
+      // source/target may have been mutated from plain id strings
+      // to full node objects — normalise back to id strings.
       var rawLinks = data.links.map(function (l) {
         return {
           source: l.source.id || l.source,
@@ -1455,7 +1835,8 @@
       var topLinks = rawLinks.slice().sort(function (a, b) { return b.weight - a.weight; }).slice(0, topN);
       if (!topLinks.length) return;
 
-      // Separate source / target node pools so the graph is always acyclic
+      // Duplicate each domain into "from:" and "to:" node pools so
+      // d3-sankey never encounters a cycle (same domain linking itself).
       var srcSeen = {}, tgtSeen = {};
       var sourceIds = [], targetIds = [];
       topLinks.forEach(function (l) {
@@ -1549,6 +1930,13 @@
   // ────────────────────────────────────────────────────────────────
   // 11. Parallel Coordinates
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Parallel coordinates plot: one vertical axis per numeric metric,
+   * one polyline per domain.  Hovering a line raises it to the top
+   * and fades the rest so the user can trace a single domain's
+   * profile across all dimensions.
+   */
   VIZ.parallel = function () {
     fetchJSON(API.domains).then(function (data) {
       hideLoading("loading-parallel");
@@ -1586,6 +1974,11 @@
       var svg = d3.select("#viz-parallel").append("svg").attr("width", W).attr("height", H);
       var g = svg.append("g").attr("transform", "translate(" + margin.left + "," + margin.top + ")");
 
+      /**
+       * Generate an SVG path string for a domain's polyline across all axes.
+       * @param {Object} d - Domain summary object.
+       * @returns {string} SVG path.
+       */
       function path(d) {
         return d3.line()(dims.map(function (dim) { return [x(dim.key), y[dim.key](d[dim.key] || 0)]; }));
       }
@@ -1626,6 +2019,13 @@
   // ────────────────────────────────────────────────────────────────
   // 12. Bubble Chart — Nested Zoomable Circle Pack
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Zoomable circle-pack where circle area is proportional to page
+   * count.  Two grouping modes: "domain" (domains → content kinds)
+   * and "content" (content kinds → domains).  Zoom is implemented
+   * with d3.interpolateZoom for a smooth geometric transition.
+   */
   VIZ.bubble = function () {
     fetchJSON(API.domains).then(function (data) {
       hideLoading("loading-bubble");
@@ -1639,6 +2039,7 @@
         "#5A5246","#8B5E3C","#6B4226","#4A6741","#9B7042",
         "#B07D3A","#3D5A4C","#7A4F5A","#5C7A6B","#1A1A1A"
       ];
+      /** @param {string} kind @returns {string} Lazily-assigned hex colour. */
       function contentColour(kind) {
         if (!CONTENT_COLOURS[kind]) {
           CONTENT_COLOURS[kind] = CONTENT_PALETTE[_contentIdx % CONTENT_PALETTE.length];
@@ -1651,6 +2052,13 @@
         Object.keys(d.content_kinds || {}).forEach(function (k) { contentColour(k); });
       });
 
+      /**
+       * Build a two-level hierarchy for d3.pack.  "domain" mode:
+       * domain → content kinds.  "content" mode: content kind → domains.
+       *
+       * @param {string} mode - "domain" or "content".
+       * @returns {Object} Nested tree suitable for d3.hierarchy().
+       */
       function buildHierarchy(mode) {
         if (mode === "content") {
           var byKind = {};
@@ -1722,6 +2130,13 @@
         };
       }
 
+      /**
+       * Tear down and redraw the circle pack for the chosen mode.
+       * Resets the content colour map so colours are consistent
+       * from index 0 after each redraw.
+       *
+       * @param {string} mode - "domain" or "content".
+       */
       function renderBubble(mode) {
         d3.select("#viz-bubble").selectAll("*").remove();
         var bc = document.querySelector(".bubble-breadcrumb");
@@ -1745,8 +2160,8 @@
           return d.depth === 0 ? 16 : d.depth === 1 ? 6 : 2;
         })(root);
 
-        var focus = root;
-        var view;
+        var focus = root;  // Currently zoomed-into node.
+        var view;          // Current [cx, cy, diameter] of the zoom viewport.
 
         var svg = d3.select("#viz-bubble").append("svg")
           .attr("width", W).attr("height", H)
@@ -1854,9 +2269,16 @@
           })
           .text(function (d) { return fmt(d.value) + " pages"; });
 
+        // Initial layout — centre on root with full extent visible.
         zoomTo([root.x, root.y, root.r * 2]);
         updateBreadcrumbs(root);
 
+        /**
+         * Immediately reposition all circles, labels, and count labels
+         * to reflect a given viewport [cx, cy, diameter].
+         *
+         * @param {number[]} v - [centreX, centreY, diameter].
+         */
         function zoomTo(v) {
           var k = W / v[2];
           view = v;
@@ -1872,6 +2294,13 @@
           circles.attr("r", function (d) { return d.r * k; });
         }
 
+        /**
+         * Animate a smooth zoom transition to `target` using
+         * d3.interpolateZoom (Bézier-based geometric interpolation).
+         *
+         * @param {Event|null}       evt    - The triggering DOM event (unused).
+         * @param {d3.HierarchyNode} target - Node to zoom into.
+         */
         function zoom(evt, target) {
           focus = target;
           hideTip();
@@ -1922,6 +2351,11 @@
             });
         }
 
+        /**
+         * Build a breadcrumb bar above the bubble SVG showing the
+         * current zoom path (root → group → …).
+         * @param {d3.HierarchyNode} node - Current zoom target.
+         */
         function updateBreadcrumbs(node) {
           var container = document.getElementById("viz-bubble").parentNode;
           var existing = container.querySelector(".bubble-breadcrumb");
@@ -1995,6 +2429,12 @@
   // ────────────────────────────────────────────────────────────────
   // 13. Content Types by Domain
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Horizontal stacked bar chart where each segment is a content
+   * kind (e.g. "article", "service", "form").  Sortable by page
+   * count, content-kind diversity, or alphabetically.
+   */
   VIZ.contenttypes = function () {
     fetchJSON(API.domains).then(function (data) {
       hideLoading("loading-contenttypes");
@@ -2013,6 +2453,10 @@
         .domain(allKinds)
         .range(CSJ_PALETTE.concat(d3.schemeTableau10));
 
+      /**
+       * Sort the top-50 slice in place.
+       * @param {string} mode - "diversity" | "alpha" | "pages".
+       */
       function sortData(mode) {
         if (mode === "diversity") {
           top.sort(function (a, b) {
@@ -2025,6 +2469,7 @@
         }
       }
 
+      /** Clear and redraw bars with the currently selected sort order. */
       function draw() {
         d3.select("#viz-contenttypes").selectAll("*").remove();
         var sortMode = document.getElementById("contenttypes-sort").value || "pages";
@@ -2105,11 +2550,35 @@
   // ────────────────────────────────────────────────────────────────
   // GLOBAL FILTER SYSTEM
   // ────────────────────────────────────────────────────────────────
+  //
+  // The filter bar (CMS, content kind, schema format, min coverage)
+  // sits above the tab row.  When any filter value changes:
+  //  1. `activeFilters` is rebuilt from the dropdowns.
+  //  2. `cache` and `rendered` are both cleared so every panel
+  //     re-fetches with the new query-string on next activation.
+  //  3. The currently visible panel is re-rendered immediately.
+  //
+  // The `fetchJSON` function is monkey-patched below to transparently
+  // append filter params to every API call, so individual VIZ
+  // functions don't need to know about filters at all.
+
+  /** Current filter state; keys match viz_api query-string params. */
   var activeFilters = {};
   var filterOptionsData = null;
 
+  // Apply pre-selected run from the URL (set by the legacy redirect or
+  // the runs list page link).
+  if (window.ECO_PRESELECTED_RUNS) {
+    activeFilters.runs = window.ECO_PRESELECTED_RUNS;
+  }
+
+  /**
+   * Serialise `activeFilters` into a URL query string.
+   * @returns {string} e.g. "?runs=run_2025-01-01&cms=WordPress", or "".
+   */
   function buildFilterQuery() {
     var parts = [];
+    if (activeFilters.runs) parts.push("runs=" + encodeURIComponent(activeFilters.runs));
     if (activeFilters.cms) parts.push("cms=" + encodeURIComponent(activeFilters.cms));
     if (activeFilters.content_kinds) parts.push("content_kinds=" + encodeURIComponent(activeFilters.content_kinds));
     if (activeFilters.schema_formats) parts.push("schema_formats=" + encodeURIComponent(activeFilters.schema_formats));
@@ -2117,12 +2586,21 @@
     return parts.length ? "?" + parts.join("&") : "";
   }
 
+  /**
+   * Append filter query-string params to a URL, respecting whether
+   * the URL already contains a "?".
+   *
+   * @param {string} url
+   * @returns {string}
+   */
   function addFilterParam(url) {
     var q = buildFilterQuery();
     if (!q) return url;
     return url + (url.indexOf("?") >= 0 ? "&" + q.substring(1) : q);
   }
 
+  // Replace the module-level `fetchJSON` with a wrapper that injects
+  // filter params before hitting the network / cache.
   var _origFetchJSON = fetchJSON;
   fetchJSON = function (url) {
     var filtered = addFilterParam(url);
@@ -2130,13 +2608,19 @@
     return d3.json(filtered).then(function (d) { cache[filtered] = d; return d; });
   };
 
+  /**
+   * Read current filter dropdown values, rebuild `activeFilters`,
+   * flush the cache, and re-render the active panel.
+   */
   function onFilterChange() {
+    var runs = document.getElementById("filter-runs").value;
     var cms = document.getElementById("filter-cms").value;
     var kind = document.getElementById("filter-kind").value;
     var schema = document.getElementById("filter-schema").value;
     var cov = document.getElementById("filter-coverage").value;
 
     activeFilters = {};
+    if (runs) activeFilters.runs = runs;
     if (cms) activeFilters.cms = cms;
     if (kind) activeFilters.content_kinds = kind;
     if (schema) activeFilters.schema_formats = schema;
@@ -2157,17 +2641,24 @@
     updateFilterChips();
     cache = {};
     rendered = {};
+    reloadFilterOptions();
     var activePanel = document.querySelector(".viz-tab.active");
     if (activePanel) renderPanel(activePanel.dataset.panel);
   }
 
+  /** Render removable chip badges below the filter bar for each active filter. */
   function updateFilterChips() {
     var el = document.getElementById("filterChips");
     var chips = [];
+    if (activeFilters.runs) {
+      var runLabel = document.getElementById("filter-runs");
+      var runText = runLabel.options[runLabel.selectedIndex] ? runLabel.options[runLabel.selectedIndex].text : activeFilters.runs;
+      chips.push({ key: "runs", label: "Run: " + runText });
+    }
     if (activeFilters.cms) chips.push({ key: "cms", label: "CMS: " + activeFilters.cms });
     if (activeFilters.content_kinds) chips.push({ key: "content_kinds", label: "Kind: " + activeFilters.content_kinds });
     if (activeFilters.schema_formats) chips.push({ key: "schema_formats", label: "Schema: " + activeFilters.schema_formats });
-    if (activeFilters.min_coverage) chips.push({ key: "min_coverage", label: "Coverage ≥ " + activeFilters.min_coverage + "%" });
+    if (activeFilters.min_coverage) chips.push({ key: "min_coverage", label: "Coverage \u2265 " + activeFilters.min_coverage + "%" });
     el.innerHTML = chips.map(function (c) {
       return '<span class="filter-chip">' + c.label +
         ' <span class="filter-chip-x" data-key="' + c.key + '">&times;</span></span>';
@@ -2175,6 +2666,7 @@
     el.querySelectorAll(".filter-chip-x").forEach(function (x) {
       x.addEventListener("click", function () {
         var key = this.dataset.key;
+        if (key === "runs") document.getElementById("filter-runs").value = "";
         if (key === "cms") document.getElementById("filter-cms").value = "";
         if (key === "content_kinds") document.getElementById("filter-kind").value = "";
         if (key === "schema_formats") document.getElementById("filter-schema").value = "";
@@ -2184,11 +2676,14 @@
     });
   }
 
+  // ── Filter event wiring ───────────────────────────────────────
+  document.getElementById("filter-runs").addEventListener("change", onFilterChange);
   document.getElementById("filter-cms").addEventListener("change", onFilterChange);
   document.getElementById("filter-kind").addEventListener("change", onFilterChange);
   document.getElementById("filter-schema").addEventListener("change", onFilterChange);
   document.getElementById("filter-coverage").addEventListener("change", onFilterChange);
   document.getElementById("filterClearAll").addEventListener("click", function () {
+    document.getElementById("filter-runs").value = "";
     document.getElementById("filter-cms").value = "";
     document.getElementById("filter-kind").value = "";
     document.getElementById("filter-schema").value = "";
@@ -2196,22 +2691,55 @@
     onFilterChange();
   });
 
-  d3.json(API.filter_options).then(function (opts) {
-    filterOptionsData = opts;
-    var cmsSel = document.getElementById("filter-cms");
-    (opts.cms_values || []).forEach(function (v) {
-      var o = document.createElement("option"); o.value = v; o.text = v; cmsSel.appendChild(o);
+  /**
+   * Reload the CMS and content-kind dropdowns from the filter_options
+   * endpoint.  Called on initial load and whenever the runs filter changes
+   * so the dropdown options reflect the selected run(s).
+   */
+  function reloadFilterOptions() {
+    var url = API.filter_options;
+    if (activeFilters.runs) {
+      url += (url.indexOf("?") >= 0 ? "&" : "?") + "runs=" + encodeURIComponent(activeFilters.runs);
+    }
+    d3.json(url).then(function (opts) {
+      filterOptionsData = opts;
+      var cmsSel = document.getElementById("filter-cms");
+      var prevCms = cmsSel.value;
+      cmsSel.innerHTML = '<option value="">All platforms</option>';
+      (opts.cms_values || []).forEach(function (v) {
+        var o = document.createElement("option"); o.value = v; o.text = v; cmsSel.appendChild(o);
+      });
+      cmsSel.value = prevCms;
+
+      var kindSel = document.getElementById("filter-kind");
+      var prevKind = kindSel.value;
+      kindSel.innerHTML = '<option value="">All types</option>';
+      (opts.content_kinds || []).forEach(function (v) {
+        var o = document.createElement("option"); o.value = v; o.text = v; kindSel.appendChild(o);
+      });
+      kindSel.value = prevKind;
     });
-    var kindSel = document.getElementById("filter-kind");
-    (opts.content_kinds || []).forEach(function (v) {
-      var o = document.createElement("option"); o.value = v; o.text = v; kindSel.appendChild(o);
-    });
-  });
+  }
+
+  // Initial population of filter dropdowns.
+  reloadFilterOptions();
+
+  // If a run was pre-selected (via legacy URL redirect), show the
+  // active filter state on first load.
+  if (activeFilters.runs) {
+    onFilterChange();
+  }
 
 
   // ────────────────────────────────────────────────────────────────
   // 14. CMS Landscape (Treemap)
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Treemap showing CMS/platform distribution across domains.  Uses
+   * the `technology` endpoint's `cms_distribution` array.  Structure:
+   * root → CMS name → individual domains (leaf, area = page count).
+   */
   VIZ.cmslandscape = function () {
     fetchJSON(API.technology).then(function (data) {
       hideLoading("loading-cmslandscape");
@@ -2284,6 +2812,13 @@
   // ────────────────────────────────────────────────────────────────
   // 15. Structured Data Adoption Matrix
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Heatmap matrix of structured-data signal adoption.  Columns are
+   * fixed technical signals (JSON-LD %, Microdata %, etc.); rows are
+   * the top 40 domains by page count.  Noindex uses a red colour
+   * ramp to flag it as a warning rather than a positive signal.
+   */
   VIZ.structureddata = function () {
     fetchJSON(API.domains).then(function (data) {
       hideLoading("loading-structureddata");
@@ -2363,6 +2898,13 @@
   // ────────────────────────────────────────────────────────────────
   // 16. SEO Readiness Scorecard
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Traffic-light heatmap scoring each domain against a set of SEO
+   * best-practice checks (canonical, structured data, breadcrumbs,
+   * etc.).  Green ≥80 %, amber ≥30 %, red <30 %, grey = absent.
+   * An average score column appears on the right.
+   */
   VIZ.seoreadiness = function () {
     fetchJSON(API.technology).then(function (data) {
       hideLoading("loading-seoreadiness");
@@ -2444,6 +2986,12 @@
   // ────────────────────────────────────────────────────────────────
   // 17. Extraction Coverage Histogram
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Vertical bar histogram of extraction-coverage buckets (% of
+   * metadata fields populated per page).  Data comes from the
+   * `technology` endpoint's `coverage_histogram` array.
+   */
   VIZ.coverage = function () {
     fetchJSON(API.technology).then(function (data) {
       hideLoading("loading-coverage");
@@ -2498,6 +3046,12 @@
   // ────────────────────────────────────────────────────────────────
   // 18. Author Network
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Bipartite force graph linking author nodes (amber) to domain
+   * nodes (teal).  Node radius is proportional to page count.
+   * Data comes from the `authorship` endpoint's `author_network`.
+   */
   VIZ.authornetwork = function () {
     fetchJSON(API.authorship).then(function (data) {
       hideLoading("loading-authornetwork");
@@ -2572,6 +3126,12 @@
   // ────────────────────────────────────────────────────────────────
   // 19. Publisher Landscape
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Simple horizontal bar chart of publisher names ranked by total
+   * page count, with domain-count annotation.  Data sourced from the
+   * `authorship` endpoint's `publishers` array.
+   */
   VIZ.publishers = function () {
     fetchJSON(API.authorship).then(function (data) {
       hideLoading("loading-publishers");
@@ -2618,6 +3178,14 @@
   // ────────────────────────────────────────────────────────────────
   // 20. Schema Insights (conditional)
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Conditionally rendered panel that appears only when the crawl
+   * detected domain-specific Schema.org types (Product, Event,
+   * JobPosting, Recipe).  Each detected type gets its own sub-section
+   * with summary stats and a small inline chart (scatter, timeline,
+   * or bar chart).  If none are found, a "no data" message is shown.
+   */
   VIZ.schemainsights = function () {
     fetchJSON(API.schema_insights).then(function (data) {
       hideLoading("loading-schemainsights");
@@ -2802,6 +3370,8 @@
   };
 
   // ── Initial render ──────────────────────────────────────────────
+  // The "network" tab is active by default in the HTML, so trigger
+  // its render immediately on page load.
   renderPanel("network");
 
 })();

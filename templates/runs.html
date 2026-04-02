@@ -1,6 +1,27 @@
+{#
+  runs.html — List of all crawl runs within a project.
+  Route: GET /p/<slug>/runs  (project_runs)
+  Context:
+    project  (dict) — active project metadata.
+    runs     (list of dicts) — each run dict contains: name, friendly_name,
+        status ("new" | "running" | "interrupted" | "completed"),
+        page_count, timestamp_label, is_latest.
+    status   (dict) — live crawl state; .running disables start buttons.
+
+  The _legacy run folder is silently excluded from the table. Per-run
+  action buttons are conditionally rendered based on run status and
+  whether another crawl is already in progress.
+#}
 {% extends "base.html" %}
 {% set active_tab = 'runs' %}
 {% block title %}Runs — {{ project.name }} | CSJ{% endblock %}
+
+{% block subnav %}
+<div class="sub-nav">
+  <a href="{{ url_for('project_runs', slug=project.slug) }}" class="active">Runs</a>
+  <a href="{{ url_for('ecosystem.ecosystem_dashboard', slug=project.slug) }}">Ecosystem</a>
+</div>
+{% endblock %}
 
 {% block content %}
 <h1 class="page-title">Crawl Runs</h1>
@@ -46,6 +67,7 @@
       </thead>
       <tbody>
         {% for r in runs %}
+        {# Skip the _legacy sentinel folder used for pre-project migration data. #}
         {% if r.name != '_legacy' %}
         <tr>
           <td>

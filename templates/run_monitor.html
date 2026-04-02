@@ -1,3 +1,21 @@
+{#
+  run_monitor.html — Real-time crawl monitor for a single run.
+  Route: GET /p/<slug>/runs/<run_name>/monitor  (run_monitor)
+  Context:
+    project        (dict)  — active project metadata.
+    run_name       (str)   — filesystem run folder name.
+    friendly_name  (str)   — optional human-readable label.
+    run_status     (str)   — "new" | "interrupted" | "completed".
+    status         (dict)  — live crawl state from _project_status():
+        .running, .stopping, .run_folder, .pages, .assets, .elapsed,
+        .phase_detail, .current_url, .finished_message.
+
+  The page opens two SSE streams via JavaScript:
+    /api/progress/<slug>  — crawl metrics (pages, elapsed, phase).
+    /api/logs             — structured log entries rendered in .log-pane.
+  Badge state is derived from a combination of status.running,
+  status.stopping, and whether status.run_folder matches this run.
+#}
 {% extends "base.html" %}
 {% set active_tab = 'runs' %}
 {% block title %}Monitor — {{ friendly_name or run_name }} | CSJ{% endblock %}
@@ -7,7 +25,7 @@
   <a href="{{ url_for('run_config', slug=project.slug, run_name=run_name) }}">Config</a>
   <a href="{{ url_for('run_monitor', slug=project.slug, run_name=run_name) }}" class="active">Monitor</a>
   <a href="{{ url_for('run_results', slug=project.slug, run_name=run_name) }}">Results</a>
-  <a href="{{ url_for('ecosystem.ecosystem_dashboard', slug=project.slug, run_name=run_name) }}">Ecosystem</a>
+  <a href="{{ url_for('ecosystem.ecosystem_dashboard', slug=project.slug, runs=run_name) }}">Ecosystem</a>
 </div>
 {% endblock %}
 
@@ -17,6 +35,8 @@
   <h1 class="page-title" style="margin-bottom:0;">
     {% if friendly_name %}{{ friendly_name }}{% else %}{{ run_name }}{% endif %}
   </h1>
+  {# Badge priority: stopping > running > per-run status. The JS SSE handler
+     mirrors this logic to update the badge live once the crawl state changes. #}
   <span id="badge" class="badge
     {% if status.running and status.stopping %}badge-stopping
     {% elif status.running %}badge-running
@@ -102,6 +122,10 @@
   <div class="log-pane" id="log-pane" style="height:360px;border-radius:0;"></div>
 </div>
 
+{# SSE-driven live updates. connectProgress() subscribes to the crawl
+   progress stream and updates stats/badge. A second EventSource feeds
+   log entries into the .log-pane with level-based filtering. Both
+   streams auto-reconnect on error with a 10 s / 5 s back-off. #}
 <script>
 (function() {
   var badge      = document.getElementById('badge');

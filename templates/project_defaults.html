@@ -1,3 +1,18 @@
+{#
+  project_defaults.html — Project-level default crawl configuration form.
+  Route: GET  /p/<slug>/defaults  (project_defaults)
+         POST /p/<slug>/defaults  (save_project_defaults_route)
+  Context:
+    project  (dict) — active project metadata (name, slug).
+    cfg      (dict) — current defaults (keys mirror config.py constants).
+                      Falls back to a snapshot of module-level config values
+                      when no project defaults have been saved yet.
+
+  Layout mirrors run_config.html but adds client-side helpers:
+    "Extract domains" button — parses seed URLs and populates the allowed-
+    domains textarea. The coverage-panel shows which seed hostnames are not
+    yet covered by the allowed list, updated on every keystroke.
+#}
 {% extends "base.html" %}
 {% set active_tab = 'defaults' %}
 {% block title %}Defaults — {{ project.name }} | CSJ{% endblock %}
@@ -175,6 +190,10 @@
   <button type="submit" class="btn btn-primary" style="margin-top:4px;">Save Defaults</button>
 </form>
 
+{# Client-side domain extraction and coverage checking. Parses hostnames
+   from the seed URL textarea, compares against the allowed-domains list,
+   and renders uncovered domains in the coverage-panel. This runs entirely
+   in the browser — no server round-trip required. #}
 <script>
 (function() {
   var seedsEl   = document.getElementById('seed-urls');

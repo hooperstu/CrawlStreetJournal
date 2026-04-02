@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
-Long-running crawl for background execution. Logs to crawl_background.log
-and raises MAX_PAGES_TO_CRAWL for multi-hour runs (override in this file).
+Long-running crawl intended for background or headless execution.
+
+All output is directed to a file log (``crawl_background.log``) rather than
+stdout, making it suitable for ``nohup`` or process-manager invocation.
+
+``config.MAX_PAGES_TO_CRAWL`` is explicitly set to ``BACKGROUND_MAX_PAGES``
+(1 000 000) before :mod:`scraper` is imported.  This ensures the elevated
+ceiling is in place regardless of any local edits to the default in
+``config.py``, and that ``scraper`` picks up the value at import time when
+constructing its initial queue.
 """
 import argparse
 import logging
@@ -18,12 +26,14 @@ _interrupted = False
 
 
 def _signal_handler(_signum, _frame):
+    """Set the interrupt flag for graceful shutdown after the current page."""
     global _interrupted
     _interrupted = True
     logging.info("Signal received; will stop after current page.")
 
 
 def _on_progress(crawled: int, assets: int, current_url: str) -> None:
+    """Log progress to the file log every 50 pages."""
     if crawled % 50 == 0 and crawled > 0:
         logging.info(
             "Progress: %s pages, %s asset link rows, last %s",
@@ -34,6 +44,11 @@ def _on_progress(crawled: int, assets: int, current_url: str) -> None:
 
 
 def main() -> int:
+    """Configure file logging, override the page cap, and run the crawl.
+
+    Returns:
+        0 on success, 1 on unhandled exception.
+    """
     parser = argparse.ArgumentParser(description="Background CSJ crawl")
     parser.add_argument("--name", default=None, help="Friendly name for a new run")
     parser.add_argument(
