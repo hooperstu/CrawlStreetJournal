@@ -1,0 +1,345 @@
+"""Tests for viz_data aggregation functions and global filter."""
+
+import csv
+import json
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import viz_data
+
+
+# ── Helpers to create temporary run directories with CSV data ─────────
+
+def _write_csv(path, fieldnames, rows):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
+        w.writeheader()
+        for row in rows:
+            w.writerow(row)
+
+
+def _make_run_dir(tmp_path, pages=None, edges=None, tags=None, errors=None):
+    run_dir = os.path.join(str(tmp_path), "test_run")
+    os.makedirs(run_dir, exist_ok=True)
+    if pages:
+        fieldnames = list(pages[0].keys())
+        _write_csv(os.path.join(run_dir, "pages.csv"), fieldnames, pages)
+    if edges:
+        fieldnames = list(edges[0].keys())
+        _write_csv(os.path.join(run_dir, "edges.csv"), fieldnames, edges)
+    if tags:
+        fieldnames = list(tags[0].keys())
+        _write_csv(os.path.join(run_dir, "tags.csv"), fieldnames, tags)
+    if errors:
+        fieldnames = list(errors[0].keys())
+        _write_csv(os.path.join(run_dir, "crawl_errors.csv"), fieldnames, errors)
+    return run_dir
+
+
+SAMPLE_PAGES = [
+    {
+        "requested_url": "https://example.com/",
+        "final_url": "https://example.com/",
+        "domain": "example.com",
+        "http_status": "200",
+        "content_type": "text/html",
+        "title": "Example Home",
+        "content_kind_guess": "homepage",
+        "word_count": "500",
+        "img_count": "3",
+        "img_missing_alt_count": "1",
+        "readability_fk_grade": "8.5",
+        "json_ld_types": "WebPage",
+        "microdata_types": "",
+        "rdfa_types": "",
+        "cms_generator": "WordPress 6.4",
+        "author": "Alice Smith",
+        "publisher": "Example Corp",
+        "robots_directives": "meta:index, follow",
+        "hreflang_links": "fr=https://example.com/fr/",
+        "feed_urls": "https://example.com/feed.xml",
+        "pagination_next": "",
+        "pagination_prev": "",
+        "breadcrumb_schema": "Home",
+        "canonical_url": "https://example.com/",
+        "extraction_coverage_pct": "55.0",
+        "date_published": "2025-01-15",
+        "date_modified": "2025-03-01",
+        "schema_price": "",
+        "schema_currency": "",
+        "schema_availability": "",
+        "schema_rating": "",
+        "schema_review_count": "",
+        "schema_event_date": "",
+        "schema_event_location": "",
+        "schema_job_title": "",
+        "schema_job_location": "",
+        "schema_recipe_time": "",
+        "analytics_signals": "googletagmanager.com",
+        "privacy_policy_url": "/privacy",
+        "depth": "0",
+        "sitemap_lastmod": "",
+        "link_count_internal": "15",
+        "link_count_external": "3",
+        "training_related_flag": "",
+        "wcag_lang_valid": "1",
+        "wcag_heading_order_valid": "1",
+        "wcag_title_present": "1",
+        "wcag_form_labels_pct": "1.0",
+        "wcag_landmarks_present": "1",
+        "wcag_vague_link_pct": "0.05",
+        "nav_link_count": "5",
+    },
+    {
+        "requested_url": "https://example.com/blog",
+        "final_url": "https://example.com/blog",
+        "domain": "example.com",
+        "http_status": "200",
+        "content_type": "text/html",
+        "title": "Blog",
+        "content_kind_guess": "blog",
+        "word_count": "300",
+        "img_count": "1",
+        "img_missing_alt_count": "0",
+        "readability_fk_grade": "10.2",
+        "json_ld_types": "BlogPosting",
+        "microdata_types": "Article",
+        "rdfa_types": "",
+        "cms_generator": "WordPress 6.4",
+        "author": "Bob Jones",
+        "publisher": "Example Corp",
+        "robots_directives": "",
+        "hreflang_links": "",
+        "feed_urls": "",
+        "pagination_next": "https://example.com/blog/page/2",
+        "pagination_prev": "",
+        "breadcrumb_schema": "Home > Blog",
+        "canonical_url": "https://example.com/blog",
+        "extraction_coverage_pct": "42.0",
+        "date_published": "2025-02-10",
+        "date_modified": "",
+        "schema_price": "",
+        "schema_currency": "",
+        "schema_availability": "",
+        "schema_rating": "",
+        "schema_review_count": "",
+        "schema_event_date": "",
+        "schema_event_location": "",
+        "schema_job_title": "",
+        "schema_job_location": "",
+        "schema_recipe_time": "",
+        "analytics_signals": "googletagmanager.com|dataLayer",
+        "privacy_policy_url": "",
+        "depth": "1",
+        "sitemap_lastmod": "2025-02-10",
+        "link_count_internal": "8",
+        "link_count_external": "2",
+        "training_related_flag": "",
+        "wcag_lang_valid": "1",
+        "wcag_heading_order_valid": "0",
+        "wcag_title_present": "1",
+        "wcag_form_labels_pct": "1.0",
+        "wcag_landmarks_present": "0",
+        "wcag_vague_link_pct": "0.1",
+        "nav_link_count": "5",
+    },
+    {
+        "requested_url": "https://shop.example.com/products/widget",
+        "final_url": "https://shop.example.com/products/widget",
+        "domain": "shop.example.com",
+        "http_status": "200",
+        "content_type": "text/html",
+        "title": "Widget Pro",
+        "content_kind_guess": "product",
+        "word_count": "200",
+        "img_count": "5",
+        "img_missing_alt_count": "2",
+        "readability_fk_grade": "6.0",
+        "json_ld_types": "Product",
+        "microdata_types": "",
+        "rdfa_types": "",
+        "cms_generator": "Shopify",
+        "author": "",
+        "publisher": "Widget Store",
+        "robots_directives": "",
+        "hreflang_links": "",
+        "feed_urls": "",
+        "pagination_next": "",
+        "pagination_prev": "",
+        "breadcrumb_schema": "",
+        "canonical_url": "https://shop.example.com/products/widget",
+        "extraction_coverage_pct": "60.0",
+        "date_published": "",
+        "date_modified": "",
+        "schema_price": "29.99",
+        "schema_currency": "GBP",
+        "schema_availability": "InStock",
+        "schema_rating": "4.5",
+        "schema_review_count": "120",
+        "schema_event_date": "",
+        "schema_event_location": "",
+        "schema_job_title": "",
+        "schema_job_location": "",
+        "schema_recipe_time": "",
+        "analytics_signals": "",
+        "privacy_policy_url": "",
+        "depth": "0",
+        "sitemap_lastmod": "",
+        "link_count_internal": "10",
+        "link_count_external": "0",
+        "training_related_flag": "",
+        "wcag_lang_valid": "1",
+        "wcag_heading_order_valid": "1",
+        "wcag_title_present": "1",
+        "wcag_form_labels_pct": "1.0",
+        "wcag_landmarks_present": "1",
+        "wcag_vague_link_pct": "0.0",
+        "nav_link_count": "3",
+    },
+]
+
+
+# ── Filter tests ──────────────────────────────────────────────────────
+
+def test_filter_pages_no_filter():
+    result = viz_data.filter_pages(SAMPLE_PAGES, None)
+    assert len(result) == 3
+
+
+def test_filter_pages_empty_filter():
+    result = viz_data.filter_pages(SAMPLE_PAGES, {})
+    assert len(result) == 3
+
+
+def test_filter_pages_by_cms():
+    result = viz_data.filter_pages(SAMPLE_PAGES, {"cms": ["WordPress"]})
+    assert len(result) == 2
+    assert all("WordPress" in r["cms_generator"] for r in result)
+
+
+def test_filter_pages_by_content_kind():
+    result = viz_data.filter_pages(SAMPLE_PAGES, {"content_kinds": ["product"]})
+    assert len(result) == 1
+    assert result[0]["content_kind_guess"] == "product"
+
+
+def test_filter_pages_by_schema_format():
+    result = viz_data.filter_pages(SAMPLE_PAGES, {"schema_formats": ["microdata"]})
+    assert len(result) == 1
+    assert result[0]["microdata_types"] == "Article"
+
+
+def test_filter_pages_by_min_coverage():
+    result = viz_data.filter_pages(SAMPLE_PAGES, {"min_coverage": 50})
+    assert len(result) == 2
+    assert all(float(r["extraction_coverage_pct"]) >= 50 for r in result)
+
+
+def test_filter_pages_combined():
+    result = viz_data.filter_pages(SAMPLE_PAGES, {
+        "cms": ["WordPress"],
+        "min_coverage": 50,
+    })
+    assert len(result) == 1
+    assert result[0]["domain"] == "example.com"
+
+
+# ── Aggregation tests ────────────────────────────────────────────────
+
+def test_aggregate_domains_basic(tmp_path):
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
+    result = viz_data.aggregate_domains(run_dir)
+    assert len(result) == 2
+    domains = {r["domain"] for r in result}
+    assert "example.com" in domains
+    assert "shop.example.com" in domains
+
+
+def test_aggregate_domains_phase4_fields(tmp_path):
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
+    result = viz_data.aggregate_domains(run_dir)
+    ex = next(r for r in result if r["domain"] == "example.com")
+    assert ex["cms_generator"] == "WordPress 6.4"
+    assert "Alice Smith" in ex["top_authors"]
+    assert "Example Corp" in ex["top_publishers"]
+    assert ex["has_json_ld_pct"] == 100.0
+    assert ex["has_hreflang_pct"] == 50.0
+    assert ex["has_feed_pct"] == 50.0
+    assert ex["avg_extraction_coverage"] > 0
+
+
+def test_aggregate_domains_with_filter(tmp_path):
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
+    result = viz_data.aggregate_domains(run_dir, filters={"cms": ["Shopify"]})
+    assert len(result) == 1
+    assert result[0]["domain"] == "shop.example.com"
+
+
+def test_aggregate_technology(tmp_path):
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
+    result = viz_data.aggregate_technology(run_dir)
+
+    assert len(result["cms_distribution"]) >= 2
+    cms_names = [c["cms"] for c in result["cms_distribution"]]
+    assert "WordPress 6.4" in cms_names
+    assert "Shopify" in cms_names
+
+    adoption = result["structured_data_adoption"]
+    assert adoption["total_pages"] == 3
+    assert adoption["json_ld"] == 3
+
+    schema_types = [t["type"] for t in result["schema_type_frequency"]]
+    assert "Product" in schema_types
+
+    assert len(result["seo_readiness"]) == 2
+    assert len(result["coverage_histogram"]) == 10
+
+
+def test_aggregate_authorship(tmp_path):
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
+    result = viz_data.aggregate_authorship(run_dir)
+
+    assert len(result["authors"]) == 2
+    author_names = [a["author"] for a in result["authors"]]
+    assert "Alice Smith" in author_names
+    assert "Bob Jones" in author_names
+
+    assert len(result["publishers"]) == 2
+
+    net = result["author_network"]
+    assert len(net["nodes"]) > 0
+    assert len(net["links"]) > 0
+
+
+def test_aggregate_schema_insights(tmp_path):
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
+    result = viz_data.aggregate_schema_insights(run_dir)
+
+    assert result["products"] is None
+    assert result["events"] is None
+    assert result["jobs"] is None
+
+    extra_products = SAMPLE_PAGES + [
+        dict(SAMPLE_PAGES[2], schema_price="19.99", title="Widget Lite"),
+        dict(SAMPLE_PAGES[2], schema_price="49.99", title="Widget Max"),
+    ]
+    run_dir2 = _make_run_dir(Path(str(tmp_path) + "_2"), pages=extra_products)
+    result2 = viz_data.aggregate_schema_insights(run_dir2)
+    assert result2["products"] is not None
+    assert result2["products"]["count"] == 3
+
+
+def test_get_filter_options(tmp_path):
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
+    opts = viz_data.get_filter_options(run_dir)
+    assert "example.com" in opts["domains"]
+    assert "shop.example.com" in opts["domains"]
+    assert "WordPress 6.4" in opts["cms_values"]
+    assert "Shopify" in opts["cms_values"]
+    assert "product" in opts["content_kinds"]
+    assert "Product" in opts["schema_types"]
+    assert opts["total_pages"] == 3
