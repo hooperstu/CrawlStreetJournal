@@ -143,7 +143,7 @@ if sys.platform == "darwin":
         bundle_identifier="io.csj.crawlstreetjournal",
         info_plist={
             "CFBundleDisplayName": "The Crawl Street Journal",
-            "CFBundleShortVersionString": "1.0.0",
+            "CFBundleShortVersionString": "2.0.0",
             "NSHighResolutionCapable": True,
             "LSBackgroundOnly": False,
         },
