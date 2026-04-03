@@ -93,6 +93,7 @@ def is_allowed_domain(url: str, domains: Iterable[str]) -> bool:
     """Return ``True`` if *url*'s hostname matches any entry in *domains*.
 
     Matching rules:
+    - An empty *domains* list means no restriction — all domains are allowed.
     - Leading dots in domain entries are stripped before comparison.
     - Exact hostname match OR subdomain suffix match (``host.endswith(".domain")``).
     - Case-insensitive on both sides.
@@ -101,14 +102,17 @@ def is_allowed_domain(url: str, domains: Iterable[str]) -> bool:
     Args:
         url:     The URL whose hostname should be checked.
         domains: An iterable of allowed domain strings (e.g. ``["example.com"]``).
+                 Pass an empty iterable to allow all domains.
     """
     try:
-        host = (urlparse(url).hostname or "").lower()
         normalised = [
             str(d).strip().lower().lstrip(".")
             for d in domains
             if str(d).strip()
         ]
+        if not normalised:
+            return True
+        host = (urlparse(url).hostname or "").lower()
         return any(host == d or host.endswith("." + d) for d in normalised)
     except Exception:
         return False

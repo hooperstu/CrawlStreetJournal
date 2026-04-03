@@ -1,7 +1,7 @@
 /**
- * @file ecosystem.js — Ecosystem Dashboard visualisations
+ * @file reports.js — Reports Dashboard visualisations
  *
- * Powers the D3-based ecosystem dashboard for The Crawl Street Journal.
+ * Powers the D3-based reports dashboard for The Crawl Street Journal.
  * Each tab in the UI corresponds to a named entry in the `VIZ` registry
  * (e.g. VIZ.network, VIZ.treemap).  Tabs are lazy-rendered: the first
  * time a tab becomes active its VIZ function fires, fetches data from
@@ -18,7 +18,7 @@
  *   4. When filters change, `cache` and `rendered` are cleared so every
  *      panel re-fetches with the new filter state on next activation.
  *
- * Key libraries: D3 v7, d3-cloud (word cloud layout), d3-sankey.
+ * Key libraries: D3 v7, d3-cloud (word cloud layout).
  *
  * @see viz_api.py for the Flask endpoints that supply JSON data.
  */
@@ -206,11 +206,23 @@
    * `rendered` guard ensures each chart is built only once per filter
    * cycle (cleared when global filters change).
    *
+   * On every call that actually draws (i.e. `rendered[name]` was false),
+   * the viz container is wiped and the loading spinner is restored so that
+   * filter-driven re-renders don't stack a new SVG on top of the old one
+   * or leave the panel blank while new data loads.
+   *
    * @param {string} name - Panel key, must match a property on VIZ.
    */
   function renderPanel(name) {
     if (rendered[name]) return;
     rendered[name] = true;
+
+    var vizEl = document.getElementById("viz-" + name);
+    if (vizEl) vizEl.innerHTML = "";
+
+    var loadingEl = document.getElementById("loading-" + name);
+    if (loadingEl) loadingEl.classList.remove("hidden");
+
     var fn = VIZ[name];
     if (fn) fn();
   }
@@ -672,9 +684,19 @@
         d3.treemap().size([W, H]).padding(2).paddingTop(18).round(true)(root);
         var svg = d3.select("#viz-treemap").append("svg").attr("width", W).attr("height", H);
 
+        // All visual elements live inside `g` so the zoom transform targets
+        // a single group rather than individual shapes.
+        var g = svg.append("g");
+
+        // Full scroll/drag/pinch zoom — no click-drill to conflict with.
+        svg.call(d3.zoom()
+          .scaleExtent([0.5, 8])
+          .on("zoom", function (evt) { g.attr("transform", evt.transform); })
+        );
+
         // Group-level rects (outlines) and labels drawn first so leaf
         // rects sit on top in z-order.
-        var groups = svg.selectAll("g").data(root.children).enter().append("g");
+        var groups = g.selectAll("g").data(root.children).enter().append("g");
         groups.append("rect")
           .attr("x", function (d) { return d.x0; }).attr("y", function (d) { return d.y0; })
           .attr("width", function (d) { return d.x1 - d.x0; })
@@ -687,7 +709,7 @@
           .attr("font-size", 11).attr("font-weight", 700)
           .attr("fill", function (d) { return colourFn(d.data.name); });
 
-        var leaves = svg.selectAll(".leaf").data(root.leaves()).enter().append("g").attr("class", "leaf");
+        var leaves = g.selectAll(".leaf").data(root.leaves()).enter().append("g").attr("class", "leaf");
         leaves.append("rect")
           .attr("x", function (d) { return d.x0; }).attr("y", function (d) { return d.y0; })
           .attr("width", function (d) { return d.x1 - d.x0; })
@@ -732,16 +754,6 @@
       var top = data.slice(0, 40);
       var margin = { top: 10, right: 20, bottom: 10, left: 200 };
       var barH = 20, gap = 3;
-      var sz = vizSize("viz-status");
-      var W = sz.w;
-      var innerW = W - margin.left - margin.right;
-      var H = margin.top + margin.bottom + top.length * (barH + gap);
-
-      var svg = d3.select("#viz-status").append("svg").attr("width", W).attr("height", H);
-      var g = svg.append("g").attr("transform", "translate(" + margin.left + "," + margin.top + ")");
-
-      var maxPages = d3.max(top, function (d) { return d.page_count; }) || 1;
-      var x = d3.scaleLinear().domain([0, maxPages]).range([0, innerW]);
       var categories = ["2", "3", "4", "5", "?"];
       var catColours = { "2": "#2D6A4F", "3": "#C4841D", "4": "#B8860B", "5": "#A4243B", "?": "#5A5246" };
 
@@ -763,50 +775,61 @@
           top.sort(function (a, b) { return a.domain.localeCompare(b.domain); });
         }
       }
-      sortData("errors");
 
-      // Build bars imperatively — one row per domain, segments stacked
-      // left-to-right by status family.
-      top.forEach(function (d, i) {
-        var y = i * (barH + gap);
-        g.append("text")
-          .attr("x", -4).attr("y", y + barH / 2 + 4)
-          .attr("text-anchor", "end").attr("font-size", 11).attr("fill", "#1A1A1A")
-          .text(shortDomain(d.domain));
-
-        var cumX = 0;
-        var sc = d.status_codes || {};
-        categories.forEach(function (cat) {
-          // Aggregate all HTTP codes whose first digit matches this
-          // category; "?" catches anything that doesn't start 1-5.
-          var count = 0;
-          Object.keys(sc).forEach(function (code) {
-            if (code.charAt(0) === cat || (cat === "?" && !("12345".includes(code.charAt(0))))) count += sc[code];
-          });
-          if (count > 0) {
-            var w = x(count);
-            g.append("rect")
-              .attr("x", cumX).attr("y", y).attr("width", w).attr("height", barH)
-              .attr("fill", catColours[cat])
-              .attr("rx", 1)
-              .on("mouseover", function (evt) {
-                showTip(evt, "<strong>" + shortDomain(d.domain) + "</strong><br>" +
-                  cat + "xx: " + fmt(count) + " of " + fmt(d.page_count) + " pages" +
-                  "<br>Errors: " + fmt(d.error_count));
-              })
-              .on("mouseout", hideTip);
-            cumX += w;
-          }
-        });
-      });
-
-      // Changing sort tears down and re-renders by clearing the rendered
-      // flag so VIZ.status runs from scratch with the new sort order.
-      document.getElementById("status-sort").addEventListener("change", function () {
-        rendered["status"] = false;
+      /** Tear down and redraw bars using the currently selected sort order. */
+      function drawStatus() {
         d3.select("#viz-status").selectAll("*").remove();
-        VIZ.status();
-      });
+        sortData(document.getElementById("status-sort").value || "errors");
+
+        var sz = vizSize("viz-status");
+        var W = sz.w;
+        var innerW = W - margin.left - margin.right;
+        var H = margin.top + margin.bottom + top.length * (barH + gap);
+
+        var svg = d3.select("#viz-status").append("svg").attr("width", W).attr("height", H);
+        var g = svg.append("g").attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+        var maxPages = d3.max(top, function (d) { return d.page_count; }) || 1;
+        var x = d3.scaleLinear().domain([0, maxPages]).range([0, innerW]);
+
+        // Build bars imperatively — one row per domain, segments stacked
+        // left-to-right by status family.
+        top.forEach(function (d, i) {
+          var y = i * (barH + gap);
+          g.append("text")
+            .attr("x", -4).attr("y", y + barH / 2 + 4)
+            .attr("text-anchor", "end").attr("font-size", 11).attr("fill", "#1A1A1A")
+            .text(shortDomain(d.domain));
+
+          var cumX = 0;
+          var sc = d.status_codes || {};
+          categories.forEach(function (cat) {
+            // Aggregate all HTTP codes whose first digit matches this
+            // category; "?" catches anything that doesn't start 1-5.
+            var count = 0;
+            Object.keys(sc).forEach(function (code) {
+              if (code.charAt(0) === cat || (cat === "?" && !("12345".includes(code.charAt(0))))) count += sc[code];
+            });
+            if (count > 0) {
+              var w = x(count);
+              g.append("rect")
+                .attr("x", cumX).attr("y", y).attr("width", w).attr("height", barH)
+                .attr("fill", catColours[cat])
+                .attr("rx", 1)
+                .on("mouseover", function (evt) {
+                  showTip(evt, "<strong>" + shortDomain(d.domain) + "</strong><br>" +
+                    cat + "xx: " + fmt(count) + " of " + fmt(d.page_count) + " pages" +
+                    "<br>Errors: " + fmt(d.error_count));
+                })
+                .on("mouseout", hideTip);
+              cumX += w;
+            }
+          });
+        });
+      }
+
+      drawStatus();
+      document.getElementById("status-sort").addEventListener("change", drawStatus);
     });
   };
 
@@ -845,10 +868,6 @@
       });
       top.sort(function (a, b) { return b._signalCount - a._signalCount || b.page_count - a.page_count; });
       top = top.slice(0, 50);
-
-      var domColour = d3.scaleOrdinal()
-        .domain(top.map(function (d) { return d.domain; }))
-        .range(CSJ_PALETTE);
 
       function signalLabel(sig) {
         if (sig === "privacy_policy") return "Privacy Policy";
@@ -895,6 +914,7 @@
 
       signals.forEach(function (sig, i) {
         var y0 = i * rowH, yMid = y0 + rowH / 2;
+        var isPrivacy = sig === "privacy_policy";
 
         g.append("rect")
           .attr("x", 0).attr("y", y0).attr("width", iW).attr("height", rowH)
@@ -908,7 +928,7 @@
           .attr("x", margin.left - 10).attr("y", margin.top + yMid)
           .attr("text-anchor", "end").attr("dominant-baseline", "central")
           .attr("font-size", 12).attr("font-weight", 500)
-          .attr("fill", "#1A1A1A")
+          .attr("fill", isPrivacy ? "#2D6A4F" : "#1A1A1A")
           .text(signalLabel(sig));
 
         var dotsData = top.filter(function (d) { return isPresent(d, sig); });
@@ -916,13 +936,12 @@
 
         dotsData.forEach(function (d, di) {
           var cov = coverage(d, sig);
-          var col = domColour(d.domain);
           var yOff = jitter[di % jitter.length];
           g.append("circle")
             .attr("cx", x(cov)).attr("cy", yMid + yOff).attr("r", 5)
-            .attr("fill", col)
-            .attr("fill-opacity", 0.82)
-            .attr("stroke", col).attr("stroke-width", 0.8).attr("stroke-opacity", 0.5)
+            .attr("fill", isPrivacy ? "#2D6A4F" : "#3B7DB5")
+            .attr("fill-opacity", 0.72)
+            .attr("stroke", isPrivacy ? "#1A4030" : "#2B5D90").attr("stroke-width", 0.8)
             .on("mouseover", function (evt) {
               showTip(evt, "<strong>" + shortDomain(d.domain) + "</strong><br>" +
                 signalLabel(sig) + ": " + Math.round(cov * 100) + "% of " + fmt(d.page_count) + " pages");
@@ -937,9 +956,11 @@
           .text(adoptedCount + "\u202f/\u202f" + top.length + " domains");
       });
 
-      buildLegend("legend-analytics", top.map(function (d) {
-        return { colour: domColour(d.domain), label: shortDomain(d.domain) };
-      }));
+      buildLegend("legend-analytics", [
+        { colour: "#2D6A4F", label: "Privacy policy detected" },
+        { colour: "#3B7DB5", label: "Analytics tool detected" },
+        { colour: "#E0D8CC", label: "Not detected (absent from chart)" }
+      ]);
     });
   };
 
@@ -1065,9 +1086,18 @@
       var outerR = W / 2 - 80, innerR = outerR - 20;
 
       d3.select("#viz-chord").selectAll("*").remove();
-      var svg = d3.select("#viz-chord").append("svg")
-        .attr("width", W).attr("height", H)
-        .append("g").attr("transform", "translate(" + W / 2 + "," + H / 2 + ")");
+      var outerSvg = d3.select("#viz-chord").append("svg").attr("width", W).attr("height", H);
+
+      // `zoomG` receives the d3.zoom transform; `svg` is the chord's own
+      // centring group nested inside it so the two transforms compose cleanly.
+      var zoomG = outerSvg.append("g");
+      var svg = zoomG.append("g").attr("transform", "translate(" + W / 2 + "," + H / 2 + ")");
+
+      // Full scroll / drag / pinch zoom — the chord has no click handlers.
+      outerSvg.call(d3.zoom()
+        .scaleExtent([0.5, 5])
+        .on("zoom", function (evt) { zoomG.attr("transform", evt.transform); })
+      );
 
       var colour = d3.scaleOrdinal(CSJ_PALETTE);
       var chord = d3.chord().padAngle(0.04).sortSubgroups(d3.descending);
@@ -1114,15 +1144,6 @@
         .on("mouseout", hideTip);
     });
 
-    // Clear all chord cache entries so every previously-viewed top-N value
-    // is re-fetched — not just the newly-selected one.
-    document.getElementById("chord-top").addEventListener("change", function () {
-      Object.keys(cache).forEach(function (k) {
-        if (k.indexOf(API.chord) === 0) cache[k] = null;
-      });
-      rendered["chord"] = false;
-      VIZ.chord();
-    });
   };
 
   // ────────────────────────────────────────────────────────────────
@@ -1138,23 +1159,9 @@
    * in `d._target` and the current state in `d._current`.
    */
   VIZ.sunburst = function () {
-    var sel = document.getElementById("sunburst-domain");
-    var depthSel = document.getElementById("sunburst-depth");
-
-    function currentDepth() {
-      return depthSel ? depthSel.value : "2";
-    }
-
-    function fetchTree(domain) {
-      if (!domain) return;
-      var url = API.navigation + "?domain=" + encodeURIComponent(domain) + "&depth=" + currentDepth();
-      fetchJSON(url).then(function (navData) {
-        renderSunburst(navData.tree);
-      });
-    }
-
     fetchJSON(API.navigation).then(function (data) {
       hideLoading("loading-sunburst");
+      var sel = document.getElementById("sunburst-domain");
       (data.domains || []).forEach(function (d) {
         var opt = document.createElement("option");
         opt.value = d.domain || d;
@@ -1162,14 +1169,16 @@
         sel.appendChild(opt);
       });
 
-      sel.addEventListener("change", function () { fetchTree(this.value); });
-      if (depthSel) {
-        depthSel.addEventListener("change", function () { fetchTree(sel.value); });
-      }
+      sel.addEventListener("change", function () {
+        if (!this.value) return;
+        fetchJSON(API.navigation + "?domain=" + encodeURIComponent(this.value)).then(function (navData) {
+          renderSunburst(navData.tree);
+        });
+      });
 
       if (data.domains && data.domains.length) {
         sel.value = data.domains[0].domain || data.domains[0];
-        fetchTree(sel.value);
+        sel.dispatchEvent(new Event("change"));
       }
     });
 
@@ -1379,6 +1388,12 @@
           return name.length > maxLen ? name.slice(0, maxLen - 1) + "…" : name;
         });
 
+      // Raise the centre circle and text above all arc paths so that
+      // after zoom (when the innermost arc animates to y0=0, covering the
+      // centre) pointer events still reach the centre circle.
+      centreCircle.raise();
+      centreG.raise();
+
       updateBreadcrumbs(root, zoomTo);
 
       /* ---- Zoom ---- */
@@ -1461,8 +1476,11 @@
             return d._target.x1 - d._target.x0 > 0.001 ? 1 : 0;
           });
 
+        // Use target._target.y1 (outer edge of the zoomed node's arc) as the
+        // centre circle radius — this matches the inner boundary of the first
+        // visible ring so the disc fills the hole without any gap.
         centreCircle.attr("r", function () {
-          return target.depth === 0 ? (root.y1 || R * 0.18) : target._target ? target._target.y0 || R * 0.18 : R * 0.18;
+          return target.depth === 0 ? (root.y1 || R * 0.18) : target._target ? target._target.y1 || R * 0.18 : R * 0.18;
         });
       }
     }
@@ -1752,128 +1770,6 @@
   };
 
   // ────────────────────────────────────────────────────────────────
-  // 10. Sankey — Cross-Domain Journey Flow
-  // ────────────────────────────────────────────────────────────────
-
-  /**
-   * Left-to-right Sankey diagram showing the heaviest cross-domain
-   * link flows.  Because d3-sankey requires an acyclic graph,
-   * source and target nodes are duplicated into separate columns
-   * (so domain X can appear on both sides if it links and is
-   * linked-to).  The "top N" slider controls how many links to show.
-   */
-  VIZ.sankey = function () {
-    fetchJSON(API.graph).then(function (data) {
-      hideLoading("loading-sankey");
-      var topN = parseInt(document.getElementById("sankey-count").value) || 25;
-
-      // After the force simulation in VIZ.network has run, link
-      // source/target may have been mutated from plain id strings
-      // to full node objects — normalise back to id strings.
-      var rawLinks = data.links.map(function (l) {
-        return {
-          source: l.source.id || l.source,
-          target: l.target.id || l.target,
-          weight: l.weight
-        };
-      });
-
-      var topLinks = rawLinks.slice().sort(function (a, b) { return b.weight - a.weight; }).slice(0, topN);
-      if (!topLinks.length) return;
-
-      // Duplicate each domain into "from:" and "to:" node pools so
-      // d3-sankey never encounters a cycle (same domain linking itself).
-      var srcSeen = {}, tgtSeen = {};
-      var sourceIds = [], targetIds = [];
-      topLinks.forEach(function (l) {
-        if (!srcSeen[l.source]) { sourceIds.push(l.source); srcSeen[l.source] = true; }
-        if (!tgtSeen[l.target]) { targetIds.push(l.target); tgtSeen[l.target] = true; }
-      });
-
-      var sankeyNodes = [];
-      var nodeIdx = {};
-      var idx = 0;
-      sourceIds.forEach(function (id) {
-        sankeyNodes.push({ name: id, side: "source" });
-        nodeIdx["from:" + id] = idx++;
-      });
-      targetIds.forEach(function (id) {
-        sankeyNodes.push({ name: id, side: "target" });
-        nodeIdx["to:" + id] = idx++;
-      });
-
-      var sankeyLinks = topLinks.map(function (l) {
-        return {
-          source: nodeIdx["from:" + l.source],
-          target: nodeIdx["to:" + l.target],
-          value: l.weight
-        };
-      }).filter(function (l) {
-        return l.source !== undefined && l.target !== undefined && l.source !== l.target;
-      });
-
-      if (!sankeyLinks.length) return;
-
-      var sz = vizSize("viz-sankey");
-      var tallestCol = Math.max(sourceIds.length, targetIds.length);
-      var W = sz.w, H = Math.max(400, tallestCol * 28);
-      var margin = { top: 10, right: 160, bottom: 10, left: 160 };
-
-      d3.select("#viz-sankey").selectAll("*").remove();
-      var svg = d3.select("#viz-sankey").append("svg").attr("width", W).attr("height", H);
-
-      var sankey = d3.sankey()
-        .nodeWidth(16)
-        .nodePadding(12)
-        .extent([[margin.left, margin.top], [W - margin.right, H - margin.bottom]]);
-
-      var graph = sankey({
-        nodes: sankeyNodes.map(function (d) { return Object.assign({}, d); }),
-        links: sankeyLinks.map(function (d) { return Object.assign({}, d); })
-      });
-
-      var allDomains = Array.from(new Set(sourceIds.concat(targetIds)));
-      var domColour = d3.scaleOrdinal().domain(allDomains).range(CSJ_PALETTE);
-
-      svg.append("g").selectAll("rect").data(graph.nodes).enter().append("rect")
-        .attr("x", function (d) { return d.x0; })
-        .attr("y", function (d) { return d.y0; })
-        .attr("width", function (d) { return d.x1 - d.x0; })
-        .attr("height", function (d) { return Math.max(1, d.y1 - d.y0); })
-        .attr("fill", function (d) { return domColour(d.name); })
-        .on("mouseover", function (evt, d) {
-          showTip(evt, "<strong>" + shortDomain(d.name) + "</strong><br>" +
-            (d.side === "source" ? "Outgoing links" : "Incoming links"));
-        })
-        .on("mouseout", hideTip);
-
-      svg.append("g").selectAll("text").data(graph.nodes).enter().append("text")
-        .attr("x", function (d) { return d.x0 < W / 2 ? d.x0 - 6 : d.x1 + 6; })
-        .attr("y", function (d) { return (d.y0 + d.y1) / 2; })
-        .attr("dy", ".35em")
-        .attr("text-anchor", function (d) { return d.x0 < W / 2 ? "end" : "start"; })
-        .attr("font-size", 10).attr("fill", "#1A1A1A")
-        .text(function (d) { return shortDomain(d.name); });
-
-      svg.append("g").attr("fill", "none").selectAll("path").data(graph.links).enter().append("path")
-        .attr("d", d3.sankeyLinkHorizontal())
-        .attr("stroke", function (d) { return domColour(d.source.name); })
-        .attr("stroke-opacity", 0.4)
-        .attr("stroke-width", function (d) { return Math.max(1, d.width); })
-        .on("mouseover", function (evt, d) {
-          d3.select(this).attr("stroke-opacity", 0.7);
-          showTip(evt, shortDomain(d.source.name) + " → " + shortDomain(d.target.name) + ": " + fmt(d.value) + " links");
-        })
-        .on("mouseout", function () { d3.select(this).attr("stroke-opacity", 0.4); hideTip(); });
-    });
-
-    document.getElementById("sankey-count").addEventListener("change", function () {
-      rendered["sankey"] = false;
-      VIZ.sankey();
-    });
-  };
-
-  // ────────────────────────────────────────────────────────────────
   // 11. Parallel Coordinates
   // ────────────────────────────────────────────────────────────────
 
@@ -1884,141 +1780,77 @@
    * profile across all dimensions.
    */
   VIZ.parallel = function () {
-    var dims = [
-      { key: "page_count",              label: "Pages" },
-      { key: "avg_word_count",          label: "Avg Words" },
-      { key: "avg_readability",         label: "Readability" },
-      { key: "error_count",             label: "Errors" },
-      { key: "total_assets",            label: "Assets" },
-      { key: "avg_internal_links",      label: "Avg Internal Links" },
-      { key: "avg_external_links",      label: "Avg External Links" },
-      { key: "avg_extraction_coverage", label: "Metadata Quality %" },
-      { key: "has_json_ld_pct",         label: "JSON-LD %" },
-      { key: "has_microdata_pct",       label: "Microdata %" }
-    ];
-
-    var xSel = document.getElementById("parallel-x-axis");
-    var ySel = document.getElementById("parallel-y-axis");
-
-    dims.forEach(function (d, i) {
-      var ox = document.createElement("option");
-      ox.value = d.key; ox.textContent = d.label;
-      if (i === 0) ox.selected = true;
-      xSel.appendChild(ox);
-
-      var oy = document.createElement("option");
-      oy.value = d.key; oy.textContent = d.label;
-      if (i === 7) oy.selected = true;
-      ySel.appendChild(oy);
-    });
-
     fetchJSON(API.domains).then(function (data) {
       hideLoading("loading-parallel");
       _assignOwnerColours(data);
-      var top = data.filter(function (d) { return d.page_count >= 2; }).slice(0, 120);
+      var top = data.filter(function (d) { return d.page_count >= 5; }).slice(0, 60);
       if (!top.length) return;
 
-      var maxPages = d3.max(top, function (d) { return d.page_count || 1; });
-      var rScale = d3.scaleSqrt().domain([0, maxPages]).range([4, 20]);
+      var dims = [
+        { key: "page_count", label: "Pages" },
+        { key: "avg_word_count", label: "Avg Words" },
+        { key: "avg_readability", label: "Readability" },
+        { key: "error_count", label: "Errors" },
+        { key: "total_assets", label: "Assets" },
+        { key: "avg_internal_links", label: "Int Links" },
+        { key: "avg_external_links", label: "Ext Links" },
+        { key: "avg_extraction_coverage", label: "Coverage %" },
+        { key: "has_json_ld_pct", label: "JSON-LD %" },
+        { key: "has_microdata_pct", label: "Microdata %" }
+      ];
 
-      function draw() {
-        d3.select("#viz-parallel").selectAll("*").remove();
+      var margin = { top: 30, right: 30, bottom: 20, left: 30 };
+      var sz = vizSize("viz-parallel");
+      var W = sz.w, H = 450;
+      var innerW = W - margin.left - margin.right;
+      var innerH = H - margin.top - margin.bottom;
 
-        var xKey = xSel.value;
-        var yKey = ySel.value;
-        var xDim = dims.find(function (d) { return d.key === xKey; }) || dims[0];
-        var yDim = dims.find(function (d) { return d.key === yKey; }) || dims[7];
+      var x = d3.scalePoint().domain(dims.map(function (d) { return d.key; })).range([0, innerW]);
+      var y = {};
+      dims.forEach(function (dim) {
+        var ext = d3.extent(top, function (d) { return d[dim.key] || 0; });
+        if (ext[0] === ext[1]) ext[1] = ext[0] + 1;
+        y[dim.key] = d3.scaleLinear().domain(ext).range([innerH, 0]);
+      });
 
-        var sz = vizSize("viz-parallel");
-        var margin = { top: 20, right: 24, bottom: 50, left: 64 };
-        var W = sz.w, H = sz.h;
-        var iW = W - margin.left - margin.right;
-        var iH = H - margin.top - margin.bottom;
+      var svg = d3.select("#viz-parallel").append("svg").attr("width", W).attr("height", H);
+      var g = svg.append("g").attr("transform", "translate(" + margin.left + "," + margin.top + ")");
 
-        var xExt = d3.extent(top, function (d) { return d[xKey] || 0; });
-        var yExt = d3.extent(top, function (d) { return d[yKey] || 0; });
-        var xPad = ((xExt[1] - xExt[0]) || 1) * 0.07;
-        var yPad = ((yExt[1] - yExt[0]) || 1) * 0.07;
-
-        var x = d3.scaleLinear().domain([Math.max(0, xExt[0] - xPad), xExt[1] + xPad]).range([0, iW]).nice();
-        var y = d3.scaleLinear().domain([Math.max(0, yExt[0] - yPad), yExt[1] + yPad]).range([iH, 0]).nice();
-
-        var svg = d3.select("#viz-parallel").append("svg").attr("width", W).attr("height", H);
-        var g = svg.append("g").attr("transform", "translate(" + margin.left + "," + margin.top + ")");
-
-        g.append("g")
-          .attr("transform", "translate(0," + iH + ")")
-          .call(d3.axisBottom(x).ticks(6).tickSize(-iH).tickFormat(""))
-          .call(function (a) {
-            a.select(".domain").remove();
-            a.selectAll(".tick line").attr("stroke", "#E0D8CC").attr("stroke-dasharray", "3,3");
-          });
-
-        g.append("g")
-          .call(d3.axisLeft(y).ticks(5).tickSize(-iW).tickFormat(""))
-          .call(function (a) {
-            a.select(".domain").remove();
-            a.selectAll(".tick line").attr("stroke", "#E0D8CC").attr("stroke-dasharray", "3,3");
-          });
-
-        g.append("g")
-          .attr("transform", "translate(0," + iH + ")")
-          .call(d3.axisBottom(x).ticks(6).tickFormat(d3.format("~s")))
-          .call(function (a) {
-            a.select(".domain").attr("stroke", "#C8C0B4");
-            a.selectAll("text").attr("font-size", 11).attr("fill", "#5A5246");
-          });
-
-        g.append("g")
-          .call(d3.axisLeft(y).ticks(5).tickFormat(d3.format("~s")))
-          .call(function (a) {
-            a.select(".domain").attr("stroke", "#C8C0B4");
-            a.selectAll("text").attr("font-size", 11).attr("fill", "#5A5246");
-          });
-
-        g.append("text")
-          .attr("x", iW / 2).attr("y", iH + 40)
-          .attr("text-anchor", "middle")
-          .attr("font-size", 12).attr("font-weight", 600).attr("fill", "#1A1A1A")
-          .text(xDim.label);
-
-        svg.append("text")
-          .attr("transform", "rotate(-90)")
-          .attr("x", -(margin.top + iH / 2)).attr("y", 14)
-          .attr("text-anchor", "middle")
-          .attr("font-size", 12).attr("font-weight", 600).attr("fill", "#1A1A1A")
-          .text(yDim.label);
-
-        var sorted = top.slice().sort(function (a, b) { return (b.page_count || 0) - (a.page_count || 0); });
-
-        g.selectAll(".sc-dot").data(sorted).enter().append("circle")
-          .attr("class", "sc-dot")
-          .attr("cx", function (d) { return x(d[xKey] || 0); })
-          .attr("cy", function (d) { return y(d[yKey] || 0); })
-          .attr("r", function (d) { return rScale(d.page_count || 1); })
-          .attr("fill", function (d) { return ownerColour(d.ownership); })
-          .attr("fill-opacity", 0.65)
-          .attr("stroke", function (d) { return ownerColour(d.ownership); })
-          .attr("stroke-width", 1).attr("stroke-opacity", 0.5)
-          .on("mouseover", function (evt, d) {
-            d3.select(this).raise()
-              .attr("fill-opacity", 1).attr("stroke-width", 2).attr("stroke-opacity", 1);
-            showTip(evt,
-              "<strong>" + shortDomain(d.domain) + "</strong> (" + d.ownership + ")<br>" +
-              xDim.label + ": " + fmt(+(d[xKey] || 0).toFixed(1)) + "<br>" +
-              yDim.label + ": " + fmt(+(d[yKey] || 0).toFixed(1)) + "<br>" +
-              "Pages: " + fmt(d.page_count));
-          })
-          .on("mouseout", function () {
-            d3.select(this)
-              .attr("fill-opacity", 0.65).attr("stroke-width", 1).attr("stroke-opacity", 0.5);
-            hideTip();
-          });
+      /**
+       * Generate an SVG path string for a domain's polyline across all axes.
+       * @param {Object} d - Domain summary object.
+       * @returns {string} SVG path.
+       */
+      function path(d) {
+        return d3.line()(dims.map(function (dim) { return [x(dim.key), y[dim.key](d[dim.key] || 0)]; }));
       }
 
-      draw();
-      xSel.addEventListener("change", draw);
-      ySel.addEventListener("change", draw);
+      g.selectAll(".pc-line").data(top).enter().append("path")
+        .attr("class", "pc-line")
+        .attr("d", path)
+        .attr("fill", "none")
+        .attr("stroke", function (d) { return ownerColour(d.ownership); })
+        .attr("stroke-opacity", 0.45)
+        .attr("stroke-width", 1.5)
+        .on("mouseover", function (evt, d) {
+          g.selectAll(".pc-line").attr("stroke-opacity", 0.08);
+          d3.select(this).raise().attr("stroke-opacity", 1).attr("stroke-width", 3);
+          showTip(evt, "<strong>" + shortDomain(d.domain) + "</strong> (" + d.ownership + ")<br>" +
+            dims.map(function (dim) { return dim.label + ": " + (d[dim.key] || 0); }).join("<br>"));
+        })
+        .on("mouseout", function () {
+          g.selectAll(".pc-line").attr("stroke-opacity", 0.45).attr("stroke-width", 1.5);
+          hideTip();
+        });
+
+      dims.forEach(function (dim) {
+        var axisG = g.append("g").attr("transform", "translate(" + x(dim.key) + ",0)");
+        axisG.call(d3.axisLeft(y[dim.key]).ticks(5).tickFormat(d3.format("~s")));
+        axisG.append("text")
+          .attr("y", -12).attr("text-anchor", "middle")
+          .attr("font-size", 11).attr("font-weight", 600).attr("fill", "#1A1A1A")
+          .text(dim.label);
+      });
 
       buildLegend("legend-parallel", Object.keys(OWNER_COLOURS).map(function (k) {
         return { label: k, colour: OWNER_COLOURS[k] };
@@ -2173,13 +2005,49 @@
         var focus = root;  // Currently zoomed-into node.
         var view;          // Current [cx, cy, diameter] of the zoom viewport.
 
+        // Declared here so the SVG click handler can reference it before the
+        // zoom behaviour is instantiated below.
+        var scrollZoom;
+
         var svg = d3.select("#viz-bubble").append("svg")
           .attr("width", W).attr("height", H)
           .attr("viewBox", [-W / 2, -H / 2, W, H])
           .style("background", "var(--csj-paper)")
-          .on("click", function (evt) { zoom(evt, root); });
+          .on("click", function (evt) {
+            zoom(evt, root);
+            // Also reset any peripheral scroll/pinch zoom applied on top.
+            if (scrollZoom) {
+              svg.transition().duration(650).call(scrollZoom.transform, d3.zoomIdentity);
+            }
+          });
 
         var g = svg.append("g");
+
+        // ── Scroll-wheel / two-finger pinch zoom ──────────────────────────
+        // This overlays the hierarchy click-zoom without replacing it.
+        // Mouse-button clicks are excluded from the filter so the drill-down
+        // behaviour still works; scroll and touch (pinch) are allowed.
+        scrollZoom = d3.zoom()
+          .scaleExtent([0.25, 10])
+          .filter(function (event) {
+            return event.type === "wheel" ||
+                   event.type === "touchstart" ||
+                   event.type === "touchmove" ||
+                   event.type === "touchend";
+          })
+          .on("zoom", function (event) {
+            g.attr("transform", event.transform);
+            // Toggle a class so CSS can swap the cursor to indicate a
+            // scrolled/pinched state is active.
+            var isIdentity = (event.transform.k === 1 &&
+                              event.transform.x === 0 &&
+                              event.transform.y === 0);
+            svg.classed("scroll-zoomed", !isIdentity);
+          });
+
+        // Apply zoom behaviour; remove the built-in dblclick handler so it
+        // does not conflict with the hierarchy navigation on the SVG.
+        svg.call(scrollZoom).on("dblclick.zoom", null);
 
         var circles = g.selectAll("circle")
           .data(root.descendants())
@@ -2561,45 +2429,181 @@
   // GLOBAL FILTER SYSTEM
   // ────────────────────────────────────────────────────────────────
   //
-  // The filter bar (CMS, content kind, schema format, min coverage)
-  // sits above the tab row.  When any filter value changes:
-  //  1. `activeFilters` is rebuilt from the dropdowns.
-  //  2. `cache` and `rendered` are both cleared so every panel
-  //     re-fetches with the new query-string on next activation.
+  // Four custom multi-select widgets replace the old single-select
+  // dropdowns.  Each widget manages its own Set of selected values
+  // and calls onFilterChange() when the selection changes.
+  //
+  // The filter bar also has a plain number input for min_coverage.
+  //
+  // When any filter changes:
+  //  1. `activeFilters` is rebuilt from the widget selections.
+  //  2. `cache` and `rendered` are cleared so every panel
+  //     re-fetches with the updated query-string on next activation.
   //  3. The currently visible panel is re-rendered immediately.
   //
-  // The `fetchJSON` function is monkey-patched below to transparently
-  // append filter params to every API call, so individual VIZ
-  // functions don't need to know about filters at all.
+  // `fetchJSON` is monkey-patched to transparently append filter
+  // params to every API call — individual VIZ functions are unaware.
 
-  /** Current filter state; keys match viz_api query-string params. */
+  /** Current filter state; values are comma-separated strings. */
   var activeFilters = {};
   var filterOptionsData = null;
 
-  // Apply pre-selected run from the URL (set by the legacy redirect or
-  // the runs list page link).
+  /**
+   * Build a custom multi-select widget backed by a Set.
+   *
+   * @param {string} containerId  — id of the `.multi-select` wrapper div.
+   * @param {string} placeholder  — button label when nothing is selected.
+   * @returns {{ getValues, setValues, clear, populate }}
+   */
+  function makeMultiSelect(containerId, placeholder) {
+    var container = document.getElementById(containerId);
+    var btn       = container.querySelector(".ms-btn");
+    var label     = container.querySelector(".ms-label");
+    var panel     = container.querySelector(".ms-panel");
+    var selected  = new Set();
+
+    function _updateBtn() {
+      var existing = btn.querySelector(".ms-count");
+      if (selected.size === 0) {
+        label.textContent = placeholder;
+        if (existing) existing.remove();
+      } else {
+        if (selected.size === 1) {
+          var val = Array.from(selected)[0];
+          var found = null;
+          panel.querySelectorAll(".ms-item").forEach(function (el) {
+            if (el.dataset.value === val) found = el;
+          });
+          label.textContent = found ? found.querySelector(".ms-item-text").textContent : val;
+        } else {
+          label.textContent = selected.size + " selected";
+        }
+        var cnt = existing;
+        if (!cnt) {
+          cnt = document.createElement("span");
+          cnt.className = "ms-count";
+          btn.insertBefore(cnt, btn.querySelector(".ms-arrow"));
+        }
+        cnt.textContent = selected.size;
+      }
+    }
+
+    function getValues() { return Array.from(selected); }
+
+    function setValues(vals) {
+      selected = new Set(vals);
+      panel.querySelectorAll("input[type='checkbox']").forEach(function (cb) {
+        cb.checked = selected.has(cb.value);
+      });
+      _updateBtn();
+    }
+
+    function clear() { setValues([]); }
+
+    function populate(options) {
+      var prev = Array.from(selected);
+      panel.innerHTML = "";
+      options.forEach(function (opt) {
+        var lbl = document.createElement("label");
+        lbl.className = "ms-item";
+        lbl.dataset.value = opt.value;
+        var cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.value = opt.value;
+        cb.checked = selected.has(opt.value);
+        cb.addEventListener("change", function () {
+          if (this.checked) selected.add(this.value);
+          else selected.delete(this.value);
+          _updateBtn();
+          onFilterChange();
+        });
+        var span = document.createElement("span");
+        span.className = "ms-item-text";
+        span.textContent = opt.label;
+        lbl.appendChild(cb);
+        lbl.appendChild(span);
+        panel.appendChild(lbl);
+      });
+      // Restore only values that still exist in the new options.
+      var validVals = new Set(options.map(function (o) { return o.value; }));
+      selected = new Set(prev.filter(function (v) { return validVals.has(v); }));
+      panel.querySelectorAll("input").forEach(function (cb) {
+        cb.checked = selected.has(cb.value);
+      });
+      _updateBtn();
+    }
+
+    // Prevent clicks inside the panel from reaching the document close handler.
+    panel.addEventListener("click", function (e) {
+      e.stopPropagation();
+    });
+
+    // Toggle panel open/close on button click.
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var isOpen = panel.style.display !== "none";
+      document.querySelectorAll(".ms-panel").forEach(function (p) {
+        p.style.display = "none";
+        p.closest(".multi-select").querySelector(".ms-btn").classList.remove("ms-open");
+      });
+      if (!isOpen) {
+        panel.style.display = "";
+        btn.classList.add("ms-open");
+      }
+    });
+
+    _updateBtn();
+    return { getValues: getValues, setValues: setValues, clear: clear, populate: populate };
+  }
+
+  // Close all panels when clicking outside.
+  document.addEventListener("click", function () {
+    document.querySelectorAll(".ms-panel").forEach(function (p) {
+      p.style.display = "none";
+      p.closest(".multi-select").querySelector(".ms-btn").classList.remove("ms-open");
+    });
+  });
+
+  // Instantiate the four multi-select widgets.
+  var msRuns   = makeMultiSelect("ms-runs",   "All runs");
+  var msCms    = makeMultiSelect("ms-cms",    "All platforms");
+  var msKind   = makeMultiSelect("ms-kind",   "All types");
+  var msSchema = makeMultiSelect("ms-schema", "All formats");
+
+  // Populate runs from the server-rendered list embedded in the page.
+  msRuns.populate((window.ECO_RUNS_LIST || []).map(function (r) {
+    return { value: r.name, label: r.label + " (" + r.page_count + " pages)" };
+  }));
+
+  // Schema options are static.
+  msSchema.populate([
+    { value: "json_ld",    label: "JSON-LD" },
+    { value: "microdata",  label: "Microdata" },
+    { value: "rdfa",       label: "RDFa" }
+  ]);
+
+  // Apply pre-selected run(s) from the URL query string.
   if (window.ECO_PRESELECTED_RUNS) {
     activeFilters.runs = window.ECO_PRESELECTED_RUNS;
+    msRuns.setValues(activeFilters.runs.split(",").map(function (s) { return s.trim(); }));
   }
 
   /**
    * Serialise `activeFilters` into a URL query string.
-   * @returns {string} e.g. "?runs=run_2025-01-01&cms=WordPress", or "".
+   * @returns {string}
    */
   function buildFilterQuery() {
     var parts = [];
-    if (activeFilters.runs) parts.push("runs=" + encodeURIComponent(activeFilters.runs));
-    if (activeFilters.cms) parts.push("cms=" + encodeURIComponent(activeFilters.cms));
-    if (activeFilters.content_kinds) parts.push("content_kinds=" + encodeURIComponent(activeFilters.content_kinds));
+    if (activeFilters.runs)           parts.push("runs="           + encodeURIComponent(activeFilters.runs));
+    if (activeFilters.cms)            parts.push("cms="            + encodeURIComponent(activeFilters.cms));
+    if (activeFilters.content_kinds)  parts.push("content_kinds="  + encodeURIComponent(activeFilters.content_kinds));
     if (activeFilters.schema_formats) parts.push("schema_formats=" + encodeURIComponent(activeFilters.schema_formats));
-    if (activeFilters.min_coverage) parts.push("min_coverage=" + activeFilters.min_coverage);
+    if (activeFilters.min_coverage)   parts.push("min_coverage="   + activeFilters.min_coverage);
     return parts.length ? "?" + parts.join("&") : "";
   }
 
   /**
-   * Append filter query-string params to a URL, respecting whether
-   * the URL already contains a "?".
-   *
+   * Append filter params to a URL, respecting existing query strings.
    * @param {string} url
    * @returns {string}
    */
@@ -2609,8 +2613,7 @@
     return url + (url.indexOf("?") >= 0 ? "&" + q.substring(1) : q);
   }
 
-  // Replace the module-level `fetchJSON` with a wrapper that injects
-  // filter params before hitting the network / cache.
+  // Monkey-patch fetchJSON to inject filter params transparently.
   var _origFetchJSON = fetchJSON;
   fetchJSON = function (url) {
     var filtered = addFilterParam(url);
@@ -2619,25 +2622,25 @@
   };
 
   /**
-   * Read current filter dropdown values, rebuild `activeFilters`,
-   * flush the cache, and re-render the active panel.
+   * Read all widget selections, rebuild `activeFilters`, flush
+   * the cache, and re-render the active panel.
    */
   function onFilterChange() {
-    var runs = document.getElementById("filter-runs").value;
-    var cms = document.getElementById("filter-cms").value;
-    var kind = document.getElementById("filter-kind").value;
-    var schema = document.getElementById("filter-schema").value;
-    var cov = document.getElementById("filter-coverage").value;
+    var runs   = msRuns.getValues().join(",");
+    var cms    = msCms.getValues().join(",");
+    var kind   = msKind.getValues().join(",");
+    var schema = msSchema.getValues().join(",");
+    var cov    = document.getElementById("filter-coverage").value;
 
     activeFilters = {};
-    if (runs) activeFilters.runs = runs;
-    if (cms) activeFilters.cms = cms;
-    if (kind) activeFilters.content_kinds = kind;
-    if (schema) activeFilters.schema_formats = schema;
-    if (cov && parseFloat(cov) > 0) activeFilters.min_coverage = cov;
+    if (runs)                          activeFilters.runs           = runs;
+    if (cms)                           activeFilters.cms            = cms;
+    if (kind)                          activeFilters.content_kinds  = kind;
+    if (schema)                        activeFilters.schema_formats = schema;
+    if (cov && parseFloat(cov) > 0)    activeFilters.min_coverage   = cov;
 
     var count = Object.keys(activeFilters).length;
-    var badge = document.getElementById("filterCount");
+    var badge    = document.getElementById("filterCount");
     var clearBtn = document.getElementById("filterClearAll");
     if (count > 0) {
       badge.textContent = count;
@@ -2656,55 +2659,76 @@
     if (activePanel) renderPanel(activePanel.dataset.panel);
   }
 
-  /** Render removable chip badges below the filter bar for each active filter. */
+  /** Render one removable chip per individual active filter value. */
   function updateFilterChips() {
-    var el = document.getElementById("filterChips");
+    var el      = document.getElementById("filterChips");
+    var section = document.getElementById("filterAppliedSection");
     var chips = [];
+
     if (activeFilters.runs) {
-      var runLabel = document.getElementById("filter-runs");
-      var runText = runLabel.options[runLabel.selectedIndex] ? runLabel.options[runLabel.selectedIndex].text : activeFilters.runs;
-      chips.push({ key: "runs", label: "Run: " + runText });
+      activeFilters.runs.split(",").forEach(function (n) {
+        var r = (window.ECO_RUNS_LIST || []).find(function (x) { return x.name === n; });
+        chips.push({ key: "runs", value: n, label: "Run: " + (r ? r.label : n) });
+      });
     }
-    if (activeFilters.cms) chips.push({ key: "cms", label: "CMS: " + activeFilters.cms });
-    if (activeFilters.content_kinds) chips.push({ key: "content_kinds", label: "Kind: " + activeFilters.content_kinds });
-    if (activeFilters.schema_formats) chips.push({ key: "schema_formats", label: "Schema: " + activeFilters.schema_formats });
-    if (activeFilters.min_coverage) chips.push({ key: "min_coverage", label: "Metadata quality \u2265 " + activeFilters.min_coverage + "%" });
+    if (activeFilters.cms) {
+      activeFilters.cms.split(",").forEach(function (v) {
+        chips.push({ key: "cms", value: v, label: "CMS: " + v });
+      });
+    }
+    if (activeFilters.content_kinds) {
+      activeFilters.content_kinds.split(",").forEach(function (v) {
+        chips.push({ key: "content_kinds", value: v, label: "Kind: " + v });
+      });
+    }
+    if (activeFilters.schema_formats) {
+      activeFilters.schema_formats.split(",").forEach(function (v) {
+        chips.push({ key: "schema_formats", value: v, label: "Schema: " + v });
+      });
+    }
+    if (activeFilters.min_coverage) {
+      chips.push({ key: "min_coverage", value: "", label: "Coverage \u2265 " + activeFilters.min_coverage + "%" });
+    }
+
+    section.style.display = chips.length > 0 ? "" : "none";
     el.innerHTML = chips.map(function (c) {
       return '<span class="filter-chip">' + c.label +
-        ' <span class="filter-chip-x" data-key="' + c.key + '">&times;</span></span>';
+        ' <span class="filter-chip-x" data-key="' + c.key + '" data-value="' + c.value.replace(/"/g, "&quot;") + '">&times;</span></span>';
     }).join("");
     el.querySelectorAll(".filter-chip-x").forEach(function (x) {
       x.addEventListener("click", function () {
         var key = this.dataset.key;
-        if (key === "runs") document.getElementById("filter-runs").value = "";
-        if (key === "cms") document.getElementById("filter-cms").value = "";
-        if (key === "content_kinds") document.getElementById("filter-kind").value = "";
-        if (key === "schema_formats") document.getElementById("filter-schema").value = "";
-        if (key === "min_coverage") document.getElementById("filter-coverage").value = "";
+        var val = this.dataset.value;
+        if (key === "runs") {
+          msRuns.setValues(msRuns.getValues().filter(function (v) { return v !== val; }));
+        } else if (key === "cms") {
+          msCms.setValues(msCms.getValues().filter(function (v) { return v !== val; }));
+        } else if (key === "content_kinds") {
+          msKind.setValues(msKind.getValues().filter(function (v) { return v !== val; }));
+        } else if (key === "schema_formats") {
+          msSchema.setValues(msSchema.getValues().filter(function (v) { return v !== val; }));
+        } else if (key === "min_coverage") {
+          document.getElementById("filter-coverage").value = "";
+        }
         onFilterChange();
       });
     });
   }
 
   // ── Filter event wiring ───────────────────────────────────────
-  document.getElementById("filter-runs").addEventListener("change", onFilterChange);
-  document.getElementById("filter-cms").addEventListener("change", onFilterChange);
-  document.getElementById("filter-kind").addEventListener("change", onFilterChange);
-  document.getElementById("filter-schema").addEventListener("change", onFilterChange);
   document.getElementById("filter-coverage").addEventListener("change", onFilterChange);
   document.getElementById("filterClearAll").addEventListener("click", function () {
-    document.getElementById("filter-runs").value = "";
-    document.getElementById("filter-cms").value = "";
-    document.getElementById("filter-kind").value = "";
-    document.getElementById("filter-schema").value = "";
+    msRuns.clear();
+    msCms.clear();
+    msKind.clear();
+    msSchema.clear();
     document.getElementById("filter-coverage").value = "";
     onFilterChange();
   });
 
   /**
-   * Reload the CMS and content-kind dropdowns from the filter_options
-   * endpoint.  Called on initial load and whenever the runs filter changes
-   * so the dropdown options reflect the selected run(s).
+   * Reload CMS and content-kind options from the filter_options
+   * endpoint, preserving current selections where still valid.
    */
   function reloadFilterOptions() {
     var url = API.filter_options;
@@ -2713,29 +2737,15 @@
     }
     d3.json(url).then(function (opts) {
       filterOptionsData = opts;
-      var cmsSel = document.getElementById("filter-cms");
-      var prevCms = cmsSel.value;
-      cmsSel.innerHTML = '<option value="">All platforms</option>';
-      (opts.cms_values || []).forEach(function (v) {
-        var o = document.createElement("option"); o.value = v; o.text = v; cmsSel.appendChild(o);
-      });
-      cmsSel.value = prevCms;
-
-      var kindSel = document.getElementById("filter-kind");
-      var prevKind = kindSel.value;
-      kindSel.innerHTML = '<option value="">All types</option>';
-      (opts.content_kinds || []).forEach(function (v) {
-        var o = document.createElement("option"); o.value = v; o.text = v; kindSel.appendChild(o);
-      });
-      kindSel.value = prevKind;
+      msCms.populate((opts.cms_values || []).map(function (v) { return { value: v, label: v }; }));
+      msKind.populate((opts.content_kinds || []).map(function (v) { return { value: v, label: v }; }));
     });
   }
 
-  // Initial population of filter dropdowns.
+  // Initial population of CMS and kind dropdowns.
   reloadFilterOptions();
 
-  // If a run was pre-selected (via legacy URL redirect), show the
-  // active filter state on first load.
+  // Trigger initial filter state if a run was pre-selected.
   if (activeFilters.runs) {
     onFilterChange();
   }
@@ -3415,6 +3425,20 @@
       }
     });
   };
+
+  // ── One-time control listeners ──────────────────────────────────
+  // Registered here (outside VIZ functions) so they are never duplicated,
+  // regardless of how many times the corresponding VIZ function is called.
+  document.getElementById("chord-top").addEventListener("change", function () {
+    // Clear all chord cache entries so every previously-viewed top-N value
+    // is re-fetched — not just the newly-selected one.
+    Object.keys(cache).forEach(function (k) {
+      if (k.indexOf(API.chord) === 0) cache[k] = null;
+    });
+    rendered["chord"] = false;
+    d3.select("#viz-chord").selectAll("*").remove();
+    VIZ.chord();
+  });
 
   // ── Initial render ──────────────────────────────────────────────
   // The "network" tab is active by default in the HTML, so trigger

@@ -16,15 +16,10 @@
 {% set active_tab = 'runs' %}
 {% block title %}Runs — {{ project.name }} | CSJ{% endblock %}
 
-{% block subnav %}
-<div class="sub-nav">
-  <a href="{{ url_for('project_runs', slug=project.slug) }}" class="active">Runs</a>
-  <a href="{{ url_for('ecosystem.ecosystem_dashboard', slug=project.slug) }}">Ecosystem</a>
-</div>
-{% endblock %}
+{% block subnav %}{% endblock %}
 
 {% block content %}
-<h1 class="page-title">Crawl Runs</h1>
+<h1 class="page-title">{{ project.name }} — Crawl Runs</h1>
 
 {% if status.running %}
 <div class="crawl-banner">
@@ -99,8 +94,10 @@
           <td class="text-muted" style="font-size:13px;">{{ r.timestamp_label }}</td>
           <td>
             <div style="display:flex;gap:6px;flex-wrap:wrap;">
+              {% if r.status != 'completed' %}
               <a href="{{ url_for('run_config', slug=project.slug, run_name=r.name) }}" class="btn btn-sm btn-secondary">Config</a>
               <a href="{{ url_for('run_monitor', slug=project.slug, run_name=r.name) }}" class="btn btn-sm btn-secondary">Monitor</a>
+              {% endif %}
 
               {% if r.page_count|int > 0 %}
               <a href="{{ url_for('run_results', slug=project.slug, run_name=r.name) }}" class="btn btn-sm btn-secondary">Results</a>

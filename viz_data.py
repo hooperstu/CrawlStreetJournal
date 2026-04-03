@@ -8,7 +8,7 @@ tags.csv, nav_links.csv, crawl_errors.csv, assets_*.csv).  Functions in
 this module read those CSVs, apply optional cross-cutting filters, and
 return JSON-serialisable dicts / lists.  The ``viz_api`` Blueprint
 delegates to these functions and serves the results as JSON to the D3.js
-ecosystem dashboard on the front end.
+reports dashboard on the front end.
 
 All functions are pure (no side effects on disk or global state) and
 accept a *run_dirs* list so the dashboard can aggregate across one or
@@ -747,18 +747,85 @@ def aggregate_tags(
 
 # -- Navigation Hierarchy -------------------------------------------------
 
+def _build_internal_nav_tree(entries: List[Dict[str, Any]], max_depth: int) -> List[Dict[str, Any]]:
+    """Recursively group internal nav entries by URL path segments.
+
+    Each entry is a dict with keys ``name`` (nav_text), ``href``, and
+    ``segments`` (split path parts of the target URL).  Entries are
+    grouped by their path segment at each recursion level up to
+    *max_depth*; beyond that they are emitted as leaf nodes.
+
+    Args:
+        entries:   List of entry dicts produced by ``aggregate_navigation``.
+        max_depth: Maximum number of URL path segments to recurse through
+                   before emitting remaining entries as leaves.  A value
+                   of 1 groups only by the first segment (root-section
+                   level), matching the previous behaviour.
+
+    Returns:
+        List of D3-compatible node dicts (``name``, ``group``, ``children``
+        for groups; ``name``, ``href``, ``size`` for leaves).
+    """
+    def recurse(items: List[Dict[str, Any]], depth: int) -> List[Dict[str, Any]]:
+        if depth >= max_depth or not items:
+            # Emit all remaining items as leaf nodes (deduplicate by name).
+            seen: Dict[str, str] = {}
+            for item in items:
+                if item["name"] not in seen:
+                    seen[item["name"]] = item["href"]
+            return [{"name": n, "href": h, "size": 1} for n, h in sorted(seen.items())]
+
+        by_seg: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for item in items:
+            seg = item["segments"][depth] if depth < len(item["segments"]) else ""
+            by_seg[seg].append(item)
+
+        result: List[Dict[str, Any]] = []
+        for seg in sorted(by_seg):
+            group = by_seg[seg]
+            if not seg:
+                # This item's path ends here — emit as leaf(ves).
+                seen: Dict[str, str] = {}
+                for item in group:
+                    if item["name"] not in seen:
+                        seen[item["name"]] = item["href"]
+                result.extend(
+                    {"name": n, "href": h, "size": 1}
+                    for n, h in sorted(seen.items())
+                )
+            elif len(group) == 1:
+                item = group[0]
+                result.append({"name": item["name"], "href": item["href"], "size": 1})
+            else:
+                children = recurse(group, depth + 1)
+                if len(children) == 1:
+                    result.append(children[0])
+                else:
+                    result.append({
+                        "name": "/" + seg,
+                        "group": True,
+                        "children": children,
+                    })
+        return result
+
+    return recurse(entries, 0)
+
+
 def aggregate_navigation(
     run_dirs: List[str], domain: Optional[str] = None,
+    max_depth: int = 2,
     filters: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a hierarchical navigation tree from nav_links.csv.
 
     Reads ``page_url``, ``nav_text``, ``nav_href`` columns.  When
-    *domain* is supplied the tree has three levels::
+    *domain* is supplied the tree is structured as::
 
         root (source domain)
         +-- Internal Links
         |   +-- /section-a
+        |   |   +-- /sub-section   (present when max_depth > 1)
+        |   |   |   +-- Link Label ...
         |   |   +-- Link Label ...
         |   +-- /section-b
         |       +-- ...
@@ -767,15 +834,18 @@ def aggregate_navigation(
             |   +-- Link Label ...
             +-- target-domain-2
 
-    Path prefixes are the first non-empty segment of each internal URL;
-    external links are grouped by their target domain.
+    Internal links are grouped recursively by URL path segments up to
+    *max_depth* levels; external links are always grouped by target domain.
 
     Args:
-        run_dirs: Absolute paths to one or more crawl run directories.
-        domain: If supplied, return the full tree for this domain only.
-            Otherwise return a per-domain summary list.
-        filters: Not currently used (nav_links.csv lacks filter columns)
-            but accepted for API signature consistency.
+        run_dirs:  Absolute paths to one or more crawl run directories.
+        domain:    If supplied, return the full tree for this domain only.
+                   Otherwise return a per-domain summary list.
+        max_depth: How many URL path segments to recurse through for
+                   internal links (1 = section level only, 2 = section +
+                   sub-section, etc.).  Defaults to 2.
+        filters:   Not currently used (nav_links.csv lacks filter columns)
+                   but accepted for API signature consistency.
 
     Returns:
         ``{"domains": [...], "tree": {...} | None}`` — the D3 treemap /
@@ -797,7 +867,7 @@ def aggregate_navigation(
     if domain and domain in by_domain:
         items = by_domain[domain]
 
-        internal_groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        internal_entries: List[Dict[str, Any]] = []
         external_groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
 
         for text, hrefs in sorted(items.items()):
@@ -805,41 +875,32 @@ def aggregate_navigation(
             target_dom = _extract_domain(href) if href else ""
             is_external = bool(target_dom and target_dom != domain)
 
-            leaf = {
-                "name": text,
-                "href": href,
-                "external": is_external,
-                "size": len(hrefs),
-            }
-
             if is_external:
-                group_key = target_dom or "other"
-                external_groups[group_key].append(leaf)
+                external_groups[target_dom or "other"].append({
+                    "name": text,
+                    "href": href,
+                    "external": True,
+                    "size": len(hrefs),
+                })
             else:
                 parsed = urlparse(href)
                 segments = [s for s in parsed.path.strip("/").split("/") if s]
-                group_key = "/" + segments[0] if segments else "/"
-                internal_groups[group_key].append(leaf)
+                internal_entries.append({
+                    "name": text,
+                    "href": href,
+                    "segments": segments,
+                })
 
         children = []
 
-        if internal_groups:
-            int_children = []
-            for prefix in sorted(internal_groups):
-                leaves = internal_groups[prefix]
-                if len(leaves) == 1:
-                    int_children.append(leaves[0])
-                else:
-                    int_children.append({
-                        "name": prefix,
-                        "group": True,
-                        "children": sorted(leaves, key=lambda l: l["name"]),
-                    })
-            children.append({
-                "name": "Internal",
-                "group": True,
-                "children": int_children,
-            })
+        if internal_entries:
+            int_children = _build_internal_nav_tree(internal_entries, max(1, max_depth))
+            if int_children:
+                children.append({
+                    "name": "Internal",
+                    "group": True,
+                    "children": int_children,
+                })
 
         if external_groups:
             ext_children = []
