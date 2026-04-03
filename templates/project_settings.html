@@ -1,223 +1,408 @@
 {#
-  project_settings.html — Project settings: default crawl configuration,
-  export, and delete.
+  project_settings.html — Project settings with progressive disclosure.
 
+  Simple at the top (paste URLs, click go), advanced features below.
   Route: GET  /p/<slug>/settings  (project_settings)
          POST /p/<slug>/defaults  (save_project_defaults_route)
-  Context:
-    project  (dict) — active project metadata (name, slug).
-    cfg      (dict) — current defaults (keys mirror config.py constants).
 #}
 {% extends "base.html" %}
 {% set active_tab = 'settings' %}
 {% block title %}Settings — {{ project.name }} | CSJ{% endblock %}
 
 {% block content %}
-<h1 class="page-title">Settings</h1>
+<style>
+  .settings-note {
+    font-size: 13px;
+    color: var(--csj-body);
+    background: var(--csj-newsprint);
+    border-left: 3px solid var(--csj-accent);
+    padding: 10px 14px;
+    border-radius: 0 var(--radius) var(--radius) 0;
+    margin-bottom: 20px;
+  }
+  .collapse-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    user-select: none;
+    padding: 14px 0 4px;
+  }
+  .collapse-header:hover .collapse-arrow { color: var(--csj-accent); }
+  .collapse-arrow {
+    font-size: 12px;
+    color: var(--csj-body);
+    transition: transform .2s;
+  }
+  .collapse-arrow.open { transform: rotate(90deg); }
+  .collapse-body { display: none; padding-top: 12px; }
+  .collapse-body.open { display: block; }
+  .field-explain {
+    font-size: 12px;
+    color: #78716C;
+    margin-top: 2px;
+    line-height: 1.4;
+  }
+  .domain-auto-msg {
+    font-size: 13px;
+    padding: 8px 12px;
+    background: rgba(45,106,79,.08);
+    border-radius: var(--radius);
+    margin-top: 8px;
+    color: var(--csj-success);
+  }
+  .domain-auto-msg.warn {
+    background: rgba(164,36,59,.08);
+    color: var(--csj-error);
+  }
+</style>
 
-<!-- ── Default crawl configuration ─────────────────────────── -->
-<p class="text-muted" style="margin-bottom:20px;">
-  These defaults are copied into each new run. Changing them does not affect existing runs.
-</p>
+<h1 class="page-title">Settings</h1>
+<div class="settings-note">
+  These defaults are applied when you create a new run. Changing them here does not affect runs already in progress.
+</div>
 
 <form method="post" action="{{ url_for('save_project_defaults_route', slug=project.slug) }}" id="config-form">
 
-  <div class="card">
-    <div class="card-title">1. Target Sites</div>
-    <p class="form-hint" style="margin-bottom:14px;">
-      Enter one URL per line. Only hosts that match <strong>Allowed Domains</strong> will be crawled.
-      <span id="seed-count" style="margin-left:6px;font-weight:600;color:var(--csj-accent);"></span>
-    </p>
-    <div class="form-group">
-      <label class="form-label">Seed URLs</label>
-      <textarea name="seed_urls" rows="6" id="seed-urls" style="font-family:monospace;font-size:13px;">{{ cfg.get("SEED_URLS", []) | join('\n') }}</textarea>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Allowed Domains</label>
-      <div style="display:flex;gap:8px;align-items:flex-start;">
-        <textarea name="allowed_domains" rows="4" id="allowed-domains" style="font-family:monospace;font-size:13px;flex:1;">{{ cfg.get("ALLOWED_DOMAINS", []) | join('\n') }}</textarea>
-        <button type="button" class="btn btn-sm btn-secondary" id="btn-extract-domains">Extract domains</button>
-      </div>
-      <span id="extract-msg" style="font-size:13px;margin-top:4px;display:inline-block;"></span>
-      <div class="coverage-panel" id="coverage-panel" style="display:none;">
-        <div class="coverage-title">Seed Coverage Check</div>
-        <div id="coverage-ok" style="color:var(--csj-success);display:none;">All seed domains are covered by the allowed list.</div>
-        <div id="coverage-warn" style="display:none;">
-          <span style="color:var(--csj-error);font-weight:600;">Uncovered seed hosts:</span>
-          <ul id="coverage-list"></ul>
-        </div>
-      </div>
-    </div>
+<!-- ════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 1: WHAT TO CRAWL (always visible, the primary task)    -->
+<!-- ════════════════════════════════════════════════════════════════ -->
+
+<div class="card">
+  <div class="card-title">What to crawl</div>
+
+  <div class="form-group">
+    <label class="form-label">
+      Starting URLs
+      <span id="seed-count" style="font-weight:400;color:var(--csj-accent);margin-left:6px;"></span>
+    </label>
+    <p class="field-explain">Paste one URL per line. These are the pages the crawler visits first, then follows links from.</p>
+    <textarea name="seed_urls" rows="6" id="seed-urls" placeholder="https://www.example.com&#10;https://blog.example.com&#10;https://shop.example.com" style="font-family:monospace;font-size:13px;">{{ cfg.get("SEED_URLS", []) | join('\n') }}</textarea>
   </div>
 
-  <div class="card">
-    <div class="card-title">2. Sitemaps</div>
+  <div class="form-group" style="margin-top:16px;">
+    <label class="form-label">Allowed domains</label>
+    <p class="field-explain">
+      The crawler will only visit pages on these domains (and their subdomains). For example, <code>nhs.uk</code> allows <code>www.nhs.uk</code>, <code>digital.nhs.uk</code>, etc.
+      If left empty, domains are extracted automatically from your starting URLs.
+    </p>
+    <div style="display:flex;gap:8px;align-items:flex-start;">
+      <textarea name="allowed_domains" rows="4" id="allowed-domains" placeholder="example.com&#10;blog.example.com" style="font-family:monospace;font-size:13px;flex:1;">{{ cfg.get("ALLOWED_DOMAINS", []) | join('\n') }}</textarea>
+      <button type="button" class="btn btn-sm btn-secondary" id="btn-extract-domains" title="Auto-detect domains from your starting URLs">Auto-detect</button>
+    </div>
+    <div id="domain-status"></div>
+  </div>
+
+  <div class="form-group" style="margin-top:16px;">
+    <label class="form-label">Excluded domains <span style="font-weight:400;color:var(--csj-body);">(optional)</span></label>
+    <p class="field-explain">
+      Domains to skip even if they match the allowed list above. Useful for excluding specific subdomains like <code>monitoring.ops.digital.nhs.uk</code>.
+    </p>
+    <textarea name="excluded_domains" rows="2" id="excluded-domains" placeholder="monitoring.ops.digital.nhs.uk&#10;staging.example.com" style="font-family:monospace;font-size:13px;">{{ cfg.get("EXCLUDED_DOMAINS", []) | join('\n') }}</textarea>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 2: CRAWL BEHAVIOUR (common settings, always visible)   -->
+<!-- ════════════════════════════════════════════════════════════════ -->
+
+<div class="card">
+  <div class="card-title">Crawl behaviour</div>
+  <div class="form-grid">
     <div class="form-group">
-      <label class="form-label">Sitemap URLs (one per line)</label>
+      <label class="form-label">Max pages to crawl</label>
+      <input type="number" name="max_pages" value="{{ cfg.get('MAX_PAGES_TO_CRAWL', 1000000) }}" min="1">
+      <p class="field-explain">Stop after this many HTML pages. Use a smaller number (e.g. 100) for quick surveys.</p>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Max link depth</label>
+      <input type="number" name="max_depth" value="{{ cfg.get('MAX_DEPTH', '') or '' }}" min="0" placeholder="Unlimited">
+      <p class="field-explain">How many links deep to follow from a seed. 0 = seeds only, 1 = seeds + one click away.</p>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Delay between requests (seconds)</label>
+      {% set delay = cfg.get("REQUEST_DELAY_SECONDS", [3, 5]) %}
+      <div style="display:flex;gap:8px;">
+        <input type="number" name="delay_min" value="{{ delay[0] if delay is iterable and delay is not string else delay }}" min="0" step="0.1" style="width:50%;" placeholder="Min">
+        <input type="number" name="delay_max" value="{{ delay[1] if delay is iterable and delay is not string and delay|length > 1 else delay }}" min="0" step="0.1" style="width:50%;" placeholder="Max">
+      </div>
+      <p class="field-explain">Random delay between min and max. Keep ≥ 1s to be polite to servers.</p>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Request timeout (seconds)</label>
+      <input type="number" name="request_timeout" value="{{ cfg.get('REQUEST_TIMEOUT_SECONDS', 20) }}" min="1">
+    </div>
+  </div>
+  <div class="checkbox-row">
+    <input type="checkbox" name="respect_robots_txt" value="1" {% if cfg.get("RESPECT_ROBOTS_TXT", True) %}checked{% endif %}>
+    <label class="form-label" style="margin-bottom:0;">Respect robots.txt rules</label>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════ -->
+<!-- SECTION 3: ADVANCED (collapsible)                              -->
+<!-- ════════════════════════════════════════════════════════════════ -->
+
+<div class="card">
+  <div class="collapse-header" data-target="adv-scope">
+    <div class="card-title" style="margin-bottom:0;border:none;padding-bottom:0;">Advanced: URL scope rules</div>
+    <span class="collapse-arrow" id="arrow-adv-scope">▶</span>
+  </div>
+  <div class="collapse-body" id="adv-scope">
+    <div class="form-group">
+      <label class="form-label">URL exclude patterns</label>
+      <p class="field-explain">Skip any URL containing these text fragments (one per line). Case-insensitive.</p>
+      <textarea name="url_exclude_patterns" rows="3" placeholder="/admin/&#10;/login&#10;/search?&#10;/wp-json/&#10;/?print=" style="font-family:monospace;font-size:13px;">{{ cfg.get("URL_EXCLUDE_PATTERNS", []) | join('\n') }}</textarea>
+    </div>
+    <div class="form-group">
+      <label class="form-label">URL include patterns <span style="font-weight:400;color:var(--csj-body);">(optional — restricts crawl)</span></label>
+      <p class="field-explain">If set, <strong>only</strong> URLs containing at least one of these patterns are crawled. Leave empty to crawl everything.</p>
+      <textarea name="url_include_patterns" rows="2" placeholder="/blog/&#10;/products/" style="font-family:monospace;font-size:13px;">{{ cfg.get("URL_INCLUDE_PATTERNS", []) | join('\n') }}</textarea>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="collapse-header" data-target="adv-sitemaps">
+    <div class="card-title" style="margin-bottom:0;border:none;padding-bottom:0;">Advanced: Sitemaps</div>
+    <span class="collapse-arrow" id="arrow-adv-sitemaps">▶</span>
+  </div>
+  <div class="collapse-body" id="adv-sitemaps">
+    <div class="form-group">
+      <label class="form-label">Extra sitemap URLs</label>
+      <p class="field-explain">Additional sitemaps to fetch. URLs found here are queued alongside seeds.</p>
       <textarea name="sitemap_urls" rows="3" style="font-family:monospace;font-size:13px;">{{ cfg.get("SITEMAP_URLS", []) | join('\n') }}</textarea>
     </div>
     <div class="checkbox-row">
       <input type="checkbox" name="load_sitemaps_from_robots" value="1" {% if cfg.get("LOAD_SITEMAPS_FROM_ROBOTS", True) %}checked{% endif %}>
-      <label class="form-label" style="margin-bottom:0;">Discover sitemaps from robots.txt</label>
+      <label class="form-label" style="margin-bottom:0;">Auto-discover sitemaps from robots.txt</label>
+    </div>
+    <div class="form-group" style="margin-top:8px;">
+      <label class="form-label">Max sitemap URLs</label>
+      <input type="number" name="max_sitemap_urls" value="{{ cfg.get('MAX_SITEMAP_URLS', 1000000) }}" min="1" style="max-width:200px;">
     </div>
   </div>
+</div>
 
-  <div class="card">
-    <div class="card-title">3. Crawl Limits</div>
-    <div class="form-grid">
-      <div class="form-group">
-        <label class="form-label">Max pages</label>
-        <input type="number" name="max_pages" value="{{ cfg.get('MAX_PAGES_TO_CRAWL', 1000000) }}" min="1">
-      </div>
-      <div class="form-group">
-        <label class="form-label">Max depth</label>
-        <input type="number" name="max_depth" value="{{ cfg.get('MAX_DEPTH', '') or '' }}" min="0" placeholder="Unlimited">
-      </div>
-      <div class="form-group">
-        <label class="form-label">Request delay — min (seconds)</label>
-        {% set delay = cfg.get("REQUEST_DELAY_SECONDS", [3, 5]) %}
-        <input type="number" name="delay_min" value="{{ delay[0] if delay is iterable and delay is not string else delay }}" min="0" step="0.1">
-      </div>
-      <div class="form-group">
-        <label class="form-label">Request delay — max (seconds)</label>
-        <input type="number" name="delay_max" value="{{ delay[1] if delay is iterable and delay is not string and delay|length > 1 else delay }}" min="0" step="0.1">
-      </div>
-      <div class="form-group">
-        <label class="form-label">Request timeout (seconds)</label>
-        <input type="number" name="timeout" value="{{ cfg.get('REQUEST_TIMEOUT_SECONDS', 20) }}" min="1">
-      </div>
-      <div class="form-group">
-        <label class="form-label">Max retries</label>
-        <input type="number" name="max_retries" value="{{ cfg.get('MAX_RETRIES', 3) }}" min="0">
-      </div>
-    </div>
-    <div class="checkbox-row">
-      <input type="checkbox" name="respect_robots" value="1" {% if cfg.get("RESPECT_ROBOTS_TXT", True) %}checked{% endif %}>
-      <label class="form-label" style="margin-bottom:0;">Respect robots.txt</label>
-    </div>
+<div class="card">
+  <div class="collapse-header" data-target="adv-outputs">
+    <div class="card-title" style="margin-bottom:0;border:none;padding-bottom:0;">Advanced: Output options</div>
+    <span class="collapse-arrow" id="arrow-adv-outputs">▶</span>
   </div>
-
-  <div class="card">
-    <div class="card-title">4. CSV Outputs</div>
+  <div class="collapse-body" id="adv-outputs">
+    <p class="field-explain" style="margin-bottom:12px;">Choose which additional CSV files to generate alongside the core pages.csv.</p>
     <div class="checkbox-row">
       <input type="checkbox" name="write_edges" value="1" {% if cfg.get("WRITE_EDGES_CSV", True) %}checked{% endif %}>
-      <label class="form-label" style="margin-bottom:0;">Write edges.csv (link graph)</label>
+      <label class="form-label" style="margin-bottom:0;">edges.csv — link graph (from → to for every hyperlink)</label>
     </div>
     <div class="checkbox-row">
       <input type="checkbox" name="write_tags" value="1" {% if cfg.get("WRITE_TAGS_CSV", True) %}checked{% endif %}>
-      <label class="form-label" style="margin-bottom:0;">Write tags.csv</label>
-    </div>
-    <div class="checkbox-row">
-      <input type="checkbox" name="asset_head" value="1" {% if cfg.get("ASSET_HEAD_METADATA", True) %}checked{% endif %}>
-      <label class="form-label" style="margin-bottom:0;">HEAD request on asset links</label>
-    </div>
-    <div class="checkbox-row">
-      <input type="checkbox" name="capture_headers" value="1" {% if cfg.get("CAPTURE_RESPONSE_HEADERS", True) %}checked{% endif %}>
-      <label class="form-label" style="margin-bottom:0;">Capture Last-Modified / ETag headers</label>
+      <label class="form-label" style="margin-bottom:0;">tags.csv — one row per tag/label extracted</label>
     </div>
     <div class="checkbox-row">
       <input type="checkbox" name="write_sitemap_urls" value="1" {% if cfg.get("WRITE_SITEMAP_URLS_CSV", True) %}checked{% endif %}>
-      <label class="form-label" style="margin-bottom:0;">Write sitemap_urls.csv</label>
+      <label class="form-label" style="margin-bottom:0;">sitemap_urls.csv — every URL found in sitemaps</label>
     </div>
     <div class="checkbox-row">
       <input type="checkbox" name="write_nav_links" value="1" {% if cfg.get("WRITE_NAV_LINKS_CSV", True) %}checked{% endif %}>
-      <label class="form-label" style="margin-bottom:0;">Write nav_links.csv</label>
+      <label class="form-label" style="margin-bottom:0;">nav_links.csv — links inside &lt;nav&gt; elements</label>
     </div>
     <div class="checkbox-row">
       <input type="checkbox" name="capture_readability" value="1" {% if cfg.get("CAPTURE_READABILITY", True) %}checked{% endif %}>
-      <label class="form-label" style="margin-bottom:0;">Compute Flesch–Kincaid readability</label>
+      <label class="form-label" style="margin-bottom:0;">Compute Flesch–Kincaid readability scores</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" name="capture_headers" value="1" {% if cfg.get("CAPTURE_RESPONSE_HEADERS", True) %}checked{% endif %}>
+      <label class="form-label" style="margin-bottom:0;">Capture Last-Modified / ETag response headers</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" name="asset_head" value="1" {% if cfg.get("ASSET_HEAD_METADATA", True) %}checked{% endif %}>
+      <label class="form-label" style="margin-bottom:0;">HEAD requests on asset links (file size / type)</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" name="check_outbound" value="1" {% if cfg.get("CHECK_OUTBOUND_LINKS", False) %}checked{% endif %}>
+      <label class="form-label" style="margin-bottom:0;">Check outbound links for broken targets (slow at scale)</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" name="render_javascript" value="1" {% if cfg.get("RENDER_JAVASCRIPT", False) %}checked{% endif %}>
+      <label class="form-label" style="margin-bottom:0;">Render JavaScript (requires Playwright — for SPA/CSR sites)</label>
     </div>
   </div>
+</div>
 
-  <div class="card">
-    <div class="card-title">5. User-Agent</div>
+<div class="card">
+  <div class="collapse-header" data-target="adv-identity">
+    <div class="card-title" style="margin-bottom:0;border:none;padding-bottom:0;">Advanced: Identity &amp; classification</div>
+    <span class="collapse-arrow" id="arrow-adv-identity">▶</span>
+  </div>
+  <div class="collapse-body" id="adv-identity">
     <div class="form-group">
+      <label class="form-label">User-Agent string</label>
+      <p class="field-explain">How the crawler identifies itself to web servers. Include a contact URL or email for polite crawling.</p>
       <input type="text" name="user_agent" value="{{ cfg.get('USER_AGENT', '') }}">
     </div>
+    <div class="form-group">
+      <label class="form-label">Domain ownership rules</label>
+      <p class="field-explain">Classify domains into groups for reports. One rule per line: <code>domain_suffix = Label</code>. First match wins.</p>
+      <textarea name="domain_ownership_rules" rows="4" placeholder="nhs.uk = NHS&#10;gov.uk = Government&#10;co.uk = Commercial" style="font-family:monospace;font-size:13px;">{% for rule in cfg.get("DOMAIN_OWNERSHIP_RULES", []) %}{% if rule is iterable and rule|length >= 2 %}{{ rule[0] }} = {{ rule[1] }}
+{% endif %}{% endfor %}</textarea>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Max retries</label>
+      <input type="number" name="max_retries" value="{{ cfg.get('MAX_RETRIES', 3) }}" min="0" style="max-width:100px;">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Log level</label>
+      <select name="log_level" style="max-width:160px;">
+        {% for lvl in ["DEBUG", "INFO", "WARNING", "ERROR"] %}
+        <option value="{{ lvl }}" {% if cfg.get("LOG_LEVEL", "INFO") == lvl %}selected{% endif %}>{{ lvl }}</option>
+        {% endfor %}
+      </select>
+    </div>
   </div>
+</div>
 
-  <button type="submit" class="btn btn-primary">Save Defaults</button>
+<button type="submit" class="btn btn-primary" style="margin-bottom:24px;">Save Settings</button>
 </form>
 
-<!-- ── Export & Danger Zone ─────────────────────────────────── -->
-<div style="margin-top:32px;">
-  <div class="card">
-    <div class="card-title">Export Project</div>
-    <p class="text-muted" style="margin-bottom:12px;">Download this project as a .zip archive including all runs and configuration.</p>
-    <a href="{{ url_for('export_project_route', slug=project.slug) }}" class="btn btn-secondary">Download .zip</a>
-  </div>
+<!-- ════════════════════════════════════════════════════════════════ -->
+<!-- EXPORT & DELETE                                                 -->
+<!-- ════════════════════════════════════════════════════════════════ -->
 
-  <div class="card" style="border-color:var(--csj-error);">
-    <div class="card-title" style="border-color:var(--csj-error);color:var(--csj-error);">Delete Project</div>
-    <p class="text-muted" style="margin-bottom:12px;">Permanently delete this project and all its runs. This cannot be undone.</p>
-    <div id="delete-gate" style="display:flex;align-items:center;gap:8px;">
-      <input type="text" id="delete-confirm-input" placeholder="Type '{{ project.slug }}' to confirm" style="max-width:300px;">
-      <form method="post" action="{{ url_for('delete_project_route', slug=project.slug) }}" style="margin:0;">
-        <button type="submit" class="btn btn-danger" id="delete-confirm-btn" disabled>Delete Project</button>
-      </form>
-    </div>
-    <script>
-    (function() {
-      var input = document.getElementById('delete-confirm-input');
-      var btn = document.getElementById('delete-confirm-btn');
-      var slug = "{{ project.slug }}";
-      input.addEventListener('input', function() {
-        btn.disabled = input.value.trim() !== slug;
-      });
-    })();
-    </script>
+<div class="card">
+  <div class="card-title">Export Project</div>
+  <p class="field-explain" style="margin-bottom:12px;">Download this project as a .zip archive including all runs and configuration.</p>
+  <a href="{{ url_for('export_project_route', slug=project.slug) }}" class="btn btn-secondary btn-sm">Download .zip</a>
+</div>
+
+<div class="card" style="border-color:var(--csj-error);">
+  <div class="card-title" style="border-color:var(--csj-error);color:var(--csj-error);">Delete Project</div>
+  <p class="field-explain" style="margin-bottom:12px;">Permanently delete this project and all its runs. This cannot be undone.</p>
+  <div style="display:flex;align-items:center;gap:8px;">
+    <input type="text" id="delete-confirm-input" placeholder="Type '{{ project.slug }}' to confirm" style="max-width:300px;">
+    <form method="post" action="{{ url_for('delete_project_route', slug=project.slug) }}" style="margin:0;">
+      <button type="submit" class="btn btn-danger btn-sm" id="delete-confirm-btn" disabled>Delete</button>
+    </form>
   </div>
 </div>
 
 <script>
 (function() {
+  // ── Collapsible sections ────────────────────────────────────
+  document.querySelectorAll('.collapse-header').forEach(function(header) {
+    var targetId = header.getAttribute('data-target');
+    var body = document.getElementById(targetId);
+    var arrow = header.querySelector('.collapse-arrow');
+    if (!body) return;
+
+    // Auto-open if the section has user-entered content
+    var hasContent = false;
+    body.querySelectorAll('textarea').forEach(function(ta) {
+      if (ta.value.trim()) hasContent = true;
+    });
+    body.querySelectorAll('input[type="checkbox"]').forEach(function(cb) {
+      var name = cb.name;
+      // These are default-checked: don't count them as "user content"
+      var defaultOn = ['load_sitemaps_from_robots', 'write_edges', 'write_tags',
+        'write_sitemap_urls', 'write_nav_links', 'capture_readability',
+        'capture_headers', 'asset_head'];
+      if (!cb.checked && defaultOn.indexOf(name) >= 0) hasContent = true;
+      if (cb.checked && defaultOn.indexOf(name) < 0) hasContent = true;
+    });
+
+    if (hasContent) {
+      body.classList.add('open');
+      arrow.classList.add('open');
+    }
+
+    header.addEventListener('click', function() {
+      body.classList.toggle('open');
+      arrow.classList.toggle('open');
+    });
+  });
+
+  // ── Domain auto-detect + coverage ──────────────────────────
   var seedsEl = document.getElementById('seed-urls');
   var domainsEl = document.getElementById('allowed-domains');
+  var excludedEl = document.getElementById('excluded-domains');
   var btnExtract = document.getElementById('btn-extract-domains');
-  var extractMsg = document.getElementById('extract-msg');
+  var statusEl = document.getElementById('domain-status');
   var countEl = document.getElementById('seed-count');
-  var panel = document.getElementById('coverage-panel');
-  var coverOk = document.getElementById('coverage-ok');
-  var coverWarn = document.getElementById('coverage-warn');
-  var coverList = document.getElementById('coverage-list');
 
   function getSeeds() { return seedsEl.value.split('\n').map(function(s) { return s.trim(); }).filter(Boolean); }
   function getDomains() { return domainsEl.value.split('\n').map(function(s) { return s.trim().toLowerCase(); }).filter(Boolean); }
+  function getExcluded() { return excludedEl.value.split('\n').map(function(s) { return s.trim().toLowerCase(); }).filter(Boolean); }
   function getHostname(url) { try { return new URL(url.indexOf('://') < 0 ? 'https://' + url : url).hostname.toLowerCase(); } catch(e) { return ''; } }
   function isCovered(host, domains) { return domains.some(function(d) { return host === d || host.endsWith('.' + d); }); }
 
   function updateSeedCount() {
     var n = getSeeds().length;
-    countEl.textContent = n ? n + ' URL' + (n !== 1 ? 's' : '') : '';
+    countEl.textContent = n ? '(' + n + ' URL' + (n !== 1 ? 's' : '') + ')' : '';
   }
 
   function checkCoverage() {
-    var seeds = getSeeds(), allowed = getDomains();
-    if (!seeds.length) { panel.style.display = 'none'; return; }
+    var seeds = getSeeds(), allowed = getDomains(), excluded = getExcluded();
+    if (!seeds.length) { statusEl.innerHTML = ''; return; }
+    if (!allowed.length) {
+      statusEl.innerHTML = '<div class="domain-auto-msg">Tip: click <strong>Auto-detect</strong> to populate allowed domains from your URLs, or leave empty to auto-detect at crawl time.</div>';
+      return;
+    }
     var uncovered = {};
-    seeds.forEach(function(u) { var h = getHostname(u); if (h && !isCovered(h, allowed)) uncovered[h] = true; });
+    var excludedHosts = [];
+    seeds.forEach(function(u) {
+      var h = getHostname(u);
+      if (!h) return;
+      if (isCovered(h, excluded)) { excludedHosts.push(h); return; }
+      if (!isCovered(h, allowed)) uncovered[h] = true;
+    });
     var missing = Object.keys(uncovered).sort();
-    panel.style.display = '';
-    if (missing.length === 0) { coverOk.style.display = ''; coverWarn.style.display = 'none'; }
-    else { coverOk.style.display = 'none'; coverWarn.style.display = ''; coverList.innerHTML = missing.map(function(d) { return '<li>' + d + '</li>'; }).join(''); }
+    var html = '';
+    if (missing.length === 0 && excludedHosts.length === 0) {
+      html = '<div class="domain-auto-msg">✓ All seed domains are covered by the allowed list.</div>';
+    } else {
+      if (missing.length > 0) {
+        html += '<div class="domain-auto-msg warn">⚠ ' + missing.length + ' seed host' + (missing.length > 1 ? 's' : '') + ' not in allowed list: <strong>' + missing.join(', ') + '</strong></div>';
+      }
+      if (excludedHosts.length > 0) {
+        var unique = excludedHosts.filter(function(v, i, a) { return a.indexOf(v) === i; });
+        html += '<div class="domain-auto-msg" style="background:rgba(196,132,29,.08);color:#7A5B1E;margin-top:4px;">ℹ ' + unique.length + ' seed host' + (unique.length > 1 ? 's' : '') + ' in exclude list (will be skipped): <strong>' + unique.join(', ') + '</strong></div>';
+      }
+    }
+    statusEl.innerHTML = html;
   }
 
   btnExtract.addEventListener('click', function() {
     var seeds = getSeeds(), existing = getDomains();
-    var existSet = {}; existing.forEach(function(d) { existSet[d] = true; });
     var newDomains = {};
-    seeds.forEach(function(u) { var h = getHostname(u); if (!h) return; if (isCovered(h, existing)) return; newDomains[h] = true; });
+    seeds.forEach(function(u) {
+      var h = getHostname(u);
+      if (!h) return;
+      if (isCovered(h, existing)) return;
+      newDomains[h] = true;
+    });
     var added = Object.keys(newDomains).sort();
-    if (added.length === 0) { extractMsg.textContent = 'All seed domains are already covered.'; extractMsg.style.color = 'var(--csj-success)'; }
-    else { domainsEl.value = existing.concat(added).join('\n') + '\n'; extractMsg.textContent = 'Added ' + added.length + ' domain' + (added.length !== 1 ? 's' : '') + '.'; extractMsg.style.color = 'var(--csj-success)'; }
-    setTimeout(function() { extractMsg.textContent = ''; }, 4000);
-    checkCoverage();
+    if (added.length === 0) {
+      statusEl.innerHTML = '<div class="domain-auto-msg">All seed domains are already in the allowed list.</div>';
+    } else {
+      domainsEl.value = existing.concat(added).join('\n') + '\n';
+      statusEl.innerHTML = '<div class="domain-auto-msg">✓ Added ' + added.length + ' domain' + (added.length !== 1 ? 's' : '') + ' to the allowed list.</div>';
+    }
+    setTimeout(function() { checkCoverage(); }, 3000);
   });
 
   seedsEl.addEventListener('input', function() { updateSeedCount(); checkCoverage(); });
   domainsEl.addEventListener('input', checkCoverage);
+  excludedEl.addEventListener('input', checkCoverage);
   updateSeedCount();
   checkCoverage();
+
+  // ── Delete confirmation ────────────────────────────────────
+  var delInput = document.getElementById('delete-confirm-input');
+  var delBtn = document.getElementById('delete-confirm-btn');
+  var slug = "{{ project.slug }}";
+  delInput.addEventListener('input', function() {
+    delBtn.disabled = delInput.value.trim() !== slug;
+  });
 })();
 </script>
 {% endblock %}
