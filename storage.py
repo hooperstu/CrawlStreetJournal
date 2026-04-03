@@ -137,6 +137,8 @@ PAGES_FIELDS = (
     "schema_job_location",
     "schema_recipe_time",
     "extraction_coverage_pct",
+    "content_hash",
+    "content_changed",
     # common
     "referrer_url",
     "depth",
