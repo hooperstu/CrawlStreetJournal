@@ -165,6 +165,44 @@ def is_allowed_domain(url: str, cfg: Optional[CrawlConfig] = None) -> bool:
     return utils.is_allowed_domain(url, domains)
 
 
+def _is_excluded_domain(url: str, cfg: Optional[CrawlConfig] = None) -> bool:
+    """Return True if the URL's hostname matches any excluded domain."""
+    excluded = cfg.EXCLUDED_DOMAINS if cfg else getattr(config, "EXCLUDED_DOMAINS", [])
+    if not excluded:
+        return False
+    try:
+        host = (urlparse(url).hostname or "").lower()
+        return any(
+            host == d.lower() or host.endswith("." + d.lower())
+            for d in excluded
+        )
+    except Exception:
+        return False
+
+
+def _matches_url_patterns(url: str, patterns: list) -> bool:
+    """Return True if the URL contains any of the pattern substrings."""
+    if not patterns:
+        return False
+    url_lower = url.lower()
+    return any(p.lower() in url_lower for p in patterns if p)
+
+
+def is_url_allowed(url: str, cfg: Optional[CrawlConfig] = None) -> bool:
+    """Full URL scope check: allowed domains, excluded domains, and URL patterns."""
+    if not is_allowed_domain(url, cfg):
+        return False
+    if _is_excluded_domain(url, cfg):
+        return False
+    exclude_patterns = cfg.URL_EXCLUDE_PATTERNS if cfg else getattr(config, "URL_EXCLUDE_PATTERNS", [])
+    if exclude_patterns and _matches_url_patterns(url, exclude_patterns):
+        return False
+    include_patterns = cfg.URL_INCLUDE_PATTERNS if cfg else getattr(config, "URL_INCLUDE_PATTERNS", [])
+    if include_patterns and not _matches_url_patterns(url, include_patterns):
+        return False
+    return True
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 def _now_iso() -> str:
@@ -643,7 +681,7 @@ def _seed_queues(
 
     now0 = _now_iso()
     for u, ref in start_items:
-        if not is_allowed_domain(u, cfg):
+        if not is_url_allowed(u, cfg):
             continue
         cat = parser_module.asset_category_for_url(u)
         if cat is not None:
@@ -852,7 +890,7 @@ def _process_one_url(
         norm = normalise_url(link)
         if norm in visited or norm in queued:
             continue
-        if not is_allowed_domain(link, cfg):
+        if not is_url_allowed(link, cfg):
             continue
         if parser_module.asset_category_for_url(link) is not None:
             continue
