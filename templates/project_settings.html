@@ -245,6 +245,19 @@
       <input type="checkbox" name="render_javascript" value="1" {% if cfg.get("RENDER_JAVASCRIPT", False) %}checked{% endif %}>
       <label class="form-label" style="margin-bottom:0;">Render JavaScript (requires Playwright — for SPA/CSR sites)</label>
     </div>
+    <div class="checkbox-row">
+      <input type="checkbox" name="content_dedup" value="1" {% if cfg.get("CONTENT_DEDUP", True) %}checked{% endif %}>
+      <label class="form-label" style="margin-bottom:0;">Content deduplication — skip pages with identical visible text (saves bandwidth)</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" name="change_detection" value="1" {% if cfg.get("CHANGE_DETECTION", False) %}checked{% endif %}>
+      <label class="form-label" style="margin-bottom:0;">Change detection — compare content hashes across runs to flag changed pages</label>
+    </div>
+    <div class="form-group" style="margin-top:12px;">
+      <label class="form-label">Concurrent workers</label>
+      <input type="number" name="concurrent_workers" value="{{ cfg.get('CONCURRENT_WORKERS', 1) }}" min="1" max="10" style="max-width:100px;">
+      <p class="field-explain">Number of pages fetched in parallel. Per-domain rate limiting is still enforced. Higher values speed up multi-domain crawls.</p>
+    </div>
   </div>
 </div>
 
