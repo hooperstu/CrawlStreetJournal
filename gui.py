@@ -732,6 +732,30 @@ def _build_config_dict_from_form(form) -> Dict[str, Any]:
     except (ValueError, TypeError):
         max_depth = None
 
+    excluded_domains = [
+        d.strip()
+        for d in form.get("excluded_domains", "").strip().splitlines()
+        if d.strip()
+    ]
+    url_exclude_patterns = [
+        p.strip()
+        for p in form.get("url_exclude_patterns", "").strip().splitlines()
+        if p.strip()
+    ]
+    url_include_patterns = [
+        p.strip()
+        for p in form.get("url_include_patterns", "").strip().splitlines()
+        if p.strip()
+    ]
+
+    # Domain ownership rules: "domain_suffix = label" per line
+    ownership_rules = []
+    for line in form.get("domain_ownership_rules", "").strip().splitlines():
+        line = line.strip()
+        if "=" in line:
+            parts = line.split("=", 1)
+            ownership_rules.append([parts[0].strip(), parts[1].strip()])
+
     return {
         "SEED_URLS": seed_urls,
         "SITEMAP_URLS": sitemap_urls,
@@ -752,12 +776,17 @@ def _build_config_dict_from_form(form) -> Dict[str, Any]:
         "WRITE_SITEMAP_URLS_CSV": "write_sitemap_urls" in form,
         "WRITE_NAV_LINKS_CSV": "write_nav_links" in form,
         "CHECK_OUTBOUND_LINKS": "check_outbound" in form,
-        "MAX_LINK_CHECKS_PER_PAGE": 50,
-        "LINK_CHECK_DELAY_SECONDS": 0.5,
+        "MAX_LINK_CHECKS_PER_PAGE": _int_form(form, "max_link_checks", 50),
+        "LINK_CHECK_DELAY_SECONDS": _float_form(form, "link_check_delay", 0.5),
         "CAPTURE_READABILITY": "capture_readability" in form,
+        "RENDER_JAVASCRIPT": "render_javascript" in form,
         "ALLOWED_DOMAINS": allowed_domains,
+        "EXCLUDED_DOMAINS": excluded_domains,
+        "URL_EXCLUDE_PATTERNS": url_exclude_patterns,
+        "URL_INCLUDE_PATTERNS": url_include_patterns,
         "USER_AGENT": form.get("user_agent", config.USER_AGENT).strip(),
         "LOG_LEVEL": form.get("log_level", "INFO").upper(),
+        "DOMAIN_OWNERSHIP_RULES": ownership_rules,
     }
 
 
