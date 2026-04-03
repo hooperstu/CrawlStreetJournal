@@ -787,7 +787,7 @@ def create_project_route():
     if not name:
         return redirect(url_for("projects_list"))
     slug = storage_module.create_project(name, description)
-    return redirect(url_for("project_overview", slug=slug))
+    return redirect(url_for("reports.reports_dashboard", slug=slug))
 
 
 @app.route("/projects/<slug>/delete", methods=["POST"])
@@ -844,7 +844,7 @@ def import_project_route():
         slug = storage_module.import_project(uploaded)
     except ValueError as exc:
         return str(exc), 400
-    return redirect(url_for("project_overview", slug=slug))
+    return redirect(url_for("reports.reports_dashboard", slug=slug))
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -853,31 +853,28 @@ def import_project_route():
 
 @app.route("/p/<slug>")
 def project_overview(slug: str):
-    """``GET /p/<slug>`` — Project overview dashboard with aggregated run metrics."""
+    """``GET /p/<slug>`` — Redirect to the Dashboard (reports)."""
     project = storage_module.load_project(slug)
     if not project:
         return "Project not found", 404
-    project["slug"] = slug
-    metrics = _project_overview_metrics(slug)
-    return render_template(
-        "project_overview.html",
-        project=project, m=metrics, status=_project_status(slug),
-    )
+    return redirect(url_for("reports.reports_dashboard", slug=slug))
 
 
 @app.route("/p/<slug>/defaults", methods=["GET"])
 def project_defaults(slug: str):
-    """``GET /p/<slug>/defaults`` — Show the project's default crawl configuration.
+    """``GET /p/<slug>/defaults`` — Redirect to Settings page."""
+    return redirect(url_for("project_settings", slug=slug))
 
-    Falls back to a snapshot of the current module-level ``config`` values
-    when no project defaults have been saved yet.
-    """
+
+@app.route("/p/<slug>/settings")
+def project_settings(slug: str):
+    """``GET /p/<slug>/settings`` — Project settings: defaults, export, delete."""
     project = storage_module.load_project(slug)
     if not project:
         return "Project not found", 404
     project["slug"] = slug
     cfg = storage_module.load_project_defaults(slug) or storage_module.snapshot_config()
-    return render_template("project_defaults.html", project=project, cfg=cfg)
+    return render_template("project_settings.html", project=project, cfg=cfg)
 
 
 @app.route("/p/<slug>/defaults", methods=["POST"])
@@ -893,7 +890,7 @@ def save_project_defaults_route(slug: str):
     cfg = _build_config_dict_from_form(request.form)
     storage_module.save_project_defaults(slug, cfg)
     logging.info("Saved defaults for project %s", slug)
-    return redirect(url_for("project_defaults", slug=slug))
+    return redirect(url_for("project_settings", slug=slug))
 
 
 @app.route("/p/<slug>/runs")

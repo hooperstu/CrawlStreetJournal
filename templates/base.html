@@ -454,10 +454,9 @@
   {% if project is defined and project %}
   <div class="nav-bar">
     {% set p_slug = project.slug %}
-    <a href="{{ url_for('project_overview', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'overview' %}active{% endif %}">Project Overview</a>
-    <a href="{{ url_for('project_defaults', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'defaults' %}active{% endif %}">Default Config</a>
+    <a href="{{ url_for('reports.reports_dashboard', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'dashboard' %}active{% endif %}">Dashboard</a>
     <a href="{{ url_for('project_runs', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'runs' %}active{% endif %}">Runs</a>
-    <a href="{{ url_for('reports.reports_dashboard', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'reports' %}active{% endif %}">Reports</a>
+    <a href="{{ url_for('project_settings', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'settings' %}active{% endif %}">Settings</a>
   </div>
   {% endif %}
 
