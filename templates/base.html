@@ -80,17 +80,6 @@
       margin-right: 32px;
     }
     .topbar-logo:hover { color: var(--csj-accent); }
-    .topbar-project {
-      font-size: 15px;
-      font-weight: 500;
-      color: var(--csj-body);
-      text-decoration: none;
-      margin-right: 24px;
-      padding: 4px 12px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-    }
-    .topbar-project { cursor: default; }
 
     /* ── Navigation ──────────────────────────────────── */
     .nav-bar {
@@ -459,16 +448,16 @@
   <div class="topbar">
     <a href="/" class="topbar-logo">The Crawl Street Journal</a>
     {% if project is defined and project %}
-    <span class="topbar-project">{{ project.name }}</span>
     {% endif %}
   </div>
 
   {% if project is defined and project %}
   <div class="nav-bar">
     {% set p_slug = project.slug %}
-    <a href="{{ url_for('project_overview', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'overview' %}active{% endif %}">Overview</a>
-    <a href="{{ url_for('project_defaults', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'defaults' %}active{% endif %}">Defaults</a>
+    <a href="{{ url_for('project_overview', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'overview' %}active{% endif %}">Project Overview</a>
+    <a href="{{ url_for('project_defaults', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'defaults' %}active{% endif %}">Default Config</a>
     <a href="{{ url_for('project_runs', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'runs' %}active{% endif %}">Runs</a>
+    <a href="{{ url_for('reports.reports_dashboard', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'reports' %}active{% endif %}">Reports</a>
   </div>
   {% endif %}
 

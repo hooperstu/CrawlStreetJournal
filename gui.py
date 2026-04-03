@@ -96,6 +96,7 @@ app = Flask(
     static_folder=os.path.join(config.BUNDLE_DIR, "static"),
     static_url_path="/static",
 )
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
 
 def _load_secret_key() -> bytes:
@@ -124,7 +125,7 @@ def _load_secret_key() -> bytes:
 app.secret_key = _load_secret_key()
 
 from viz_api import eco_bp  # noqa: E402
-# Visualisation endpoints (ecosystem charts, etc.) live in viz_api.py.
+# Visualisation endpoints (reports charts, etc.) live in viz_api.py.
 app.register_blueprint(eco_bp)
 
 # ── Crawl state (per-project slots) ───────────────────────────────────────
@@ -644,7 +645,6 @@ def _project_overview_metrics(slug: str) -> Dict[str, Any]:
         "total_runs": 0,
         "total_assets": 0,
         "total_errors": 0,
-        "recent_runs": [],
     }
     if not os.path.isdir(runs_dir):
         return m
@@ -658,28 +658,11 @@ def _project_overview_metrics(slug: str) -> Dict[str, Any]:
 
     for rf in run_folders:
         rd = os.path.join(runs_dir, rf)
-        pages = _count_csv_rows(os.path.join(rd, config.PAGES_CSV))
-        m["total_pages"] += pages
-        errors = _count_csv_rows(os.path.join(rd, config.ERRORS_CSV))
-        m["total_errors"] += errors
+        m["total_pages"] += _count_csv_rows(os.path.join(rd, config.PAGES_CSV))
+        m["total_errors"] += _count_csv_rows(os.path.join(rd, config.ERRORS_CSV))
         for name in os.listdir(rd):
             if name.startswith("assets_") and name.endswith(".csv"):
                 m["total_assets"] += _count_csv_rows(os.path.join(rd, name))
-
-    for rf in run_folders[:5]:
-        rd = os.path.join(runs_dir, rf)
-        friendly = storage_module._read_run_name(rd)
-        raw = rf.replace("run_", "", 1)
-        parts = raw.split("_")
-        date_part = parts[0] if parts else raw
-        time_part = parts[1].replace("-", ":") if len(parts) > 1 else ""
-        m["recent_runs"].append({
-            "name": rf,
-            "friendly_name": friendly or "",
-            "timestamp_label": (date_part + " " + time_part).strip(),
-            "page_count": _count_csv_rows(os.path.join(rd, config.PAGES_CSV)),
-            "status": storage_module.get_run_status(rd),
-        })
 
     return m
 
@@ -723,11 +706,17 @@ def _build_config_dict_from_form(form) -> Dict[str, Any]:
         Config dict ready for ``storage_module.save_run_config`` or
         ``storage_module.save_project_defaults``.
     """
+    def _ensure_scheme(u: str) -> str:
+        u = u.strip()
+        if u and "://" not in u:
+            u = "https://" + u
+        return u
+
     seed_urls = [
-        u for u in form.get("seed_urls", "").strip().splitlines() if u.strip()
+        _ensure_scheme(u) for u in form.get("seed_urls", "").strip().splitlines() if u.strip()
     ]
     sitemap_urls = [
-        u for u in form.get("sitemap_urls", "").strip().splitlines() if u.strip()
+        _ensure_scheme(u) for u in form.get("sitemap_urls", "").strip().splitlines() if u.strip()
     ]
     allowed_domains = [
         d.strip()
@@ -1015,10 +1004,45 @@ def run_monitor(slug: str, run_name: str):
         return "Run not found", 404
     run_status = storage_module.get_run_status(run_dir)
     friendly = storage_module._read_run_name(run_dir) or ""
+    # For completed/interrupted runs where no active slot exists, read the
+    # true page and asset counts from the on-disk CSVs and compute elapsed
+    # time from the run's _state.json timestamps so the monitor page shows
+    # accurate figures rather than 0 / "—".
+    pages_written = 0
+    assets_written = 0
+    elapsed_written = ""
+    live_status = _project_status(slug)
+    if live_status.get("run_folder") != run_name:
+        pages_csv = os.path.join(run_dir, "pages.csv")
+        pages_written = _count_csv_rows(pages_csv)
+        assets_written = _metrics_from_assets(run_dir).get("total_assets", 0)
+        state = storage_module.load_crawl_state(run_dir)
+        if state:
+            try:
+                from datetime import datetime as _dt, timezone as _tz
+                started = state.get("started_at", "")
+                stopped = state.get("stopped_at", "")
+                if started:
+                    t0 = _dt.fromisoformat(started.replace("Z", "+00:00"))
+                    if stopped:
+                        t1 = _dt.fromisoformat(stopped.replace("Z", "+00:00"))
+                    else:
+                        # Crashed run: _finalise_run never wrote stopped_at.
+                        # Use the _state.json mtime as a best-effort end time.
+                        state_path = os.path.join(run_dir, "_state.json")
+                        t1 = _dt.fromtimestamp(os.path.getmtime(state_path), tz=_tz.utc)
+                    secs = int(abs((t1.replace(tzinfo=None) - t0.replace(tzinfo=None)).total_seconds()))
+                    h, rem = divmod(secs, 3600)
+                    m, s = divmod(rem, 60)
+                    elapsed_written = f"{h:02d}:{m:02d}:{s:02d}"
+            except Exception:
+                pass
     return render_template(
         "run_monitor.html",
         project=project, run_name=run_name, friendly_name=friendly,
-        run_status=run_status, status=_project_status(slug),
+        run_status=run_status, status=live_status,
+        pages_written=pages_written, assets_written=assets_written,
+        elapsed_written=elapsed_written,
     )
 
 
@@ -1317,5 +1341,7 @@ if __name__ == "__main__":
     )
     # Move any flat-file data from pre-project-era layouts into the new structure.
     storage_module.migrate_legacy_data()
+    # Any run left in 'running' state after a restart was killed uncleanly; treat as interrupted.
+    storage_module.recover_stale_running_states()
     print("The Crawl Street Journal: http://localhost:5001")
     app.run(host="0.0.0.0", port=5001, debug=False, threaded=True)

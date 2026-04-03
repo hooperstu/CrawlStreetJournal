@@ -816,15 +816,18 @@ def _process_one_url(
         return False, 0, final_url
 
     try:
-        html_links, asset_rows, edge_rows = parser_module.extract_classified_links(
+        html_links, asset_rows, edge_rows, phone_rows = parser_module.extract_classified_links(
             html, final_url, now
         )
     except Exception as e:
         logger.debug("Link extraction error on %s: %s", final_url, e)
-        html_links, asset_rows, edge_rows = set(), [], []
+        html_links, asset_rows, edge_rows, phone_rows = set(), [], [], []
 
     for e_row in edge_rows:
         ctx.write_edge(e_row)
+
+    for p_row in phone_rows:
+        ctx.write_phone_number(p_row)
 
     if cfg.CHECK_OUTBOUND_LINKS and edge_rows:
         _check_outbound_links(edge_rows, now, cfg, ctx)
