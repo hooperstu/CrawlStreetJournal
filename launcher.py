@@ -10,6 +10,7 @@ SIGINT / SIGTERM / window close.
 """
 
 import logging
+import os
 import signal
 import socket
 import sys
@@ -61,6 +62,14 @@ def _wait_and_open(port: int) -> None:
     )
 
 
+def _crash_log_path() -> str:
+    """Return a writable path for the crash log, next to the executable."""
+    if getattr(sys, "frozen", False):
+        import config
+        return os.path.join(config.DATA_DIR, "crash.log")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log")
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -91,4 +100,18 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception:
+        import os
+        import traceback
+        crash_path = _crash_log_path()
+        tb = traceback.format_exc()
+        try:
+            with open(crash_path, "w") as f:
+                f.write(f"Crash at {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n{tb}")
+            print(f"\nFATAL ERROR — crash log written to: {crash_path}", file=sys.stderr)
+        except Exception:
+            pass
+        print(tb, file=sys.stderr)
+        sys.exit(1)
