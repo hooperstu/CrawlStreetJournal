@@ -73,8 +73,22 @@ REQUEST_DELAY_SECONDS = (3, 5)
 REQUEST_TIMEOUT_SECONDS = 20
 MAX_RETRIES = 3
 
+# Number of concurrent fetch workers. 1 = sequential (safest / most polite).
+# Higher values fetch multiple pages in parallel across different domains.
+# Per-domain rate limiting is still enforced regardless of worker count.
+CONCURRENT_WORKERS = 1
+
 # How often to persist _state.json during a crawl (every N pages).
 STATE_SAVE_INTERVAL = 10
+
+# Content-hash deduplication: skip pages whose visible-text hash matches
+# a previously crawled page in the same run. Saves bandwidth on sites
+# that serve identical content under multiple URLs.
+CONTENT_DEDUP = True
+
+# Change detection: when resuming or re-crawling, compare content hashes
+# against the previous run to flag pages as changed/unchanged.
+CHANGE_DETECTION = False
 
 # ── OUTPUT / PROJECTS ────────────────────────────────────────────────
 # Per-project runs are stored under PROJECTS_DIR/<slug>/runs/.
@@ -244,7 +258,10 @@ class CrawlConfig:
     REQUEST_DELAY_SECONDS: Any = (3, 5)
     REQUEST_TIMEOUT_SECONDS: int = 20
     MAX_RETRIES: int = 3
+    CONCURRENT_WORKERS: int = 1
     STATE_SAVE_INTERVAL: int = 10
+    CONTENT_DEDUP: bool = True
+    CHANGE_DETECTION: bool = False
     WRITE_EDGES_CSV: bool = True
     WRITE_TAGS_CSV: bool = True
     ASSET_HEAD_METADATA: bool = True

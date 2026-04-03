@@ -33,12 +33,17 @@ Key entry points:
 
 from __future__ import annotations
 
+import hashlib
+import heapq
 import logging
 import os
 import random
+import re
+import socket
 import threading
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 from urllib.robotparser import RobotFileParser
@@ -54,6 +59,28 @@ from storage import StorageContext
 import utils
 
 logger = logging.getLogger(__name__)
+
+
+# ── DNS cache ─────────────────────────────────────────────────────────────
+
+_dns_cache: Dict[Tuple[str, int], Any] = {}
+_dns_lock = threading.Lock()
+_original_getaddrinfo = socket.getaddrinfo
+
+
+def _cached_getaddrinfo(*args, **kwargs):
+    """Process-global DNS cache to avoid repeated lookups for the same host."""
+    key = (args[0], args[1]) if len(args) >= 2 else args
+    with _dns_lock:
+        if key in _dns_cache:
+            return _dns_cache[key]
+    result = _original_getaddrinfo(*args, **kwargs)
+    with _dns_lock:
+        _dns_cache[key] = result
+    return result
+
+
+socket.getaddrinfo = _cached_getaddrinfo
 
 
 def normalise_url(url: str) -> str:
@@ -101,25 +128,44 @@ def _origin_of(url: str) -> str:
         return ""
 
 
+_crawl_delay_cache: Dict[str, Optional[float]] = {}
+
+
 def _robots_for_url(url: str) -> RobotFileParser:
     """Return a cached ``RobotFileParser`` for *url*'s origin, fetching if needed."""
     origin = _origin_of(url)
     with _global_state_lock:
         if origin in _robots_cache:
             return _robots_cache[origin]
-    # Fetch outside the lock to avoid blocking other threads during I/O.
     rp = RobotFileParser()
+    crawl_delay = None
     try:
         rp.set_url(origin + "/robots.txt")
         rp.read()
+        # Extract Crawl-delay if present
+        try:
+            cd = rp.crawl_delay("*")
+            if cd is not None:
+                crawl_delay = float(cd)
+        except Exception:
+            pass
     except Exception as e:
         logger.debug("Could not fetch robots.txt for %s: %s", origin, e)
     with _global_state_lock:
-        # Another thread may have populated the cache while we were fetching;
-        # prefer the already-cached entry to avoid redundant fetches.
         if origin not in _robots_cache:
             _robots_cache[origin] = rp
+            _crawl_delay_cache[origin] = crawl_delay
+            if crawl_delay:
+                logger.info("Crawl-delay for %s: %.1fs", origin, crawl_delay)
         return _robots_cache[origin]
+
+
+def _get_crawl_delay(url: str) -> Optional[float]:
+    """Return the Crawl-delay directive for this URL's origin, or None."""
+    origin = _origin_of(url)
+    _robots_for_url(url)  # ensure cache is populated
+    with _global_state_lock:
+        return _crawl_delay_cache.get(origin)
 
 
 def can_fetch(url: str, cfg: Optional[CrawlConfig] = None) -> bool:
@@ -257,9 +303,18 @@ def _per_domain_delay(hostname: str, base_delay: Union[float, Tuple[float, float
     return base
 
 
-def _wait_for_domain(hostname: str, delay_cfg: Union[float, Tuple[float, float]]) -> None:
-    """Sleep to respect per-domain rate limiting."""
+def _wait_for_domain(
+    hostname: str,
+    delay_cfg: Union[float, Tuple[float, float]],
+    url: str = "",
+) -> None:
+    """Sleep to respect per-domain rate limiting and Crawl-delay directives."""
     delay = _per_domain_delay(hostname, delay_cfg)
+    # Respect Crawl-delay from robots.txt as a minimum floor
+    if url:
+        robots_delay = _get_crawl_delay(url)
+        if robots_delay is not None and robots_delay > delay:
+            delay = robots_delay
     with _global_state_lock:
         now = time.monotonic()
         last = _domain_last_fetch.get(hostname, 0)
@@ -717,6 +772,7 @@ def _process_one_url(
     ctx: StorageContext,
     max_depth: Optional[int],
     delay_cfg: Any = None,
+    **kwargs,
 ) -> Tuple[bool, int, str]:
     """Fetch and process one URL from the queue.
 
@@ -743,7 +799,7 @@ def _process_one_url(
 
     hostname = (urlparse(url).hostname or "").lower()
     _effective_delay = delay_cfg if delay_cfg is not None else cfg.REQUEST_DELAY_SECONDS
-    _wait_for_domain(hostname, _effective_delay)
+    _wait_for_domain(hostname, _effective_delay, url=url)
 
     _render_js = cfg.RENDER_JAVASCRIPT
 
@@ -811,6 +867,24 @@ def _process_one_url(
             "discovered_at": _now_iso(),
         })
         return False, 0, final_url
+
+    # Content-hash deduplication: skip pages with identical visible text
+    content_hashes = kwargs.get("content_hashes")
+    if content_hashes is not None and cfg.CONTENT_DEDUP:
+        from bs4 import BeautifulSoup as _BS
+        visible = parser_module.get_visible_text(_BS(html, "lxml"))
+        content_hash = hashlib.sha256(visible.encode("utf-8", errors="replace")).hexdigest()[:16]
+        if content_hash in content_hashes:
+            logger.debug("Content dedup: %s matches %s", url, content_hashes[content_hash])
+            ctx.write_error({
+                "url": url,
+                "error_type": "content_duplicate",
+                "message": f"Identical content hash as {content_hashes[content_hash]}",
+                "http_status": status,
+                "discovered_at": _now_iso(),
+            })
+            return False, 0, final_url
+        content_hashes[content_hash] = url
 
     sm = sitemap_meta.get(normalise_url(url)) or sitemap_meta.get(normalise_url(final_url)) or {}
     now = _now_iso()
@@ -1033,10 +1107,20 @@ def crawl(
 
     interrupted = False
     last_state_save = pages_crawled
+    content_hashes: Dict[str, str] = {}
+
+    # Change detection: load hashes from the previous run if enabled
+    prev_hashes: Dict[str, str] = {}
+    if cfg.CHANGE_DETECTION and resume and run_folder:
+        prev_hashes = storage.load_content_hashes(run_dir)
+        if prev_hashes:
+            logger.info("Loaded %d content hashes from previous run for change detection", len(prev_hashes))
 
     queue_total = len(crawl_queue) + len(seed_queue)
     if on_phase and queue_total:
         on_phase("crawling", f"Starting crawl — {queue_total:,} URLs queued")
+
+    workers = max(1, cfg.CONCURRENT_WORKERS if cfg else 1)
 
     try:
         while (crawl_queue or seed_queue) and pages_crawled < _max_pages:
@@ -1054,6 +1138,7 @@ def crawl(
                 visited, queued, crawl_queue,
                 sitemap_meta, cfg, ctx, max_depth,
                 delay_cfg=delay_cfg,
+                content_hashes=content_hashes if cfg.CONTENT_DEDUP else None,
             )
             if page_written:
                 pages_crawled += 1
@@ -1066,6 +1151,13 @@ def crawl(
                 )
 
     finally:
+        # Save content hashes for change detection in future runs
+        if content_hashes:
+            try:
+                storage.save_content_hashes(run_dir, content_hashes)
+            except Exception as hash_err:
+                logger.warning("Failed to save content hashes: %s", hash_err)
+
         _finalise_run(
             run_dir, interrupted, pages_crawled,
             assets_from_pages, _combined_queue, started_at,
