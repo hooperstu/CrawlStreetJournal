@@ -61,6 +61,85 @@ import utils
 logger = logging.getLogger(__name__)
 
 
+# ── URL priority scoring ─────────────────────────────────────────────────
+
+_PRIORITY_PATH_BOOST = {
+    "/": -5, "": -5,
+}
+_PRIORITY_PATH_PENALTY_PREFIXES = (
+    "/tag/", "/tags/", "/page/", "/wp-content/", "/wp-includes/",
+    "/feed/", "/author/", "/attachment/", "/trackback/",
+    "/comment-page-", "/?replytocom=", "/print/",
+)
+
+
+def _score_url(url: str, depth: int, is_seed: bool) -> float:
+    """Compute a priority score for a URL (lower = higher priority).
+
+    Scoring factors:
+    - Seeds get a large bonus (processed first)
+    - Shallow depth is preferred over deep
+    - Homepage and root paths get a bonus
+    - Low-value URL patterns get a penalty
+    """
+    score = depth * 10.0
+
+    if is_seed:
+        score -= 100.0
+
+    try:
+        path = urlparse(url).path.lower().rstrip("/")
+    except Exception:
+        path = ""
+
+    if path in _PRIORITY_PATH_BOOST:
+        score += _PRIORITY_PATH_BOOST[path]
+
+    for prefix in _PRIORITY_PATH_PENALTY_PREFIXES:
+        if prefix in path:
+            score += 20.0
+            break
+
+    return score
+
+
+class _PriorityQueue:
+    """Thread-safe priority queue backed by heapq.
+
+    Each item is ``(score, counter, url, referrer, depth)`` where *counter*
+    breaks ties in FIFO order.
+    """
+
+    def __init__(self):
+        self._heap: List = []
+        self._counter = 0
+        self._lock = threading.Lock()
+
+    def push(self, url: str, referrer: str, depth: int, is_seed: bool = False):
+        score = _score_url(url, depth, is_seed)
+        with self._lock:
+            heapq.heappush(self._heap, (score, self._counter, url, referrer, depth))
+            self._counter += 1
+
+    def pop(self) -> Tuple[str, str, int]:
+        with self._lock:
+            _, _, url, referrer, depth = heapq.heappop(self._heap)
+            return url, referrer, depth
+
+    def __len__(self):
+        with self._lock:
+            return len(self._heap)
+
+    def __bool__(self):
+        with self._lock:
+            return bool(self._heap)
+
+    def to_list(self) -> List:
+        """Serialise for state persistence."""
+        with self._lock:
+            return [(url, ref, d) for _, _, url, ref, d in self._heap]
+
+
 # ── DNS cache ─────────────────────────────────────────────────────────────
 
 _dns_cache: Dict[Tuple[str, int], Any] = {}
@@ -653,8 +732,7 @@ def _init_run(
 
     Returns a tuple of all mutable crawl-state components.
     """
-    crawl_queue: deque = deque()
-    seed_queue: deque = deque()
+    pq = _PriorityQueue()
     queued: Set[str] = set()
     visited: Set[str] = set()
     sitemap_meta: Dict[str, Dict[str, str]] = {}
@@ -692,20 +770,17 @@ def _init_run(
                 if isinstance(item, (list, tuple)) and len(item) == 3:
                     u, ref, depth = item
                     if u not in visited and u not in queued:
-                        target = crawl_queue if depth > 0 else seed_queue
-                        target.append((u, ref, int(depth)))
+                        pq.push(u, ref, int(depth), is_seed=(depth == 0))
                         queued.add(u)
         logger.info(
-            "Resumed: %d visited, %d in queue (%d crawl + %d seed), "
-            "%d pages already crawled",
-            len(visited), len(crawl_queue) + len(seed_queue),
-            len(crawl_queue), len(seed_queue), pages_crawled,
+            "Resumed: %d visited, %d in queue, %d pages already crawled",
+            len(visited), len(pq), pages_crawled,
         )
     else:
-        _seed_queues(cfg, ctx, seed_urls, seed_queue, queued, sitemap_meta, on_phase)
+        _seed_queues(cfg, ctx, seed_urls, pq, queued, sitemap_meta, on_phase)
 
     return (
-        run_dir, crawl_queue, seed_queue, queued, visited,
+        run_dir, pq, queued, visited,
         sitemap_meta, pages_crawled, assets_from_pages, saved_state, cfg,
     )
 
@@ -714,15 +789,15 @@ def _seed_queues(
     cfg: CrawlConfig,
     ctx: StorageContext,
     seed_urls: Optional[List[str]],
-    seed_queue: deque,
+    pq: _PriorityQueue,
     queued: Set[str],
     sitemap_meta: Dict[str, Dict[str, str]],
     on_phase: Optional[Callable] = None,
 ) -> None:
-    """Populate *seed_queue* from seed URLs or sitemap discovery.
+    """Populate the priority queue from seed URLs or sitemap discovery.
 
     Asset-only URLs are written to the asset CSV directly rather than being
-    enqueued for HTML crawling.  Mutates *seed_queue*, *queued*, and
+    enqueued for HTML crawling.  Mutates *pq*, *queued*, and
     *sitemap_meta* in-place.
     """
     if seed_urls is not None:
@@ -756,7 +831,7 @@ def _seed_queues(
             ctx.write_asset(row, cat)
             continue
         if u not in queued:
-            seed_queue.append((u, ref, 0))
+            pq.push(u, ref, 0, is_seed=True)
             queued.add(u)
 
 
@@ -766,7 +841,7 @@ def _process_one_url(
     depth: int,
     visited: Set[str],
     queued: Set[str],
-    crawl_queue: deque,
+    pq: _PriorityQueue,
     sitemap_meta: Dict[str, Dict[str, str]],
     cfg: CrawlConfig,
     ctx: StorageContext,
@@ -870,7 +945,8 @@ def _process_one_url(
 
     # Content-hash deduplication: skip pages with identical visible text
     content_hashes = kwargs.get("content_hashes")
-    if content_hashes is not None and cfg.CONTENT_DEDUP:
+    content_hash = ""
+    if content_hashes is not None:
         from bs4 import BeautifulSoup as _BS
         visible = parser_module.get_visible_text(_BS(html, "lxml"))
         content_hash = hashlib.sha256(visible.encode("utf-8", errors="replace")).hexdigest()[:16]
@@ -885,6 +961,16 @@ def _process_one_url(
             })
             return False, 0, final_url
         content_hashes[content_hash] = url
+
+    # Change detection: compare hash against previous run
+    prev_hashes = kwargs.get("prev_hashes")
+    content_changed = ""
+    if prev_hashes and content_hash:
+        prev_hash = prev_hashes.get(content_hash)
+        if prev_hash:
+            content_changed = "unchanged"
+        else:
+            content_changed = "changed"
 
     sm = sitemap_meta.get(normalise_url(url)) or sitemap_meta.get(normalise_url(final_url)) or {}
     now = _now_iso()
@@ -903,6 +989,10 @@ def _process_one_url(
             response_meta=resp_meta,
             sitemap_meta=sm,
         )
+        if content_changed:
+            page_row["content_changed"] = content_changed
+        if content_hash:
+            page_row["content_hash"] = content_hash
         ctx.write_page(page_row)
         for tr in tag_rows:
             ctx.write_tag_row(tr)
@@ -971,7 +1061,7 @@ def _process_one_url(
         new_depth = depth + 1
         if max_depth is not None and new_depth > max_depth:
             continue
-        crawl_queue.append((norm, final_url, new_depth))
+        pq.push(norm, final_url, new_depth, is_seed=False)
         queued.add(norm)
 
     return True, new_assets, final_url
@@ -1073,7 +1163,7 @@ def crawl(
     state_interval = cfg.STATE_SAVE_INTERVAL
 
     (
-        run_dir, crawl_queue, seed_queue, queued, visited,
+        run_dir, pq, queued, visited,
         sitemap_meta, pages_crawled, assets_from_pages, saved_state, cfg,
     ) = _init_run(
         cfg, ctx, seed_urls, run_name, run_folder, resume,
@@ -1084,9 +1174,11 @@ def crawl(
     delay_cfg = cfg.REQUEST_DELAY_SECONDS if delay is None else delay
     max_depth = cfg.MAX_DEPTH
 
-    all_queued = list(seed_queue) + list(crawl_queue)
+    all_queued = pq.to_list()
     if all_queued and not (resume and saved_state):
-        _preflight_robots_report(all_queued, cfg, on_phase)
+        _preflight_robots_report(
+            [(u, r, d) for u, r, d in all_queued], cfg, on_phase,
+        )
 
     if resume and run_folder and saved_state and saved_state.get("started_at"):
         started_at = saved_state["started_at"]
@@ -1094,7 +1186,7 @@ def crawl(
         started_at = _now_iso()
 
     def _combined_queue() -> List[Any]:
-        return list(crawl_queue) + list(seed_queue)
+        return pq.to_list()
 
     storage.save_crawl_state(
         run_dir,
@@ -1116,42 +1208,92 @@ def crawl(
         if prev_hashes:
             logger.info("Loaded %d content hashes from previous run for change detection", len(prev_hashes))
 
-    queue_total = len(crawl_queue) + len(seed_queue)
+    queue_total = len(pq)
     if on_phase and queue_total:
-        on_phase("crawling", f"Starting crawl — {queue_total:,} URLs queued")
+        on_phase("crawling", f"Starting crawl \u2014 {queue_total:,} URLs queued")
 
     workers = max(1, cfg.CONCURRENT_WORKERS if cfg else 1)
 
     try:
-        while (crawl_queue or seed_queue) and pages_crawled < _max_pages:
-            if should_stop and should_stop():
-                interrupted = True
-                break
-
-            if crawl_queue:
-                url, referrer, depth = crawl_queue.popleft()
-            else:
-                url, referrer, depth = seed_queue.popleft()
-
-            page_written, new_assets, final_url = _process_one_url(
-                url, referrer, depth,
-                visited, queued, crawl_queue,
-                sitemap_meta, cfg, ctx, max_depth,
-                delay_cfg=delay_cfg,
-                content_hashes=content_hashes if cfg.CONTENT_DEDUP else None,
-            )
-            if page_written:
-                pages_crawled += 1
-                assets_from_pages += new_assets
-                if on_progress:
-                    on_progress(pages_crawled, assets_from_pages, final_url)
-                last_state_save = _persist_state_if_needed(
-                    run_dir, pages_crawled, last_state_save, state_interval,
-                    assets_from_pages, _combined_queue, started_at,
+        if workers <= 1:
+            # Sequential mode — original behaviour
+            while pq and pages_crawled < _max_pages:
+                if should_stop and should_stop():
+                    interrupted = True
+                    break
+                url, referrer, depth = pq.pop()
+                page_written, new_assets, final_url = _process_one_url(
+                    url, referrer, depth,
+                    visited, queued, pq,
+                    sitemap_meta, cfg, ctx, max_depth,
+                    delay_cfg=delay_cfg,
+                    content_hashes=content_hashes if cfg.CONTENT_DEDUP else None,
+                    prev_hashes=prev_hashes if cfg.CHANGE_DETECTION else None,
                 )
+                if page_written:
+                    pages_crawled += 1
+                    assets_from_pages += new_assets
+                    if on_progress:
+                        on_progress(pages_crawled, assets_from_pages, final_url)
+                    last_state_save = _persist_state_if_needed(
+                        run_dir, pages_crawled, last_state_save, state_interval,
+                        assets_from_pages, _combined_queue, started_at,
+                    )
+        else:
+            # Concurrent mode — submit batches to a thread pool.
+            # Per-domain rate limiting is preserved because _wait_for_domain
+            # is called inside _process_one_url with a per-domain lock.
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                while pq and pages_crawled < _max_pages:
+                    if should_stop and should_stop():
+                        interrupted = True
+                        break
+
+                    # Drain up to `workers` items from the queue, preferring
+                    # URLs from different domains for maximum parallelism.
+                    batch = []
+                    batch_domains: Set[str] = set()
+                    while pq and len(batch) < workers:
+                        url, referrer, depth = pq.pop()
+                        batch.append((url, referrer, depth))
+                        try:
+                            batch_domains.add(urlparse(url).hostname or "")
+                        except Exception:
+                            pass
+
+                    futures = {}
+                    for url, referrer, depth in batch:
+                        f = pool.submit(
+                            _process_one_url,
+                            url, referrer, depth,
+                            visited, queued, pq,
+                            sitemap_meta, cfg, ctx, max_depth,
+                            delay_cfg=delay_cfg,
+                            content_hashes=content_hashes if cfg.CONTENT_DEDUP else None,
+                            prev_hashes=prev_hashes if cfg.CHANGE_DETECTION else None,
+                        )
+                        futures[f] = url
+
+                    for f in as_completed(futures):
+                        try:
+                            page_written, new_assets, final_url = f.result()
+                        except Exception as exc:
+                            logger.warning("Worker error for %s: %s", futures[f], exc)
+                            continue
+                        if page_written:
+                            pages_crawled += 1
+                            assets_from_pages += new_assets
+                            if on_progress:
+                                on_progress(pages_crawled, assets_from_pages, final_url)
+                            last_state_save = _persist_state_if_needed(
+                                run_dir, pages_crawled, last_state_save,
+                                state_interval, assets_from_pages,
+                                _combined_queue, started_at,
+                            )
+                        if pages_crawled >= _max_pages:
+                            break
 
     finally:
-        # Save content hashes for change detection in future runs
         if content_hashes:
             try:
                 storage.save_content_hashes(run_dir, content_hashes)
