@@ -1258,11 +1258,15 @@ def _compute_extraction_coverage(page_row: Dict[str, Any]) -> str:
 
 
 def _assess_wcag_static(soup: BeautifulSoup, lang: str, title: str) -> dict:
-    """Static-HTML WCAG checks per page, returned as string values for CSV."""
-    # 3.1.1 — language of page declared and plausible
+    """Static-HTML WCAG checks per page, returned as string values for CSV.
+
+    Covers testable Level A and AA criteria from WCAG 2.1 that can be
+    assessed from the raw HTML without rendering or user interaction.
+    """
+    # 3.1.1 Language of Page (Level A)
     lang_valid = bool(lang and len(lang) >= 2)
 
-    # 1.3.1 — heading hierarchy: no skipped levels
+    # 1.3.1 Info and Relationships — heading hierarchy (Level A)
     levels = [int(h.name[1]) for h in soup.find_all(re.compile(r"^h[1-6]$"))]
     heading_ok = True
     for i in range(1, len(levels)):
@@ -1270,10 +1274,10 @@ def _assess_wcag_static(soup: BeautifulSoup, lang: str, title: str) -> dict:
             heading_ok = False
             break
 
-    # 2.4.2 — page has a non-empty title
+    # 2.4.2 Page Titled (Level A)
     title_present = bool(title.strip())
 
-    # 1.3.1 — form inputs have associated labels
+    # 1.3.1 Info and Relationships — form labels (Level A)
     inputs = soup.find_all("input", attrs={
         "type": lambda t: t not in (None, "hidden", "submit", "button", "reset", "image"),
     })
@@ -1287,17 +1291,82 @@ def _assess_wcag_static(soup: BeautifulSoup, lang: str, title: str) -> dict:
             labelled += 1
     form_labels_pct = labelled / len(inputs) if inputs else 1.0
 
-    # 2.4.1 — bypass blocks (landmarks or skip link)
+    # 2.4.1 Bypass Blocks (Level A)
     has_main = bool(soup.find("main") or soup.find(attrs={"role": "main"}))
     has_skip = bool(soup.find("a", href=re.compile(r"^#(main|content|skip)", re.I)))
     landmarks_present = has_main or has_skip
 
-    # 2.4.4 — vague link text
+    # 2.4.4 Link Purpose (Level A)
     links = soup.find_all("a", href=True)
     vague_count = sum(
         1 for a in links if a.get_text(strip=True).lower() in _VAGUE_LINK_TEXTS
     )
     vague_link_pct = vague_count / len(links) if links else 0.0
+
+    # 1.1.1 Non-text Content — images without alt (Level A)
+    imgs = soup.find_all("img")
+    imgs_total = len(imgs)
+    imgs_no_alt = sum(1 for i in imgs if not (i.get("alt") or "").strip())
+    img_alt_pct = 1.0 - (imgs_no_alt / imgs_total) if imgs_total else 1.0
+
+    # 2.4.6 Headings and Labels — empty headings (Level AA)
+    all_headings = soup.find_all(re.compile(r"^h[1-6]$"))
+    empty_headings = sum(1 for h in all_headings if not h.get_text(strip=True))
+
+    # 4.1.1 Parsing — duplicate IDs (Level A)
+    ids_seen: dict = {}
+    duplicate_ids = 0
+    for el in soup.find_all(attrs={"id": True}):
+        eid = el.get("id", "")
+        if eid in ids_seen:
+            duplicate_ids += 1
+        ids_seen[eid] = True
+
+    # 4.1.2 Name, Role, Value — buttons/links without accessible names (Level A)
+    buttons = soup.find_all(["button", "input"])
+    empty_buttons = 0
+    for btn in buttons:
+        if btn.name == "input" and btn.get("type") in ("hidden", None):
+            continue
+        if btn.name == "input" and btn.get("type") in ("submit", "button", "reset"):
+            if not (btn.get("value") or btn.get("aria-label") or "").strip():
+                empty_buttons += 1
+        elif btn.name == "button":
+            if not (btn.get_text(strip=True) or btn.get("aria-label") or "").strip():
+                empty_buttons += 1
+
+    empty_links = sum(
+        1 for a in links
+        if not (a.get_text(strip=True) or a.get("aria-label") or
+                a.get("aria-labelledby") or a.get("title") or "").strip()
+        and not a.find("img", attrs={"alt": True})
+    )
+
+    # 1.3.1 Info and Relationships — data tables (Level A)
+    tables = soup.find_all("table")
+    tables_no_headers = sum(1 for t in tables if not t.find("th"))
+
+    # 1.3.5 Identify Input Purpose — autocomplete on form fields (Level AA)
+    _AUTOCOMPLETE_TYPES = {"text", "email", "tel", "url", "search", "password"}
+    autocomplete_inputs = [
+        inp for inp in soup.find_all("input")
+        if (inp.get("type") or "text").lower() in _AUTOCOMPLETE_TYPES
+    ]
+    autocomplete_present = sum(
+        1 for inp in autocomplete_inputs if inp.get("autocomplete")
+    )
+    autocomplete_pct = (
+        autocomplete_present / len(autocomplete_inputs)
+        if autocomplete_inputs else 1.0
+    )
+
+    # 2.4.5 Multiple Ways (Level AA) — site has search, nav, and sitemap link
+    has_search = bool(
+        soup.find("input", attrs={"type": "search"}) or
+        soup.find("form", attrs={"role": "search"}) or
+        soup.find("input", attrs={"name": re.compile(r"search|query|q$", re.I)})
+    )
+    has_nav = bool(soup.find("nav"))
 
     return {
         "wcag_lang_valid": "1" if lang_valid else "0",
@@ -1306,6 +1375,16 @@ def _assess_wcag_static(soup: BeautifulSoup, lang: str, title: str) -> dict:
         "wcag_form_labels_pct": str(round(form_labels_pct, 3)),
         "wcag_landmarks_present": "1" if landmarks_present else "0",
         "wcag_vague_link_pct": str(round(vague_link_pct, 3)),
+        # Extended WCAG checks
+        "wcag_img_alt_pct": str(round(img_alt_pct, 3)),
+        "wcag_empty_headings": str(empty_headings),
+        "wcag_duplicate_ids": str(duplicate_ids),
+        "wcag_empty_buttons": str(empty_buttons),
+        "wcag_empty_links": str(empty_links),
+        "wcag_tables_no_headers": str(tables_no_headers),
+        "wcag_autocomplete_pct": str(round(autocomplete_pct, 3)),
+        "wcag_has_search": "1" if has_search else "0",
+        "wcag_has_nav": "1" if has_nav else "0",
     }
 
 
