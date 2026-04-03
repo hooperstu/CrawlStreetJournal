@@ -77,6 +77,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from flask import (
     Flask,
     Response,
+    jsonify,
     redirect,
     render_template,
     request,
@@ -904,6 +905,37 @@ def project_settings(slug: str):
     project["slug"] = slug
     cfg = storage_module.load_project_defaults(slug) or storage_module.snapshot_config()
     return render_template("project_settings.html", project=project, cfg=cfg)
+
+
+@app.route("/p/<slug>/audit")
+def project_audit(slug: str):
+    """``GET /p/<slug>/audit`` — Content audit findings."""
+    project = storage_module.load_project(slug)
+    if not project:
+        return "Project not found", 404
+    project["slug"] = slug
+    return render_template("audit.html", project=project)
+
+
+@app.route("/p/<slug>/api/audit")
+def api_audit(slug: str):
+    """``GET /p/<slug>/api/audit`` — JSON audit report."""
+    project = storage_module.load_project(slug)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+    import audit_data
+    ctx = storage_module.activate_project(slug)
+    run_dirs = []
+    base = config.OUTPUT_DIR
+    if os.path.isdir(base):
+        run_dirs = [
+            os.path.join(base, n)
+            for n in sorted(os.listdir(base))
+            if n.startswith("run_") and os.path.isdir(os.path.join(base, n))
+        ]
+    if not run_dirs:
+        return jsonify({"summary": {"checks_run": 0, "total_findings": 0}, "checks": {}})
+    return jsonify(audit_data.run_full_audit(run_dirs))
 
 
 @app.route("/p/<slug>/defaults", methods=["POST"])
