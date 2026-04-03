@@ -265,15 +265,6 @@
       <textarea name="domain_ownership_rules" rows="4" placeholder="nhs.uk = NHS&#10;gov.uk = Government&#10;co.uk = Commercial" style="font-family:monospace;font-size:13px;">{% for rule in cfg.get("DOMAIN_OWNERSHIP_RULES", []) %}{% if rule is iterable and rule|length >= 2 %}{{ rule[0] }} = {{ rule[1] }}
 {% endif %}{% endfor %}</textarea>
     </div>
-    <div class="form-group">
-      <label class="form-label">Log level</label>
-      <select name="log_level" style="max-width:160px;">
-        {% for lvl in ["DEBUG", "INFO", "WARNING", "ERROR"] %}
-        <option value="{{ lvl }}" {% if cfg.get("LOG_LEVEL", "INFO") == lvl %}selected{% endif %}>{{ lvl }}</option>
-        {% endfor %}
-      </select>
-      <p class="field-explain">Controls how much detail appears in the crawl monitor log. DEBUG is the most verbose.</p>
-    </div>
   </div>
 </div>
 
