@@ -1,0 +1,308 @@
+{% extends "base.html" %}
+{% set active_tab = 'audit' %}
+{% block title %}Audit — {{ project.name }} | CSJ{% endblock %}
+
+{% block content %}
+<style>
+  .audit-loading { text-align:center; padding:60px 0; color:var(--csj-body); font-size:15px; }
+  .audit-summary { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:24px; }
+  .audit-stat {
+    flex:1; min-width:120px; background:var(--csj-paper); border:1px solid var(--border);
+    border-radius:var(--radius); padding:16px 20px; text-align:center;
+    box-shadow:var(--shadow);
+  }
+  .audit-stat-val { font-size:32px; font-weight:700; color:var(--csj-headline); }
+  .audit-stat-label { font-size:12px; color:var(--csj-body); margin-top:2px; }
+  .audit-stat.high .audit-stat-val { color:var(--csj-error); }
+  .audit-stat.medium .audit-stat-val { color:#C4841D; }
+
+  .finding-card {
+    background:var(--csj-paper); border:1px solid var(--border); border-radius:var(--radius);
+    box-shadow:var(--shadow); margin-bottom:16px; overflow:hidden;
+  }
+  .finding-header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:14px 20px; cursor:pointer; user-select:none; gap:12px;
+  }
+  .finding-header:hover { background:var(--csj-newsprint); }
+  .finding-title { font-family:"Libre Baskerville",Georgia,serif; font-size:15px; font-weight:700; color:var(--csj-headline); }
+  .finding-meta { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--csj-body); flex-shrink:0; }
+  .sev-badge {
+    display:inline-block; padding:2px 10px; border-radius:10px;
+    font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.3px;
+  }
+  .sev-high { background:#fde8ec; color:var(--csj-error); }
+  .sev-medium { background:#fff3e0; color:#C4841D; }
+  .sev-low { background:#e8f5e9; color:var(--csj-success); }
+  .sev-none { background:var(--csj-newsprint); color:var(--csj-body); }
+  .finding-arrow { font-size:12px; color:var(--csj-body); transition:transform .2s; }
+  .finding-arrow.open { transform:rotate(90deg); }
+
+  .finding-body { display:none; padding:0 20px 16px; border-top:1px solid var(--border); }
+  .finding-body.open { display:block; }
+  .finding-desc { font-size:13px; color:var(--csj-body); margin:12px 0; line-height:1.5; }
+
+  .finding-table { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px; }
+  .finding-table th { background:var(--csj-newsprint); font-weight:600; font-size:11px;
+    text-transform:uppercase; letter-spacing:.3px; padding:6px 10px; text-align:left; color:var(--csj-body); }
+  .finding-table td { padding:6px 10px; border-bottom:1px solid var(--csj-newsprint);
+    max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .finding-table tr:hover td { background:#FAF8F5; }
+  .finding-table a { color:var(--csj-accent); text-decoration:none; }
+  .finding-table a:hover { text-decoration:underline; }
+
+  .tag-row { display:flex; flex-wrap:wrap; gap:4px; margin:8px 0; }
+  .tag-item { font-size:11px; padding:2px 8px; border-radius:8px; background:var(--csj-newsprint); color:var(--csj-body); }
+  .tag-item.warn { background:#fff3e0; color:#C4841D; }
+  .tag-item.err { background:#fde8ec; color:var(--csj-error); }
+
+  .mini-bar { display:flex; align-items:center; gap:6px; }
+  .mini-bar-track { flex:1; height:6px; background:var(--csj-newsprint); border-radius:3px; overflow:hidden; max-width:120px; }
+  .mini-bar-fill { height:100%; border-radius:3px; }
+</style>
+
+<h1 class="page-title">Content Audit</h1>
+
+<div id="audit-loading" class="audit-loading">Analysing crawl data&hellip;</div>
+<div id="audit-content" style="display:none;"></div>
+
+<script>
+(function() {
+  var API = "{{ url_for('api_audit', slug=project.slug) }}";
+
+  fetch(API).then(function(r) { return r.json(); }).then(function(data) {
+    document.getElementById('audit-loading').style.display = 'none';
+    var container = document.getElementById('audit-content');
+    container.style.display = '';
+
+    var s = data.summary || {};
+    var checks = data.checks || {};
+
+    /* ── Summary cards ──────────────────────────────── */
+    var summaryHtml = '<div class="audit-summary">' +
+      '<div class="audit-stat"><div class="audit-stat-val">' + (s.total_findings || 0) + '</div><div class="audit-stat-label">Total findings</div></div>' +
+      '<div class="audit-stat high"><div class="audit-stat-val">' + (s.high || 0) + '</div><div class="audit-stat-label">High severity</div></div>' +
+      '<div class="audit-stat medium"><div class="audit-stat-val">' + (s.medium || 0) + '</div><div class="audit-stat-label">Medium severity</div></div>' +
+      '<div class="audit-stat"><div class="audit-stat-val">' + (s.low || 0) + '</div><div class="audit-stat-label">Low severity</div></div>' +
+      '<div class="audit-stat"><div class="audit-stat-val">' + (s.checks_run || 0) + '</div><div class="audit-stat-label">Checks run</div></div>' +
+      '</div>';
+
+    /* ── Finding cards ──────────────────────────────── */
+    var descriptions = {
+      "duplicate_content": "Pages sharing identical titles or descriptions across different URLs. Harms SEO and confuses users.",
+      "redirects": "URLs that redirect to a different location. Cross-domain redirects and chains indicate migration debt.",
+      "thin_content": "Pages with fewer than 50 words, no headings, or zero internal links. Low-value pages that clutter the estate.",
+      "title_meta": "Titles and meta descriptions that are missing, too short, or too long for search engine display.",
+      "orphan_pages": "Pages that receive no inbound links from other crawled pages. Effectively invisible to users navigating the site.",
+      "link_distribution": "How internal link equity is distributed. Pages with zero inbound links vs heavily linked hubs.",
+      "image_accessibility": "Images missing alt text, which harms screen reader users and accessibility compliance.",
+      "url_structure": "URL depth, length, and query parameter patterns. Deep URLs suggest structural problems.",
+      "content_decay": "Content published years ago and never updated. Stale content erodes trust and accuracy.",
+      "broken_links": "Crawl errors: fetch failures, robots blocks, non-HTML responses. Domains with the most broken content.",
+    };
+
+    var order = ["duplicate_content", "title_meta", "thin_content", "content_decay",
+      "orphan_pages", "link_distribution", "image_accessibility", "redirects",
+      "url_structure", "broken_links"];
+
+    var cardsHtml = '';
+    order.forEach(function(id) {
+      var c = checks[id];
+      if (!c) return;
+      var sevClass = 'sev-' + (c.severity || 'none');
+      var countLabel = c.count + ' finding' + (c.count !== 1 ? 's' : '');
+      if (c.total) countLabel += ' / ' + c.total + ' pages';
+
+      cardsHtml += '<div class="finding-card">' +
+        '<div class="finding-header" data-target="body-' + id + '">' +
+          '<div><span class="finding-title">' + c.title + '</span></div>' +
+          '<div class="finding-meta">' +
+            '<span>' + countLabel + '</span>' +
+            '<span class="sev-badge ' + sevClass + '">' + (c.severity || 'none') + '</span>' +
+            '<span class="finding-arrow" id="arrow-' + id + '">▶</span>' +
+          '</div>' +
+        '</div>' +
+        '<div class="finding-body" id="body-' + id + '">' +
+          '<p class="finding-desc">' + (descriptions[id] || '') + '</p>' +
+          buildFindingContent(id, c) +
+        '</div>' +
+      '</div>';
+    });
+
+    container.innerHTML = summaryHtml + cardsHtml;
+
+    /* ── Toggle handlers ────────────────────────────── */
+    container.querySelectorAll('.finding-header').forEach(function(hdr) {
+      hdr.addEventListener('click', function() {
+        var targetId = hdr.getAttribute('data-target');
+        var body = document.getElementById(targetId);
+        var arrow = hdr.querySelector('.finding-arrow');
+        body.classList.toggle('open');
+        arrow.classList.toggle('open');
+      });
+    });
+  });
+
+  function fmt(n) { return n.toLocaleString(); }
+  function truncUrl(u) { return u.length > 70 ? u.slice(0, 67) + '…' : u; }
+
+  function buildFindingContent(id, c) {
+    var html = '';
+
+    /* Domain breakdown (shared by several checks) */
+    if (c.by_domain && c.by_domain.length) {
+      html += '<div class="tag-row">';
+      c.by_domain.slice(0, 10).forEach(function(d) {
+        html += '<span class="tag-item">' + d.domain + ': ' + d.count + '</span>';
+      });
+      html += '</div>';
+    }
+
+    /* Check-specific content */
+    if (id === 'duplicate_content') {
+      if (c.findings && c.findings.length) {
+        html += '<h4 style="font-size:13px;font-weight:600;margin:12px 0 6px;">Identical title + description</h4>';
+        html += '<table class="finding-table"><thead><tr><th>Title</th><th>URLs</th></tr></thead><tbody>';
+        c.findings.slice(0, 20).forEach(function(f) {
+          html += '<tr><td>' + esc(f.title) + '</td><td>' + f.count + ' pages</td></tr>';
+        });
+        html += '</tbody></table>';
+      }
+      if (c.title_duplicates && c.title_duplicates.length) {
+        html += '<h4 style="font-size:13px;font-weight:600;margin:12px 0 6px;">Duplicate titles only (' + c.title_duplicates.length + ' groups)</h4>';
+        html += '<table class="finding-table"><thead><tr><th>Title</th><th>URLs</th></tr></thead><tbody>';
+        c.title_duplicates.slice(0, 20).forEach(function(f) {
+          html += '<tr><td>' + esc(f.title) + '</td><td>' + f.count + ' pages</td></tr>';
+        });
+        html += '</tbody></table>';
+      }
+    }
+
+    else if (id === 'redirects') {
+      html += '<div class="tag-row">' +
+        '<span class="tag-item">' + c.count + ' total redirects</span>' +
+        '<span class="tag-item warn">' + (c.cross_domain_count || 0) + ' cross-domain</span></div>';
+      html += buildUrlTable(c.findings, ['from_url', 'to_url', 'cross_domain']);
+    }
+
+    else if (id === 'thin_content' || id === 'content_decay') {
+      html += buildUrlTable(c.findings, ['url', 'title', 'issues']);
+    }
+
+    else if (id === 'title_meta') {
+      if (c.summary) {
+        var sm = c.summary;
+        html += '<div class="tag-row">';
+        if (sm.missing_title) html += '<span class="tag-item err">Missing title: ' + sm.missing_title + '</span>';
+        if (sm.short_title) html += '<span class="tag-item warn">Short title: ' + sm.short_title + '</span>';
+        if (sm.long_title) html += '<span class="tag-item warn">Long title: ' + sm.long_title + '</span>';
+        if (sm.missing_description) html += '<span class="tag-item err">Missing description: ' + sm.missing_description + '</span>';
+        if (sm.short_description) html += '<span class="tag-item warn">Short description: ' + sm.short_description + '</span>';
+        if (sm.long_description) html += '<span class="tag-item warn">Long description: ' + sm.long_description + '</span>';
+        html += '</div>';
+      }
+      html += buildUrlTable(c.findings, ['url', 'title', 'title_length', 'description_length', 'issues']);
+    }
+
+    else if (id === 'orphan_pages') {
+      html += '<div class="tag-row"><span class="tag-item warn">Sitemap-only: ' + (c.sitemap_only_count || 0) + '</span></div>';
+      html += buildUrlTable(c.findings, ['url', 'title', 'referrer', 'depth']);
+    }
+
+    else if (id === 'link_distribution') {
+      html += '<div class="tag-row">' +
+        '<span class="tag-item">' + fmt(c.total_edges || 0) + ' total edges</span>' +
+        '<span class="tag-item">Avg inbound: ' + (c.avg_inbound || 0) + '</span>' +
+        '<span class="tag-item">Median inbound: ' + (c.median_inbound || 0) + '</span>' +
+        '<span class="tag-item warn">Zero inbound: ' + (c.zero_inbound_count || 0) + '</span></div>';
+      if (c.top_linked && c.top_linked.length) {
+        html += '<h4 style="font-size:13px;font-weight:600;margin:12px 0 6px;">Most linked pages</h4>';
+        html += buildUrlTable(c.top_linked, ['url', 'title', 'inbound_links']);
+      }
+      if (c.link_sinks && c.link_sinks.length) {
+        html += '<h4 style="font-size:13px;font-weight:600;margin:12px 0 6px;">Link sinks (many in, few out)</h4>';
+        html += buildUrlTable(c.link_sinks, ['url', 'title', 'inbound', 'outbound']);
+      }
+    }
+
+    else if (id === 'image_accessibility') {
+      html += '<div class="tag-row">' +
+        '<span class="tag-item">' + fmt(c.total_images || 0) + ' total images</span>' +
+        '<span class="tag-item err">' + fmt(c.total_missing_alt || 0) + ' missing alt (' + (c.pct_missing || 0) + '%)</span></div>';
+      if (c.by_domain && c.by_domain.length) {
+        html += '<h4 style="font-size:13px;font-weight:600;margin:12px 0 6px;">By domain</h4>';
+        html += '<table class="finding-table"><thead><tr><th>Domain</th><th>Pages</th><th>Images</th><th>Missing alt</th><th>%</th></tr></thead><tbody>';
+        c.by_domain.forEach(function(d) {
+          html += '<tr><td>' + d.domain + '</td><td>' + d.pages_affected + '</td><td>' + d.total_images + '</td><td>' + d.missing_alt + '</td><td>' + d.pct_missing + '%</td></tr>';
+        });
+        html += '</tbody></table>';
+      }
+    }
+
+    else if (id === 'url_structure') {
+      if (c.depth_distribution) {
+        html += '<h4 style="font-size:13px;font-weight:600;margin:12px 0 6px;">Path depth distribution</h4><div class="tag-row">';
+        c.depth_distribution.forEach(function(d) {
+          html += '<span class="tag-item' + (d.depth >= 5 ? ' warn' : '') + '">Depth ' + d.depth + ': ' + d.count + '</span>';
+        });
+        html += '</div>';
+      }
+      if (c.top_query_params && c.top_query_params.length) {
+        html += '<h4 style="font-size:13px;font-weight:600;margin:12px 0 6px;">Query parameters</h4><div class="tag-row">';
+        c.top_query_params.forEach(function(p) {
+          html += '<span class="tag-item">?' + p.param + ' (' + p.count + ')</span>';
+        });
+        html += '</div>';
+      }
+      if (c.deep_urls && c.deep_urls.length) {
+        html += '<h4 style="font-size:13px;font-weight:600;margin:12px 0 6px;">Deepest URLs (5+ segments)</h4>';
+        html += buildUrlTable(c.deep_urls, ['url', 'domain', 'depth']);
+      }
+    }
+
+    else if (id === 'broken_links') {
+      if (c.by_type && c.by_type.length) {
+        html += '<div class="tag-row">';
+        c.by_type.forEach(function(t) {
+          html += '<span class="tag-item err">' + t.type + ': ' + t.count + '</span>';
+        });
+        html += '</div>';
+      }
+      html += buildUrlTable(c.findings, ['url', 'error_type', 'http_status', 'message']);
+    }
+
+    return html;
+  }
+
+  function buildUrlTable(rows, cols) {
+    if (!rows || !rows.length) return '<p class="finding-desc" style="font-style:italic;">No findings.</p>';
+    var html = '<table class="finding-table"><thead><tr>';
+    cols.forEach(function(c) {
+      var label = c.replace(/_/g, ' ').replace(/\b\w/g, function(l) { return l.toUpperCase(); });
+      html += '<th>' + label + '</th>';
+    });
+    html += '</tr></thead><tbody>';
+    rows.slice(0, 50).forEach(function(row) {
+      html += '<tr>';
+      cols.forEach(function(c) {
+        var val = row[c];
+        if (Array.isArray(val)) val = val.join(', ');
+        if (typeof val === 'boolean') val = val ? 'Yes' : 'No';
+        val = String(val || '');
+        if (c === 'url' || c === 'from_url' || c === 'to_url') {
+          html += '<td><a href="' + esc(val) + '" target="_blank" title="' + esc(val) + '">' + esc(truncUrl(val)) + '</a></td>';
+        } else {
+          html += '<td>' + esc(val) + '</td>';
+        }
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    if (rows.length > 50) html += '<p class="finding-desc">Showing 50 of ' + rows.length + ' findings.</p>';
+    return html;
+  }
+
+  function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+})();
+</script>
+{% endblock %}
