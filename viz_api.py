@@ -1,14 +1,14 @@
 """
-Ecosystem mapping — Flask Blueprint.
+Reports — Flask Blueprint.
 
 JSON API endpoints that serve aggregated crawl data to D3.js
 visualisations, plus the HTML page route for the dashboard itself.
 
-The dashboard lives at project level (``/p/<slug>/ecosystem``) and
+The dashboard lives at project level (``/p/<slug>/reports``) and
 aggregates data from one or more crawl runs.  A ``?runs=`` query
 parameter selects specific runs; omitting it includes all runs.
 
-Legacy per-run URLs (``/p/<slug>/runs/<run_name>/ecosystem``) redirect
+Legacy per-run URLs (``/p/<slug>/runs/<run_name>/reports``) redirect
 to the project-level dashboard with the corresponding ``?runs=`` preset.
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ import config
 import storage as storage_module
 import viz_data
 
-eco_bp = Blueprint("ecosystem", __name__)
+eco_bp = Blueprint("reports", __name__)
 
 
 def _resolve_run_dirs(slug: str) -> List[str]:
@@ -99,9 +99,9 @@ def _parse_filters() -> Optional[Dict[str, Any]]:
 
 # ── Project-level page route ─────────────────────────────────────────────
 
-@eco_bp.route("/p/<slug>/ecosystem")
-def ecosystem_dashboard(slug: str):
-    """Render the ecosystem dashboard at project level."""
+@eco_bp.route("/p/<slug>/reports")
+def reports_dashboard(slug: str):
+    """Render the reports dashboard at project level."""
     project = storage_module.load_project(slug)
     if not project:
         return "Project not found", 404
@@ -110,7 +110,7 @@ def ecosystem_dashboard(slug: str):
     runs = ctx.list_run_dirs()
     preselected = request.args.get("runs", "")
     return render_template(
-        "ecosystem.html",
+        "reports.html",
         project=project,
         runs=runs,
         preselected_runs=preselected,
@@ -119,11 +119,11 @@ def ecosystem_dashboard(slug: str):
 
 # ── Legacy per-run redirect ─────────────────────────────────────────────
 
-@eco_bp.route("/p/<slug>/runs/<run_name>/ecosystem")
-def ecosystem_dashboard_legacy(slug: str, run_name: str):
+@eco_bp.route("/p/<slug>/runs/<run_name>/reports")
+def reports_dashboard_legacy(slug: str, run_name: str):
     """Redirect old per-run URLs to the project-level dashboard."""
     return redirect(
-        url_for("ecosystem.ecosystem_dashboard", slug=slug, runs=run_name)
+        url_for("reports.reports_dashboard", slug=slug, runs=run_name)
     )
 
 
@@ -185,8 +185,10 @@ def api_navigation(slug: str):
     if not run_dirs:
         return jsonify({"domains": [], "tree": None})
     domain = request.args.get("domain")
+    max_depth = request.args.get("depth", 2, type=int)
+    max_depth = max(1, min(max_depth, 8))
     data = viz_data.aggregate_navigation(
-        run_dirs, domain=domain, filters=_parse_filters(),
+        run_dirs, domain=domain, max_depth=max_depth, filters=_parse_filters(),
     )
     return jsonify(data)
 

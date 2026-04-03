@@ -516,8 +516,8 @@ def extract_classified_links(
     html: str,
     base_url: str,
     discovered_at: str,
-) -> Tuple[Set[str], List[dict], List[dict]]:
-    """Partition ``<a href>`` links into crawlable HTML URLs, assets, and edges.
+) -> Tuple[Set[str], List[dict], List[dict], List[dict]]:
+    """Partition ``<a href>`` links into crawlable HTML URLs, assets, edges, and phone numbers.
 
     Args:
         html: Raw HTML of the page.
@@ -525,21 +525,36 @@ def extract_classified_links(
         discovered_at: ISO timestamp for provenance tracking.
 
     Returns:
-        A 3-tuple of:
+        A 4-tuple of:
         - *html_urls* — same-host URLs to enqueue for HTML crawling.
         - *asset_rows* — dicts matching ``ASSET_FIELDS`` (``head_*`` empty).
         - *edge_rows* — dicts for the link-graph CSV (``edges.csv``).
+        - *phone_rows* — dicts matching ``PHONE_NUMBER_FIELDS`` for ``tel:`` hrefs.
     """
     soup = BeautifulSoup(html, "lxml")
     html_urls: Set[str] = set()
     asset_rows: List[dict] = []
     edge_rows: List[dict] = []
+    phone_rows: List[dict] = []
 
     for a in soup.find_all("a", href=True):
         href = a["href"].strip()
         if not href or href.startswith("#") or href.startswith("mailto:"):
             continue
         if href.startswith("javascript:"):
+            continue
+        if href.lower().startswith("tel:"):
+            phone_number = href[4:].strip()
+            if not phone_number:
+                continue
+            anchor = (a.get_text() or "").strip()
+            phone_rows.append({
+                "page_url": base_url,
+                "raw_href": href,
+                "phone_number": phone_number,
+                "link_text": anchor,
+                "discovered_at": discovered_at,
+            })
             continue
         full = _normalise_url(href, base_url)
         if not full or not _is_allowed_domain(full):
@@ -565,7 +580,7 @@ def extract_classified_links(
         else:
             html_urls.add(full)
 
-    return html_urls, asset_rows, edge_rows
+    return html_urls, asset_rows, edge_rows, phone_rows
 
 
 def _document_title_from_soup(soup: BeautifulSoup) -> str:

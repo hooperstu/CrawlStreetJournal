@@ -1,6 +1,6 @@
 {#
-  ecosystem.html — D3-powered ecosystem visualisation dashboard (project level).
-  Route: GET /p/<slug>/ecosystem  (ecosystem.ecosystem_dashboard)
+  reports.html — D3-powered reports visualisation dashboard (project level).
+  Route: GET /p/<slug>/reports  (reports.reports_dashboard)
   Context: project (dict), runs (list of run metadata dicts),
            preselected_runs (comma-separated run names or "").
 
@@ -8,23 +8,23 @@
     Tab groups are organised into five pillars — Governance, Trust, Findability,
     Technology & Standards, and Provenance & Authorship. Each tab's data-panel
     attribute maps to a <div id="panel-{name}"> below and a corresponding
-    render function in static/js/ecosystem.js.
+    render function in static/js/reports.js.
 
   CSS mapping (inline <style> blocks):
     .viz-tab / .viz-panel  — tab switching; JS toggles .active class.
     .viz-container         — card wrapper for each visualisation.
-    .viz-tooltip           — shared floating tooltip, positioned by ecosystem.js.
+    .viz-tooltip           — shared floating tooltip, positioned by reports.js.
     .network-detail-overlay— slide-in side panel for domain node details (network graph).
-    .filter-bar / .filter-chip — global filter controls wired up in ecosystem.js.
+    .filter-bar / .filter-chip — global filter controls wired up in reports.js.
 
   JavaScript:
-    window.ECO_API is populated with Jinja url_for() calls so ecosystem.js
-    can fetch JSON data from the ecosystem blueprint API endpoints.
-    D3 v7 and d3-cloud are loaded from CDN before ecosystem.js.
+    window.ECO_API is populated with Jinja url_for() calls so reports.js
+    can fetch JSON data from the reports blueprint API endpoints.
+    D3 v7 and d3-cloud are loaded from CDN before reports.js.
 #}
 {% extends "base.html" %}
-{% set active_tab = 'ecosystem' %}
-{% block title %}Ecosystem — {{ project.name }} | CSJ{% endblock %}
+{% set active_tab = 'reports' %}
+{% block title %}Reports — {{ project.name }} | CSJ{% endblock %}
 
 
 
@@ -529,22 +529,6 @@
     border-radius: 3px;
     max-width: 180px;
   }
-  .filter-help {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 13px;
-    height: 13px;
-    font-size: 9px;
-    font-weight: 700;
-    line-height: 1;
-    border-radius: 50%;
-    background: var(--csj-muted, #888);
-    color: #fff;
-    cursor: help;
-    vertical-align: middle;
-    margin-left: 1px;
-  }
 
   /* ── Custom multi-select dropdown ──────────────────────── */
   .multi-select { position: relative; display: inline-block; }
@@ -687,10 +671,8 @@
         </div>
       </div>
       <div class="filter-group">
-        <label title="Percentage of metadata fields successfully extracted per page. Higher values = more complete pages.">Metadata quality &ge; <span class="filter-help">?</span></label>
-        <input type="number" id="filter-coverage" min="0" max="100" step="5" placeholder="0%"
-               style="width:60px;"
-               title="Filter to pages where at least this % of metadata fields were populated (0–100). E.g. 50 = only pages with half or more fields filled.">
+        <label>Coverage &ge;</label>
+        <input type="number" id="filter-coverage" min="0" max="100" step="5" placeholder="0%" style="width:60px;">
       </div>
     </div>
     <div id="filterAppliedSection" style="display:none;">
@@ -919,20 +901,10 @@
       <div class="viz-header">
         <div>
           <h2 class="viz-title">Navigation Structure</h2>
-          <p class="viz-desc">Click any segment to zoom in; click the centre to zoom back out. Internal links are grouped by URL path; external links are grouped by target domain.</p>
+          <p class="viz-desc">Click any segment to zoom in; click the centre to zoom back out. Internal links are grouped by path prefix; external links are grouped by target domain.</p>
         </div>
-        <div class="viz-controls" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <div class="viz-controls">
           <select id="sunburst-domain"><option value="">Select domain&hellip;</option></select>
-          <label style="font-size:12px;color:var(--csj-body);display:flex;align-items:center;gap:4px;white-space:nowrap;">
-            Depth
-            <select id="sunburst-depth" title="Number of URL path segments to expand. Higher values reveal deeper navigation structure.">
-              <option value="1">1 — sections</option>
-              <option value="2" selected>2 — sub-sections</option>
-              <option value="3">3 — deep paths</option>
-              <option value="4">4 — full depth</option>
-              <option value="5">5 — maximum</option>
-            </select>
-          </label>
         </div>
       </div>
       <div class="sunburst-breadcrumbs" id="sunburst-breadcrumbs"></div>
@@ -985,23 +957,13 @@
     </div>
   </div>
 
-  <!-- 11. Domain Scatter Plot (replaces Parallel Coordinates) -->
+  <!-- 11. Parallel Coordinates -->
   <div class="viz-panel" id="panel-parallel">
     <div class="viz-container">
       <div class="viz-header">
         <div>
-          <h2 class="viz-title">Domain Scatter Plot</h2>
-          <p class="viz-desc">Each dot is a domain &mdash; size reflects page count, colour reflects ownership. Choose any two metrics to compare.</p>
-        </div>
-        <div class="viz-controls" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
-          <label style="font-size:12px;color:var(--csj-body);display:flex;align-items:center;gap:6px;white-space:nowrap;">
-            X axis
-            <select id="parallel-x-axis"></select>
-          </label>
-          <label style="font-size:12px;color:var(--csj-body);display:flex;align-items:center;gap:6px;white-space:nowrap;">
-            Y axis
-            <select id="parallel-y-axis"></select>
-          </label>
+          <h2 class="viz-title">Multi-Dimensional Domain Comparison</h2>
+          <p class="viz-desc">Each line is a domain threading through multiple quality/size axes. Brush an axis to filter.</p>
         </div>
       </div>
       <div class="viz-loading" id="loading-parallel">Loading domain data&hellip;</div>
@@ -1161,26 +1123,26 @@
    in the core D3 v7 distribution. #}
 <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 <script src="https://cdn.jsdelivr.net/npm/d3-cloud@1"></script>
-{# Expose API endpoints to ecosystem.js as a global object so the JS module
+{# Expose API endpoints to reports.js as a global object so the JS module
    does not need to construct URLs itself.  Each key maps to a Flask
-   endpoint registered on the ecosystem blueprint in viz_api.py.
+   endpoint registered on the reports blueprint in viz_api.py.
    The runs filter is applied client-side via query-string parameters. #}
 <script>
   window.ECO_API = {
-    domains:        "{{ url_for('ecosystem.api_domains',        slug=project.slug) }}",
-    graph:          "{{ url_for('ecosystem.api_graph',          slug=project.slug) }}",
-    tags:           "{{ url_for('ecosystem.api_tags',           slug=project.slug) }}",
-    navigation:     "{{ url_for('ecosystem.api_navigation',     slug=project.slug) }}",
-    freshness:      "{{ url_for('ecosystem.api_freshness',      slug=project.slug) }}",
-    chord:          "{{ url_for('ecosystem.api_chord',          slug=project.slug) }}",
-    filter_options: "{{ url_for('ecosystem.api_filter_options', slug=project.slug) }}",
-    technology:     "{{ url_for('ecosystem.api_technology',     slug=project.slug) }}",
-    authorship:     "{{ url_for('ecosystem.api_authorship',     slug=project.slug) }}",
-    schema_insights:"{{ url_for('ecosystem.api_schema_insights',slug=project.slug) }}",
-    runs:           "{{ url_for('ecosystem.api_runs',           slug=project.slug) }}"
+    domains:        "{{ url_for('reports.api_domains',        slug=project.slug) }}",
+    graph:          "{{ url_for('reports.api_graph',          slug=project.slug) }}",
+    tags:           "{{ url_for('reports.api_tags',           slug=project.slug) }}",
+    navigation:     "{{ url_for('reports.api_navigation',     slug=project.slug) }}",
+    freshness:      "{{ url_for('reports.api_freshness',      slug=project.slug) }}",
+    chord:          "{{ url_for('reports.api_chord',          slug=project.slug) }}",
+    filter_options: "{{ url_for('reports.api_filter_options', slug=project.slug) }}",
+    technology:     "{{ url_for('reports.api_technology',     slug=project.slug) }}",
+    authorship:     "{{ url_for('reports.api_authorship',     slug=project.slug) }}",
+    schema_insights:"{{ url_for('reports.api_schema_insights',slug=project.slug) }}",
+    runs:           "{{ url_for('reports.api_runs',           slug=project.slug) }}"
   };
   window.ECO_PRESELECTED_RUNS = "{{ preselected_runs }}";
   window.ECO_RUNS_LIST = {{ runs | tojson }};
 </script>
-<script src="{{ url_for('static', filename='js/ecosystem.js') }}"></script>
+<script src="{{ url_for('static', filename='js/reports.js') }}"></script>
 {% endblock %}

@@ -4,8 +4,7 @@
   Context:
     project  (dict)  — project metadata (name, slug, description).
     m        (namespace) — aggregated metrics from _project_overview_metrics():
-        .total_runs, .total_pages, .total_assets, .total_errors,
-        .recent_runs (list of run dicts with status, page_count, etc.).
+        .total_runs, .total_pages, .total_assets, .total_errors.
     status   (dict)  — live crawl state for the project.
 
   The delete-project flow uses a client-side confirmation pattern: the
@@ -16,7 +15,7 @@
 {% block title %}{{ project.name }} | CSJ{% endblock %}
 
 {% block content %}
-<h1 class="page-title">{{ project.name }}</h1>
+<h1 class="page-title">{{ project.name }} — Overview</h1>
 {% if project.description %}
 <p class="text-muted" style="margin-top:-14px;margin-bottom:20px;">{{ project.description }}</p>
 {% endif %}
@@ -38,75 +37,6 @@
     <div class="stat-value" {% if m.total_errors > 0 %}style="color:var(--csj-error);"{% endif %}>{{ "{:,}".format(m.total_errors) }}</div>
     <div class="stat-label">Total errors</div>
   </div>
-</div>
-
-{% if m.recent_runs %}
-<div class="card">
-  <div class="flex-between">
-    <div class="card-title mb-0">Recent Runs</div>
-    <a href="{{ url_for('project_runs', slug=project.slug) }}" class="btn btn-sm btn-secondary">View All Runs</a>
-  </div>
-  <div class="table-wrap mt-16">
-    <table data-sortable>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Status</th>
-          <th class="col-num">Pages</th>
-          <th>Created</th>
-          <th data-no-sort></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for r in m.recent_runs %}
-        <tr>
-          <td style="font-weight:600;">
-            {% if r.friendly_name %}{{ r.friendly_name }}{% else %}<span class="text-muted" style="font-style:italic;">Unnamed</span>{% endif %}
-          </td>
-          <td>
-            {% if r.status == 'new' %}
-            <span class="badge badge-new">New</span>
-            {% elif r.status == 'running' %}
-            <span class="badge badge-running">Running</span>
-            {% elif r.status == 'interrupted' %}
-            <span class="badge badge-stopping">Interrupted</span>
-            {% elif r.status == 'completed' %}
-            <span class="badge badge-idle">Completed</span>
-            {% else %}
-            <span class="badge badge-idle">{{ r.status }}</span>
-            {% endif %}
-          </td>
-          <td class="col-num">{{ "{:,}".format(r.page_count|int) }}</td>
-          <td class="text-muted" style="font-size:13px;">{{ r.timestamp_label }}</td>
-          <td>
-            <div style="display:flex;gap:6px;">
-              {% if r.page_count|int > 0 %}
-              <a href="{{ url_for('run_results', slug=project.slug, run_name=r.name) }}" class="btn btn-sm btn-secondary">Results</a>
-              {% endif %}
-              <a href="{{ url_for('run_monitor', slug=project.slug, run_name=r.name) }}" class="btn btn-sm btn-secondary">Monitor</a>
-            </div>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</div>
-{% else %}
-<div class="card">
-  <p class="text-muted">No runs yet. <a href="{{ url_for('project_runs', slug=project.slug) }}">Create a run</a> to start crawling, or <a href="{{ url_for('project_defaults', slug=project.slug) }}">set up your defaults</a> first.</p>
-</div>
-{% endif %}
-
-<div class="two-col">
-  <a href="{{ url_for('project_defaults', slug=project.slug) }}" class="project-card">
-    <h3>Defaults</h3>
-    <p>Configure seed URLs, allowed domains, sitemaps, and crawl settings. These are copied into each new run.</p>
-  </a>
-  <a href="{{ url_for('project_runs', slug=project.slug) }}" class="project-card">
-    <h3>Runs</h3>
-    <p>Create, launch, and review crawl runs. Each run captures pages, assets, links, and metadata from your target domains.</p>
-  </a>
 </div>
 
 <div style="margin-top:20px; display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap;">
