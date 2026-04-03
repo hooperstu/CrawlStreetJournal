@@ -545,7 +545,10 @@ _SNAPSHOT_KEYS = (
     "REQUEST_DELAY_SECONDS",
     "REQUEST_TIMEOUT_SECONDS",
     "MAX_RETRIES",
+    "CONCURRENT_WORKERS",
     "STATE_SAVE_INTERVAL",
+    "CONTENT_DEDUP",
+    "CHANGE_DETECTION",
     "WRITE_EDGES_CSV",
     "WRITE_TAGS_CSV",
     "ASSET_HEAD_METADATA",
@@ -1275,3 +1278,24 @@ def write_link_check(row: Dict[str, Any]) -> None:
 
 def write_phone_number(row: Dict[str, Any]) -> None:
     append_row(_output_path(config.PHONE_NUMBERS_CSV), PHONE_NUMBER_FIELDS, row)
+
+
+# ── Content hash persistence (for dedup + change detection) ──────────────
+
+def save_content_hashes(run_dir: str, hashes: Dict[str, str]) -> None:
+    """Persist content hashes to a JSON file in the run directory."""
+    path = os.path.join(run_dir, "_content_hashes.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(hashes, f, ensure_ascii=False)
+
+
+def load_content_hashes(run_dir: str) -> Dict[str, str]:
+    """Load content hashes from a previous run, or return empty dict."""
+    path = os.path.join(run_dir, "_content_hashes.json")
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
