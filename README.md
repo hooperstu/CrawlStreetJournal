@@ -309,6 +309,8 @@ If a single row fails to write for any reason, the error is logged and the crawl
 | `schema_job_location` | Job location from `JobPosting` JSON-LD. |
 | `schema_recipe_time` | Total time from `Recipe` JSON-LD. |
 | `extraction_coverage_pct` | Percentage of Phase 1–4 fields that are non-empty — a rough indicator of metadata richness. |
+| `content_hash` | SHA-256 hash (16-char prefix) of visible text. Used for content deduplication and change detection across runs. |
+| `content_changed` | Change detection flag when comparing against a previous run: `changed`, `unchanged`, `new`, or empty if change detection is disabled. |
 
 ---
 

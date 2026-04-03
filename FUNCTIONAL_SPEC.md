@@ -29,6 +29,13 @@ The crawl engine orchestrates fetching, scope enforcement, rate limiting, and ou
 |----------|---------|
 | `normalise_url(url)` | Canonicalise URL for deduplication: strip fragments, trailing slashes, empty queries; normalise scheme (`http→https`), lowercase netloc, remove default ports (`:80`, `:443`), sort query parameters. |
 
+#### URL priority scoring
+
+| Function | Purpose |
+|----------|---------|
+| `_score_url(url, depth, is_seed)` | Compute priority score (lower = higher priority). Factors: seed bonus (−100), depth penalty (×10), homepage bonus (−5), low-value path penalty (+20 for `/tag/`, `/page/`, `/wp-content/`, etc.). |
+| `_PriorityQueue` | Thread-safe priority queue backed by `heapq`. Items are `(score, counter, url, referrer, depth)`. Counter breaks ties in FIFO order. Methods: `push()`, `pop()`, `to_list()` (for state serialisation). |
+
 #### DNS caching
 
 | Function | Purpose |
