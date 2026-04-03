@@ -79,6 +79,7 @@ a = Analysis(
         "signals_audit",
         "render",
         "audit_data",
+        "wcag_audit",
         # Standalone scripts not imported by the GUI; listed so they remain
         # importable in the frozen tree.
         "run_pre_crawl_analysis",
