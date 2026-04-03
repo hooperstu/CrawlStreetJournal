@@ -109,11 +109,25 @@ def reports_dashboard(slug: str):
     ctx = storage_module.activate_project(slug)
     runs = ctx.list_run_dirs()
     preselected = request.args.get("runs", "")
+
+    overview = {
+        "run_count": len(runs),
+        "total_pages": sum(r.get("page_count", 0) for r in runs),
+        "total_assets": 0,
+        "total_errors": 0,
+    }
+    for r in runs:
+        run_dir_path = os.path.join(ctx.output_dir, r["name"])
+        state = storage_module.load_crawl_state(run_dir_path)
+        if state:
+            overview["total_assets"] += state.get("assets_from_pages", 0)
+
     return render_template(
         "reports.html",
         project=project,
         runs=runs,
         preselected_runs=preselected,
+        overview=overview,
     )
 
 

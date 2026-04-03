@@ -23,7 +23,7 @@
     D3 v7 and d3-cloud are loaded from CDN before reports.js.
 #}
 {% extends "base.html" %}
-{% set active_tab = 'reports' %}
+{% set active_tab = 'dashboard' %}
 {% block title %}Reports — {{ project.name }} | CSJ{% endblock %}
 
 
@@ -633,7 +633,28 @@
 </style>
 
 <div class="eco-page">
-  <h1 class="page-title">{{ project.name }} — Reports</h1>
+  <h1 class="page-title">{{ project.name }}</h1>
+
+  {% if overview %}
+  <div class="stats" style="margin-bottom:20px;">
+    <div class="stat">
+      <div class="stat-value">{{ overview.run_count }}</div>
+      <div class="stat-label">Runs</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">{{ "{:,}".format(overview.total_pages) }}</div>
+      <div class="stat-label">Pages crawled</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">{{ "{:,}".format(overview.total_assets) }}</div>
+      <div class="stat-label">Assets found</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value" {% if overview.total_errors > 0 %}style="color:var(--csj-error);"{% endif %}>{{ "{:,}".format(overview.total_errors) }}</div>
+      <div class="stat-label">Errors</div>
+    </div>
+  </div>
+  {% endif %}
 
   <!-- ── Global Filter Bar ─────────────────────────────────── -->
   <div class="filter-bar" id="globalFilterBar">

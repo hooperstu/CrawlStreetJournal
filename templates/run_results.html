@@ -20,6 +20,7 @@
 
 {% block subnav %}
 <div class="sub-nav">
+  <a href="{{ url_for('project_runs', slug=project.slug) }}" style="margin-right:auto;opacity:.7;">← All Runs</a>
   <a href="{{ url_for('run_config', slug=project.slug, run_name=run_name) }}">Config</a>
   <a href="{{ url_for('run_monitor', slug=project.slug, run_name=run_name) }}">Monitor</a>
   <a href="{{ url_for('run_results', slug=project.slug, run_name=run_name) }}" class="active">Results</a>
@@ -30,7 +31,7 @@
 {% block content %}
 <div class="flex-between" style="margin-bottom:20px;">
   <div>
-    <h1 class="page-title" style="margin-bottom:2px;">{{ project.name }} — Crawl Runs</h1>
+    <h1 class="page-title" style="margin-bottom:2px;">{{ friendly_name or run_name }}</h1>
     <p class="text-muted" style="font-size:14px;">{% if friendly_name %}{{ friendly_name }}{% else %}{{ run_name }}{% endif %} &mdash; Results</p>
   </div>
   <a href="{{ url_for('run_download_all', slug=project.slug, run_name=run_name) }}" class="btn btn-sm btn-primary">Download All CSVs</a>
