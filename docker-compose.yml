@@ -1,0 +1,11 @@
+services:
+  csj:
+    build: .
+    ports:
+      - "5001:5001"
+    volumes:
+      - csj-data:/app/projects
+    restart: unless-stopped
+
+volumes:
+  csj-data:
