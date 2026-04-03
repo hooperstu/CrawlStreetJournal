@@ -50,45 +50,57 @@ a = Analysis(
         (str(ROOT / "static"), "static"),
     ],
     hiddenimports=[
-        # `gui` imports `scraper` only inside route handlers, so Analysis from
-        # `launcher.py` does not traverse into `scraper`, `parser`, or `sitemap`;
-        # omitting them breaks the crawl on first use with ImportError.
+        # Core application modules — `gui` imports these inside route handlers
+        # or conditionally, so PyInstaller's static analysis from `launcher.py`
+        # doesn't traverse into them. Every .py file that can be imported at
+        # runtime must be listed here.
         "gui",
         "config",
+        "utils",
         "scraper",
         "parser",
         "sitemap",
         "storage",
+        "viz_api",
+        "viz_data",
+        "signals_audit",
+        "render",
         # Standalone scripts not imported by the GUI; listed so they remain
-        # importable or discoverable in the frozen tree if you invoke them from
-        # the packaged environment (they are not required for the browser UI).
+        # importable in the frozen tree.
         "run_pre_crawl_analysis",
         "run_background_crawl",
-        # Flask and its template stack load submodules and data files via
-        # package metadata and lazy imports; PyInstaller often omits pieces
-        # (notably Jinja filters and Werkzeug utilities), which surfaces as
-        # errors on first request rather than at startup.
+        # Flask and its template/routing stack load submodules via package
+        # metadata and lazy imports; PyInstaller often omits pieces that
+        # surface as errors on first request rather than at startup.
         "flask",
         "jinja2",
         "markupsafe",
         "werkzeug",
-        # `requests` pulls SSL and encoding stacks through optional branches;
-        # without these, HTTPS crawls fail with missing modules or certificate
-        # stores even though the interpreter starts.
+        "werkzeug.serving",
+        "werkzeug.debug",
+        # `requests` pulls SSL and encoding stacks through optional branches.
         "requests",
         "urllib3",
         "charset_normalizer",
         "certifi",
         "idna",
         "bs4",
-        # `lxml` registers extension modules; explicit submodule names ensure
-        # HTML parsing on crawl matches the dev environment.
+        # `lxml` extension modules for HTML parsing.
         "lxml",
         "lxml.etree",
         "lxml.html",
-        # Imported only inside a try-block when readability capture is enabled;
-        # static analysis never sees it, so the hook would drop it otherwise.
+        # `tldextract` is used by viz_data for domain ownership grouping.
+        # It lazy-loads a public suffix list; we include its dependencies
+        # so the frozen binary can resolve domains correctly.
+        "tldextract",
+        "tldextract._version",
+        "filelock",
+        "requests_file",
+        # Imported inside a try-block when readability capture is enabled.
         "textstat",
+        # NLTK (textstat dependency) — needed submodules.
+        "nltk",
+        "nltk.corpus",
     ],
     hookspath=[],
     hooksconfig={},
@@ -109,6 +121,11 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# On Linux the executable is typically launched from a terminal; console=True
+# ensures error tracebacks are visible if something goes wrong.  On macOS and
+# Windows the app opens a browser window and a visible console is unwanted.
+_console = sys.platform == "linux"
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -119,7 +136,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,
+    console=_console,
     icon=_icon,
     target_arch=None,
 )
