@@ -377,6 +377,15 @@ This prevents the same logical page being fetched under cosmetically different U
 
 If `config.RENDER_JAVASCRIPT` is `True` and `render.is_available()` returns `True`, the scraper re-fetches any page whose response body is shorter than a configured threshold using a headless Chromium browser via `render.render_page(url)`. This handles pages that rely on client-side rendering for their primary content. Playwright is not installed by default; see the README for installation instructions.
 
+### 6.7 DNS caching, crawl-delay, content hashing, and change detection
+
+The crawl engine adds several cross-cutting behaviours:
+
+- **DNS caching** — A process-global cache wraps `socket.getaddrinfo` (monkey-patched for the process) so repeated hostname lookups during crawling are fast.
+- **Crawl-delay from robots.txt** — `Crawl-delay` values in `robots.txt` are parsed and applied as a **floor** for per-domain delay, combined with `REQUEST_DELAY_SECONDS` and the existing rate limiting.
+- **Content hash deduplication** — Each page’s **visible text** is hashed with **SHA-256**; when `CONTENT_DEDUP` is enabled, URLs whose hash matches an already-seen page in the same run are skipped so identical content is not crawled twice.
+- **Change detection across runs** — When `CHANGE_DETECTION` is enabled, content hashes are compared against prior run data so unchanged vs changed pages can be flagged between runs.
+
 ---
 
 ## 7. Parser architecture (Phases 1–4)
@@ -827,6 +836,8 @@ pyinstaller collector.spec --noconfirm
 ## 15. Testing
 
 The test suite lives in `tests/` and uses `pytest`. Unit tests use synthetic HTML fixtures and temporary directories; Playwright tests exercise the full Flask GUI in a browser; real-data tests validate integration with live crawl output.
+
+Developer documentation also includes **`FUNCTIONAL_SPEC.md`** at the repository root — a function-level specification of internal workflows (complementary to this architecture overview).
 
 ```bash
 source .venv/bin/activate
