@@ -36,6 +36,19 @@ _icon_map = {
 _icon_path = _icon_map.get(sys.platform)
 _icon = str(_icon_path) if _icon_path and _icon_path.exists() else None
 
+# ── tldextract offline suffix list ─────────────────────────────────────
+# `tldextract` ships an offline `.tld_set_snapshot`; without it the library
+# makes a network request on every invocation.  Locate it from the installed
+# package so the build works in any venv or CI environment.
+_tldextract_data = []
+try:
+    import tldextract as _tld_mod
+    _tld_snapshot = Path(_tld_mod.__file__).parent / ".tld_set_snapshot"
+    if _tld_snapshot.exists():
+        _tldextract_data.append((str(_tld_snapshot), "tldextract"))
+except ImportError:
+    pass
+
 a = Analysis(
     [str(ROOT / "launcher.py")],
     pathex=[str(ROOT)],
@@ -48,7 +61,7 @@ a = Analysis(
         # Same for `url_for('static', ...)` — CSS, client JS, and other assets
         # must exist on disk inside `static/` in the bundle.
         (str(ROOT / "static"), "static"),
-    ],
+    ] + _tldextract_data,
     hiddenimports=[
         # Core application modules — `gui` imports these inside route handlers
         # or conditionally, so PyInstaller's static analysis from `launcher.py`
@@ -135,7 +148,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=_console,
     icon=_icon,
     target_arch=None,
@@ -147,7 +160,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name="The Crawl Street Journal",
 )
@@ -160,8 +173,14 @@ if sys.platform == "darwin":
         bundle_identifier="io.csj.crawlstreetjournal",
         info_plist={
             "CFBundleDisplayName": "The Crawl Street Journal",
-            "CFBundleShortVersionString": "2.0.0",
+            "CFBundleShortVersionString": "2.1.0",
+            "CFBundleVersion": "2.1.0",
             "NSHighResolutionCapable": True,
             "LSBackgroundOnly": False,
+            # The app makes HTTP requests to crawl target sites and serves
+            # a local web UI — allow arbitrary network loads.
+            "NSAppTransportSecurity": {
+                "NSAllowsArbitraryLoads": True,
+            },
         },
     )
