@@ -1528,12 +1528,6 @@
           internalLinks: Math.min(1, d.avg_internal_links / maxLinks),
           httpHealth:    Math.max(0, 1 - (d.error_count || 0) / Math.max(d.page_count, 1)),
           freshness:     Math.max(0, Math.min(1, 1 - daysSince / 730)),
-          langAttr:      (d.wcag_lang_pct || 0) / 100,
-          headingOrder:  (d.wcag_heading_order_pct || 0) / 100,
-          pageTitle:     (d.wcag_title_pct || 0) / 100,
-          formLabels:    (d.wcag_form_labels_pct != null ? d.wcag_form_labels_pct : 100) / 100,
-          landmarks:     (d.wcag_landmarks_pct || 0) / 100,
-          linkPurpose:   Math.max(0, 1 - (d.wcag_vague_link_pct || 0) / 100),
           structuredData: Math.min(1, ((d.has_json_ld_pct || 0) + (d.has_microdata_pct || 0)) / 100),
           metadataCompleteness: Math.min(1, (
             (d.top_authors && d.top_authors.length ? 33 : 0) +
@@ -1551,12 +1545,6 @@
         { key: "internalLinks",  label: "Internal Linking",  tip: function (d) { return d.avg_internal_links.toFixed(1) + " internal links/page"; } },
         { key: "httpHealth",     label: "HTTP Health",       tip: function (d) { return d.error_count + " errors across " + fmt(d.page_count) + " pages"; } },
         { key: "freshness",      label: "Content Freshness", tip: function (d) { return d.latest_date ? "Last updated " + d.latest_date : "No date metadata"; } },
-        { key: "langAttr",       label: "Language Declared", tip: function (d) { return (d.wcag_lang_pct || 0).toFixed(0) + "% of pages declare lang"; } },
-        { key: "headingOrder",   label: "Heading Hierarchy", tip: function (d) { return (d.wcag_heading_order_pct || 0).toFixed(0) + "% of pages have valid heading order"; } },
-        { key: "pageTitle",      label: "Page Titled",       tip: function (d) { return (d.wcag_title_pct || 0).toFixed(0) + "% of pages have a title"; } },
-        { key: "formLabels",     label: "Form Labels",       tip: function (d) { return (d.wcag_form_labels_pct != null ? d.wcag_form_labels_pct : 100).toFixed(0) + "% of form inputs labelled"; } },
-        { key: "landmarks",      label: "Landmark Regions",  tip: function (d) { return (d.wcag_landmarks_pct || 0).toFixed(0) + "% of pages have main landmark or skip link"; } },
-        { key: "linkPurpose",    label: "Link Purpose",      tip: function (d) { return (100 - (d.wcag_vague_link_pct || 0)).toFixed(0) + "% of links have descriptive text"; } },
         { key: "structuredData", label: "Structured Data", tip: function (d) { return (d.has_json_ld_pct || 0).toFixed(0) + "% JSON-LD, " + (d.has_microdata_pct || 0).toFixed(0) + "% Microdata"; } },
         { key: "metadataCompleteness", label: "Metadata Depth", tip: function (d) { return (d.top_authors && d.top_authors.length ? "Has authors" : "No authors") + ", " + (d.top_publishers && d.top_publishers.length ? "has publisher" : "no publisher"); } },
         { key: "extractionCoverage", label: "Extraction Coverage", tip: function (d) { return (d.avg_extraction_coverage || 0).toFixed(1) + "% avg fields populated"; } }
