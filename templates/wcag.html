@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% set active_tab = 'wcag' %}
+{% block title %}WCAG Audit — {{ project.name }} | CSJ{% endblock %}
+
+{% block content %}
+<style>
+  .wcag-loading { text-align:center; padding:60px 0; color:var(--csj-body); }
+  .wcag-header { display:flex; gap:20px; flex-wrap:wrap; margin-bottom:24px; align-items:flex-start; }
+  .wcag-score-ring {
+    width:140px; height:140px; position:relative; flex-shrink:0;
+  }
+  .wcag-score-ring svg { transform:rotate(-90deg); }
+  .wcag-score-label {
+    position:absolute; inset:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center;
+  }
+  .wcag-score-val { font-size:36px; font-weight:700; color:var(--csj-headline); }
+  .wcag-score-sub { font-size:11px; color:var(--csj-body); }
+  .wcag-level-cards { display:flex; gap:12px; flex-wrap:wrap; flex:1; }
+  .wcag-level-card {
+    flex:1; min-width:160px; background:var(--csj-paper); border:1px solid var(--border);
+    border-radius:var(--radius); padding:14px 18px; box-shadow:var(--shadow);
+  }
+  .wcag-level-card h3 { font-size:14px; font-weight:700; margin-bottom:4px; }
+  .wcag-level-card .val { font-size:24px; font-weight:700; }
+  .wcag-level-card .lbl { font-size:11px; color:var(--csj-body); }
+
+  .principle-section { margin-bottom:24px; }
+  .principle-header {
+    font-family:"Libre Baskerville",Georgia,serif; font-size:17px; font-weight:700;
+    color:var(--csj-headline); margin-bottom:12px; display:flex; align-items:center; gap:8px;
+  }
+  .principle-icon { font-size:20px; }
+
+  .criterion-card {
+    background:var(--csj-paper); border:1px solid var(--border); border-radius:var(--radius);
+    margin-bottom:8px; overflow:hidden; box-shadow:var(--shadow);
+  }
+  .criterion-header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:10px 16px; cursor:pointer; user-select:none; gap:8px;
+  }
+  .criterion-header:hover { background:var(--csj-newsprint); }
+  .criterion-id { font-size:12px; font-weight:700; color:var(--csj-accent); min-width:50px; }
+  .criterion-name { font-size:14px; font-weight:600; color:var(--csj-headline); flex:1; }
+  .criterion-level { font-size:10px; font-weight:700; padding:1px 6px; border-radius:8px; }
+  .level-a { background:#e8eaf6; color:#283593; }
+  .level-aa { background:#e0f2f1; color:#00695c; }
+  .criterion-bar { display:flex; align-items:center; gap:6px; min-width:200px; }
+  .cbar-track { flex:1; height:8px; background:var(--csj-newsprint); border-radius:4px; overflow:hidden; }
+  .cbar-fill { height:100%; border-radius:4px; transition:width .3s; }
+  .cbar-label { font-size:12px; font-weight:600; min-width:40px; text-align:right; }
+  .criterion-arrow { font-size:11px; color:var(--csj-body); transition:transform .2s; }
+  .criterion-arrow.open { transform:rotate(90deg); }
+
+  .criterion-body { display:none; padding:0 16px 12px; border-top:1px solid var(--csj-newsprint); }
+  .criterion-body.open { display:block; }
+  .criterion-desc { font-size:13px; color:var(--csj-body); margin:10px 0; }
+  .criterion-stats { font-size:12px; color:var(--csj-body); margin-bottom:8px; }
+
+  .fail-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .fail-table th { background:var(--csj-newsprint); font-weight:600; font-size:11px; padding:5px 8px; text-align:left; }
+  .fail-table td { padding:5px 8px; border-bottom:1px solid var(--csj-newsprint); }
+  .fail-table a { color:var(--csj-accent); text-decoration:none; }
+  .fail-table a:hover { text-decoration:underline; }
+
+  .domain-summary { margin-top:20px; }
+  .domain-summary h3 { font-size:15px; font-weight:700; margin-bottom:8px; }
+</style>
+
+<h1 class="page-title">WCAG 2.1 Accessibility Audit</h1>
+
+<div id="wcag-loading" class="wcag-loading">Analysing accessibility&hellip;</div>
+<div id="wcag-content" style="display:none;"></div>
+
+<script>
+(function() {
+  var API = "{{ url_for('api_wcag', slug=project.slug) }}";
+
+  fetch(API).then(function(r) { return r.json(); }).then(function(data) {
+    document.getElementById('wcag-loading').style.display = 'none';
+    var el = document.getElementById('wcag-content');
+    el.style.display = '';
+
+    var pct = data.overall_conformance_pct || 0;
+    var colour = pct >= 90 ? '#2D6A4F' : pct >= 70 ? '#C4841D' : '#A4243B';
+
+    /* ── Score ring + level cards ─────────────────── */
+    var circumference = 2 * Math.PI * 56;
+    var offset = circumference * (1 - pct / 100);
+    var html = '<div class="wcag-header">' +
+      '<div class="wcag-score-ring">' +
+        '<svg width="140" height="140"><circle cx="70" cy="70" r="56" fill="none" stroke="var(--csj-newsprint)" stroke-width="12"/>' +
+        '<circle cx="70" cy="70" r="56" fill="none" stroke="' + colour + '" stroke-width="12" ' +
+        'stroke-dasharray="' + circumference + '" stroke-dashoffset="' + offset + '" stroke-linecap="round"/></svg>' +
+        '<div class="wcag-score-label"><div class="wcag-score-val">' + pct + '%</div><div class="wcag-score-sub">conformance</div></div>' +
+      '</div>' +
+      '<div class="wcag-level-cards">' +
+        '<div class="wcag-level-card"><h3>Level A</h3><div class="val">' + data.level_a_pass + '/' + data.level_a_total + '</div><div class="lbl">criteria passing</div></div>' +
+        '<div class="wcag-level-card"><h3>Level AA</h3><div class="val">' + data.level_aa_pass + '/' + data.level_aa_total + '</div><div class="lbl">criteria passing</div></div>' +
+        '<div class="wcag-level-card"><h3>Pages tested</h3><div class="val">' + (data.total_pages || 0).toLocaleString() + '</div><div class="lbl">across all runs</div></div>' +
+        '<div class="wcag-level-card"><h3>Criteria checked</h3><div class="val">' + (data.criteria_count || 0) + '</div><div class="lbl">WCAG 2.1 A + AA</div></div>' +
+      '</div></div>';
+
+    /* ── Criteria by principle ────────────────────── */
+    var principles = {
+      perceivable: { icon: '👁', label: 'Perceivable', desc: 'Information must be presentable in ways users can perceive.' },
+      operable: { icon: '⌨', label: 'Operable', desc: 'Interface components must be operable by all users.' },
+      understandable: { icon: '💬', label: 'Understandable', desc: 'Information and UI operation must be understandable.' },
+      robust: { icon: '🔧', label: 'Robust', desc: 'Content must be robust enough for assistive technologies.' },
+    };
+    var grouped = {};
+    (data.criteria || []).forEach(function(c) {
+      if (!grouped[c.principle]) grouped[c.principle] = [];
+      grouped[c.principle].push(c);
+    });
+
+    ['perceivable', 'operable', 'understandable', 'robust'].forEach(function(p) {
+      var info = principles[p];
+      var items = grouped[p] || [];
+      if (!items.length) return;
+      html += '<div class="principle-section">';
+      html += '<div class="principle-header"><span class="principle-icon">' + info.icon + '</span> ' + info.label + '</div>';
+
+      items.forEach(function(c) {
+        var pctVal = c.conformance_pct;
+        var barColour = pctVal >= 95 ? '#2D6A4F' : pctVal >= 70 ? '#C4841D' : '#A4243B';
+        var levelClass = c.level === 'A' ? 'level-a' : 'level-aa';
+
+        html += '<div class="criterion-card">' +
+          '<div class="criterion-header" data-target="cbody-' + c.id + '">' +
+            '<span class="criterion-id">' + c.id + '</span>' +
+            '<span class="criterion-name">' + c.name + '</span>' +
+            '<span class="criterion-level ' + levelClass + '">' + c.level + '</span>' +
+            '<span class="criterion-bar">' +
+              '<span class="cbar-track"><span class="cbar-fill" style="width:' + pctVal + '%;background:' + barColour + ';"></span></span>' +
+              '<span class="cbar-label" style="color:' + barColour + ';">' + pctVal + '%</span>' +
+            '</span>' +
+            '<span class="criterion-arrow" id="carrow-' + c.id + '">▶</span>' +
+          '</div>' +
+          '<div class="criterion-body" id="cbody-' + c.id + '">' +
+            '<p class="criterion-desc">' + (c.description || '') + '</p>' +
+            '<div class="criterion-stats">' + c.passing + ' passing, ' + c.failing + ' failing of ' + c.total_pages + ' pages</div>';
+
+        if (c.failing_pages && c.failing_pages.length) {
+          html += '<table class="fail-table"><thead><tr><th>URL</th><th>Domain</th><th>Detail</th></tr></thead><tbody>';
+          c.failing_pages.slice(0, 30).forEach(function(fp) {
+            var url = fp.url || '';
+            var short = url.length > 60 ? url.slice(0, 57) + '…' : url;
+            html += '<tr><td><a href="' + esc(url) + '" target="_blank">' + esc(short) + '</a></td>' +
+              '<td>' + esc(fp.domain || '') + '</td>' +
+              '<td>' + esc(fp.detail || '') + '</td></tr>';
+          });
+          html += '</tbody></table>';
+          if (c.failing_pages.length > 30) html += '<p style="font-size:12px;color:var(--csj-body);margin-top:4px;">Showing 30 of ' + c.failing + ' failures.</p>';
+        }
+
+        html += '</div></div>';
+      });
+      html += '</div>';
+    });
+
+    /* ── Domain summary ─────────────────────────── */
+    if (data.by_domain && data.by_domain.length) {
+      html += '<div class="domain-summary"><h3>Issues by domain</h3>' +
+        '<table class="fail-table"><thead><tr><th>Domain</th><th>Issues</th><th>Pages affected</th></tr></thead><tbody>';
+      data.by_domain.forEach(function(d) {
+        html += '<tr><td>' + esc(d.domain) + '</td><td>' + d.issues + '</td><td>' + d.pages_affected + '</td></tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+
+    el.innerHTML = html;
+
+    /* ── Toggle handlers ─────────────────────────── */
+    el.querySelectorAll('.criterion-header').forEach(function(hdr) {
+      hdr.addEventListener('click', function() {
+        var targetId = hdr.getAttribute('data-target');
+        var body = document.getElementById(targetId);
+        var arrow = hdr.querySelector('.criterion-arrow');
+        if (body) body.classList.toggle('open');
+        if (arrow) arrow.classList.toggle('open');
+      });
+    });
+  });
+
+  function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+})();
+</script>
+{% endblock %}

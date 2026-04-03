@@ -917,6 +917,37 @@ def project_audit(slug: str):
     return render_template("audit.html", project=project)
 
 
+@app.route("/p/<slug>/wcag")
+def project_wcag(slug: str):
+    """``GET /p/<slug>/wcag`` — WCAG accessibility audit."""
+    project = storage_module.load_project(slug)
+    if not project:
+        return "Project not found", 404
+    project["slug"] = slug
+    return render_template("wcag.html", project=project)
+
+
+@app.route("/p/<slug>/api/wcag")
+def api_wcag(slug: str):
+    """``GET /p/<slug>/api/wcag`` — JSON WCAG audit report."""
+    project = storage_module.load_project(slug)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+    import wcag_audit
+    ctx = storage_module.activate_project(slug)
+    run_dirs = []
+    base = config.OUTPUT_DIR
+    if os.path.isdir(base):
+        run_dirs = [
+            os.path.join(base, n)
+            for n in sorted(os.listdir(base))
+            if n.startswith("run_") and os.path.isdir(os.path.join(base, n))
+        ]
+    if not run_dirs:
+        return jsonify({"total_pages": 0, "criteria": []})
+    return jsonify(wcag_audit.run_wcag_audit(run_dirs))
+
+
 @app.route("/p/<slug>/api/audit")
 def api_audit(slug: str):
     """``GET /p/<slug>/api/audit`` — JSON audit report."""
