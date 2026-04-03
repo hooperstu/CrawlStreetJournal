@@ -119,21 +119,39 @@
       <input type="number" name="max_depth" value="{{ cfg.get('MAX_DEPTH', '') or '' }}" min="0" placeholder="Unlimited">
       <p class="field-explain">How many links deep to follow from a seed. 0 = seeds only, 1 = seeds + one click away.</p>
     </div>
-    <div class="form-group">
-      <label class="form-label">Delay between requests (seconds)</label>
-      {% set delay = cfg.get("REQUEST_DELAY_SECONDS", [3, 5]) %}
-      <div style="display:flex;gap:8px;">
-        <input type="number" name="delay_min" value="{{ delay[0] if delay is iterable and delay is not string else delay }}" min="0" step="0.1" style="width:50%;" placeholder="Min">
-        <input type="number" name="delay_max" value="{{ delay[1] if delay is iterable and delay is not string and delay|length > 1 else delay }}" min="0" step="0.1" style="width:50%;" placeholder="Max">
+  </div>
+
+  <div class="form-group" style="margin-top:4px;">
+    <label class="form-label">Delay between requests</label>
+    <p class="field-explain" style="margin-bottom:6px;">A random pause between each page fetch. Keep ≥ 1 second to be polite to servers.</p>
+    {% set delay = cfg.get("REQUEST_DELAY_SECONDS", [3, 5]) %}
+    <div style="display:flex;gap:8px;align-items:center;max-width:360px;">
+      <div style="flex:1;">
+        <label style="font-size:12px;font-weight:600;color:var(--csj-body);display:block;margin-bottom:2px;">Min (sec)</label>
+        <input type="number" name="delay_min" value="{{ delay[0] if delay is iterable and delay is not string else delay }}" min="0" step="0.1">
       </div>
-      <p class="field-explain">Random delay between min and max. Keep ≥ 1s to be polite to servers.</p>
+      <span style="color:var(--csj-body);font-size:18px;margin-top:16px;">–</span>
+      <div style="flex:1;">
+        <label style="font-size:12px;font-weight:600;color:var(--csj-body);display:block;margin-bottom:2px;">Max (sec)</label>
+        <input type="number" name="delay_max" value="{{ delay[1] if delay is iterable and delay is not string and delay|length > 1 else delay }}" min="0" step="0.1">
+      </div>
     </div>
+  </div>
+
+  <div class="form-grid" style="margin-top:12px;">
     <div class="form-group">
       <label class="form-label">Request timeout (seconds)</label>
       <input type="number" name="request_timeout" value="{{ cfg.get('REQUEST_TIMEOUT_SECONDS', 20) }}" min="1">
+      <p class="field-explain">Give up on a page if the server doesn't respond within this time.</p>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Max retries per page</label>
+      <input type="number" name="max_retries" value="{{ cfg.get('MAX_RETRIES', 3) }}" min="0">
+      <p class="field-explain">Retry failed requests this many times before recording an error.</p>
     </div>
   </div>
-  <div class="checkbox-row">
+
+  <div class="checkbox-row" style="margin-top:8px;">
     <input type="checkbox" name="respect_robots_txt" value="1" {% if cfg.get("RESPECT_ROBOTS_TXT", True) %}checked{% endif %}>
     <label class="form-label" style="margin-bottom:0;">Respect robots.txt rules</label>
   </div>
@@ -232,24 +250,20 @@
 
 <div class="card">
   <div class="collapse-header" data-target="adv-identity">
-    <div class="card-title" style="margin-bottom:0;border:none;padding-bottom:0;">Advanced: Identity &amp; classification</div>
+    <div class="card-title" style="margin-bottom:0;border:none;padding-bottom:0;">Advanced: Identity &amp; reporting</div>
     <span class="collapse-arrow" id="arrow-adv-identity">▶</span>
   </div>
   <div class="collapse-body" id="adv-identity">
     <div class="form-group">
       <label class="form-label">User-Agent string</label>
-      <p class="field-explain">How the crawler identifies itself to web servers. Include a contact URL or email for polite crawling.</p>
+      <p class="field-explain">How the crawler identifies itself to web servers. Include a contact URL or email so site owners can reach you.</p>
       <input type="text" name="user_agent" value="{{ cfg.get('USER_AGENT', '') }}">
     </div>
     <div class="form-group">
-      <label class="form-label">Domain ownership rules</label>
-      <p class="field-explain">Classify domains into groups for reports. One rule per line: <code>domain_suffix = Label</code>. First match wins.</p>
+      <label class="form-label">Domain ownership rules <span style="font-weight:400;color:var(--csj-body);">(for reports)</span></label>
+      <p class="field-explain">Group domains into categories for the dashboard visualisations. One rule per line: <code>domain = Label</code>. First match wins.</p>
       <textarea name="domain_ownership_rules" rows="4" placeholder="nhs.uk = NHS&#10;gov.uk = Government&#10;co.uk = Commercial" style="font-family:monospace;font-size:13px;">{% for rule in cfg.get("DOMAIN_OWNERSHIP_RULES", []) %}{% if rule is iterable and rule|length >= 2 %}{{ rule[0] }} = {{ rule[1] }}
 {% endif %}{% endfor %}</textarea>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Max retries</label>
-      <input type="number" name="max_retries" value="{{ cfg.get('MAX_RETRIES', 3) }}" min="0" style="max-width:100px;">
     </div>
     <div class="form-group">
       <label class="form-label">Log level</label>
@@ -258,6 +272,7 @@
         <option value="{{ lvl }}" {% if cfg.get("LOG_LEVEL", "INFO") == lvl %}selected{% endif %}>{{ lvl }}</option>
         {% endfor %}
       </select>
+      <p class="field-explain">Controls how much detail appears in the crawl monitor log. DEBUG is the most verbose.</p>
     </div>
   </div>
 </div>
