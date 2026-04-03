@@ -129,6 +129,20 @@ RENDER_JAVASCRIPT = False
 ALLOWED_DOMAINS = (
 )
 
+# Domains explicitly excluded from crawling even if they match
+# ALLOWED_DOMAINS.  Same matching rules apply (exact or subdomain).
+EXCLUDED_DOMAINS = []
+
+# URL patterns to exclude — any URL containing one of these substrings
+# (case-insensitive) is skipped.  Useful for excluding paths like
+# /admin/, /login/, /search?, /?print=, /wp-json/, etc.
+URL_EXCLUDE_PATTERNS = []
+
+# URL patterns that must be present — if non-empty, only URLs containing
+# at least one of these substrings are crawled.  Useful for restricting
+# a crawl to e.g. /blog/ or /products/ paths only.
+URL_INCLUDE_PATTERNS = []
+
 # Extensions treated as non-HTML for crawling: we record the link in an
 # assets_*.csv but do not fetch body as HTML.
 SKIP_EXTENSIONS = (
@@ -244,6 +258,9 @@ class CrawlConfig:
     CAPTURE_READABILITY: bool = True
     RENDER_JAVASCRIPT: bool = False
     ALLOWED_DOMAINS: Any = ()
+    EXCLUDED_DOMAINS: list = field(default_factory=list)
+    URL_EXCLUDE_PATTERNS: list = field(default_factory=list)
+    URL_INCLUDE_PATTERNS: list = field(default_factory=list)
     USER_AGENT: str = ""
     LOG_LEVEL: str = "INFO"
 
