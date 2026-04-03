@@ -16,7 +16,7 @@ Pre-built desktop apps are available from the [latest release](https://github.co
 | **Windows** | `The-Crawl-Street-Journal-Windows.zip` | Extract the folder, then run `The Crawl Street Journal.exe`. You may need to click **More info → Run anyway** on the SmartScreen prompt. |
 | **Linux** | `The-Crawl-Street-Journal-Linux.tar.gz` | Extract with `tar -xzf`, then run the `The Crawl Street Journal` executable. |
 
-The app starts a local web server and opens your browser automatically.
+The app opens in a **native desktop window** (via `pywebview`). If the native window backend is not available on your system, it falls back to opening your default browser automatically.
 
 ---
 
@@ -25,6 +25,7 @@ The app starts a local web server and opens your browser automatically.
 - Mapping **how much content** exists and **where** it lives (by domain, path hints, content kind).
 - Feeding **spreadsheets, BI tools, or scripts** with consistent columns across different CMS platforms and templates.
 - Listing **file assets** discovered in-page (PDFs, documents, media) in **type-specific** CSVs for distribution charts.
+- Running **content audits** (duplicate content, thin pages, broken links, redirect chains) and **WCAG 2.1 accessibility assessments** against crawl data.
 - Optional **link graph** data (`edges.csv`) and **tag-level** data (`tags.csv`) for deeper breakdowns.
 
 ---
@@ -49,6 +50,7 @@ The primary interface is a **browser-based GUI** served by Flask on port **5001*
 - **Per-run configuration** — seeds, allowed domains, sitemaps, crawl limits, feature toggles, all editable in-browser; configuration is saved as JSON alongside the run's output
 - **Live monitor** — real-time progress (pages crawled, assets found, elapsed time) and streaming log output via Server-Sent Events
 - **Results viewer** — paginated in-browser CSV viewer, per-run download links, and a ZIP of all CSVs
+- **Navigation** — Dashboard | Audit | WCAG | Runs | Settings
 - **Ecosystem dashboard** — interactive D3 visualisations across ~20 panels (domain network, CMS landscape, freshness, readability, structured-data coverage, author networks, and more)
 
 ```bash
@@ -97,7 +99,7 @@ Output is saved under `projects/my-project/runs/`.
 ### Development tools
 
 ```bash
-# Unit tests (56 tests)
+# Tests (225+ across unit, Playwright, and real-data tests)
 python3 -m pytest tests/ -v
 
 # Linting
@@ -127,6 +129,18 @@ Edit **`BACKGROUND_MAX_PAGES`** at the top of `run_background_crawl.py` if you n
 
 ---
 
+## Docker
+
+A `Dockerfile` and `docker-compose.yml` are included for container-based deployment. The image is ~191 MB and runs `gui.py` directly (no desktop launcher or browser).
+
+```bash
+docker compose up            # build and start on http://localhost:5001
+```
+
+Crawl data is persisted in a named Docker volume (`csj-data`) mapped to `/app/projects` inside the container.
+
+---
+
 ## Configuration (`config.py`)
 
 Edit `config.py` before you run. You do not need to change Python code elsewhere for normal use.
@@ -140,6 +154,9 @@ Edit `config.py` before you run. You do not need to change Python code elsewhere
 | `LOAD_SITEMAPS_FROM_ROBOTS` | If `True`, also discover sitemap URLs from each seed origin's `robots.txt`. |
 | `MAX_SITEMAP_URLS` | Upper limit on how many page URLs to read from a single sitemap expansion (default 1 000 000). |
 | `ALLOWED_DOMAINS` | A URL is allowed if the hostname **contains** any of these substrings. Configure via the project defaults in the GUI. |
+| `EXCLUDED_DOMAINS` | Hostnames to reject even if they match `ALLOWED_DOMAINS`. Useful for skipping staging or third-party subdomains. |
+| `URL_EXCLUDE_PATTERNS` | List of regex or substring patterns — URLs matching any pattern are skipped (e.g. `/admin/`, `/login/`, `?print=`). |
+| `URL_INCLUDE_PATTERNS` | If non-empty, **only** URLs matching at least one pattern are crawled. Use to restrict a crawl to e.g. `/blog/` paths only. |
 | `MAX_PAGES_TO_CRAWL` | Maximum number of **HTML pages** to fetch in one run (default 1 000 000). |
 | `REQUEST_DELAY_SECONDS` | Pause between requests — either a single number (fixed) or a `(min, max)` tuple for a random delay in that range (default `(3, 5)`). Keep at least 1 second in production to be polite. |
 | `REQUEST_TIMEOUT_SECONDS` | How long to wait for a response before giving up. |
@@ -252,6 +269,15 @@ If a single row fails to write for any reason, the error is logged and the crawl
 | `wcag_form_labels_pct` | Percentage of `<input>` / `<textarea>` / `<select>` elements that have an associated `<label>`. |
 | `wcag_landmarks_present` | `True` if at least one ARIA landmark or HTML5 sectioning element is found. |
 | `wcag_vague_link_pct` | Percentage of links whose visible text is vague (e.g. "click here", "read more"). |
+| `wcag_img_alt_pct` | Percentage of `<img>` elements that have a non-empty `alt` attribute. |
+| `wcag_empty_headings` | Count of heading elements (`h1`–`h6`) with no visible text. |
+| `wcag_duplicate_ids` | Count of `id` attribute values that appear more than once in the document. |
+| `wcag_empty_buttons` | Count of `<button>` elements with no accessible label. |
+| `wcag_empty_links` | Count of `<a>` elements with no visible text or `aria-label`. |
+| `wcag_tables_no_headers` | Count of `<table>` elements that lack `<th>` header cells. |
+| `wcag_autocomplete_pct` | Percentage of eligible form fields that have an `autocomplete` attribute. |
+| `wcag_has_search` | `True` if the page contains a search landmark (`role="search"` or `<search>`). |
+| `wcag_has_nav` | `True` if the page contains a navigation landmark (`<nav>` or `role="navigation"`). |
 
 #### Phase 4 — extended signals
 
@@ -409,7 +435,7 @@ This prevents the same page being fetched multiple times under cosmetically diff
 
 | File | Purpose |
 |------|---------|
-| `launcher.py` | Desktop app entry point — finds a free port, starts Flask, opens the browser automatically. |
+| `launcher.py` | Desktop app entry point — finds a free port, starts Flask, opens a native `pywebview` window (falls back to browser). Includes crash log handler. |
 | `gui.py` | Flask web application (port 5001): projects, run management, live monitor, results viewer, ecosystem dashboard. |
 | `main.py` | CLI entry point — run from the terminal with Ctrl+C to stop. |
 | `run_background_crawl.py` | Headless entry point for long background runs with file logging. |
@@ -422,13 +448,17 @@ This prevents the same page being fetched multiple times under cosmetically diff
 | `storage.py` | Filesystem persistence: CSV schemas, project/run lifecycle, config snapshots, resume state, export/import ZIP. |
 | `viz_data.py` | Pure aggregation layer — reads crawl CSVs and returns JSON-serialisable structures for the dashboard. |
 | `viz_api.py` | Flask blueprint (`eco_bp`) exposing the ecosystem dashboard HTML and ~12 JSON API endpoints. |
+| `audit_data.py` | Content audit engine — 10 finding types (duplicate content, redirects, thin content, title/meta quality, orphan pages, link distribution, image accessibility, URL structure, content decay, broken links). Route: `/p/<slug>/audit`. |
+| `wcag_audit.py` | WCAG 2.1 accessibility audit engine — 13 testable criteria (Level A + AA) organised by WCAG principles. Route: `/p/<slug>/wcag`. |
 | `signals_audit.py` | Standalone research tool — full metadata signal inventory of a single page (not in the main crawl pipeline). |
 | `utils.py` | Shared stateless helpers: JSON-LD flattening, URL domain checks, robots.txt sitemap parsing, CSV sanitisation. |
+| `Dockerfile` | Container image definition (~191 MB, runs `gui.py`, persists data via volume). |
+| `docker-compose.yml` | Single-service Compose file — maps port 5001 and a named data volume. |
 | `collector.spec` | PyInstaller spec for building the desktop app (macOS `.app`, Windows `.exe`, Linux binary). |
 | `static/js/ecosystem.js` | D3 v7 frontend driving all ~20 ecosystem dashboard charts. |
 | `templates/` | Jinja2 HTML templates for all GUI views. |
-| `tests/` | 56 unit tests across 4 files covering parser, sitemap, signals audit, and viz data. |
-| `requirements.txt` | Python dependencies: `requests`, `beautifulsoup4`, `lxml`, `urllib3`, `flask`, `textstat`, `tldextract`. |
+| `tests/` | 225+ tests across 6 files covering parser, sitemap, signals audit, viz data, Playwright end-to-end, and real-data integration. |
+| `requirements.txt` | Python dependencies: `requests`, `beautifulsoup4`, `lxml`, `urllib3`, `flask`, `textstat`, `tldextract`, `pywebview`. |
 
 ---
 
@@ -446,10 +476,13 @@ pyinstaller collector.spec --noconfirm
 
 - Entry point: `launcher.py`
 - Bundles `templates/` and `static/` as data trees so Flask can resolve them in the frozen environment
-- `hiddenimports` pulls in `gui`, the full crawl stack, Flask/Jinja/Werkzeug, `bs4`, `lxml`, `textstat`, and SSL-related modules
-- `console=False` (no terminal window on Windows/macOS)
-- macOS: produces `The Crawl Street Journal.app` with bundle ID `io.csj.crawlstreetjournal` and `.icns` icon under `assets/`
+- `hiddenimports` pulls in `gui`, the full crawl stack, Flask/Jinja/Werkzeug, `bs4`, `lxml`, `textstat`, `tldextract`, and SSL-related modules
+- `tldextract` offline suffix list is bundled so the frozen binary can resolve domains without network access
+- UPX compression is disabled for build reliability
+- `console=False` on Windows/macOS; `console=True` on Linux so tracebacks are visible in the terminal
+- macOS: produces `The Crawl Street Journal.app` with bundle ID `io.csj.crawlstreetjournal`, `.icns` icon, and ATS exception for local HTTP
 - Windows: produces `The Crawl Street Journal.exe` with `.ico` icon
+- `launcher.py` writes a crash log (`crash.log`) to `DATA_DIR` if the app encounters an unhandled exception
 - Output is in `dist/The Crawl Street Journal/`
 
 To update the app version, edit the `version` key in the `info_plist` dict inside `collector.spec`.

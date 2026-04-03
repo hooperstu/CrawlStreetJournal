@@ -17,19 +17,22 @@ This document describes how the application is built and how it works, from high
 9. [Ecosystem visualisation layer](#9-ecosystem-visualisation-layer)
 10. [Pre-crawl analysis](#10-pre-crawl-analysis)
 11. [Signals audit module](#11-signals-audit-module)
-12. [Desktop packaging](#12-desktop-packaging)
-13. [Testing](#13-testing)
+12. [Audit engines](#12-audit-engines)
+13. [Docker deployment](#13-docker-deployment)
+14. [Desktop packaging](#14-desktop-packaging)
+15. [Testing](#15-testing)
 
 ---
 
 ## 1. High-level overview
 
-The Crawl Street Journal is a **single-process Python application** with a Flask web GUI. There are no databases, Docker containers, or separate microservices. Persistence is entirely filesystem-based: JSON for configuration and crawl state, CSV for all output data.
+The Crawl Street Journal is a **single-process Python application** with a Flask web GUI. There are no databases or separate microservices. Persistence is entirely filesystem-based: JSON for configuration and crawl state, CSV for all output data. A `Dockerfile` is provided for containerised deployment, but the application itself remains a single process.
 
-The application has three conceptual layers:
+The application has four conceptual layers:
 
 - **Entry points** — how the application is started (desktop app, Flask GUI, CLI scripts)
 - **Crawl pipeline** — the modules that orchestrate fetching, parsing, and writing
+- **Audit engines** — content audit (`audit_data.py`) and WCAG 2.1 accessibility audit (`wcag_audit.py`) that analyse crawl output
 - **Storage and visualisation** — the modules that persist and aggregate data
 
 ```mermaid
@@ -47,6 +50,10 @@ graph TD
         sitemap[sitemap.py]
         renderPy[render.py]
     end
+    subgraph auditEngines [Audit Engines]
+        auditData[audit_data.py]
+        wcagAudit[wcag_audit.py]
+    end
     subgraph storageViz [Storage and Viz]
         storage[storage.py]
         vizData[viz_data.py]
@@ -55,6 +62,8 @@ graph TD
     end
     launcher --> guiPy
     guiPy --> scraper
+    guiPy --> auditData
+    guiPy --> wcagAudit
     mainPy --> scraper
     bgCrawl --> scraper
     preAnalysis --> parser
@@ -63,6 +72,8 @@ graph TD
     scraper --> sitemap
     scraper --> renderPy
     scraper --> storage
+    auditData --> storage
+    wcagAudit --> storage
     guiPy --> vizApi
     vizApi --> vizData
     vizData --> storage
@@ -127,6 +138,14 @@ graph LR
     launcher --> guiPy
 
     signalsAudit[signals_audit.py] --> utils
+
+    auditData[audit_data.py] --> configMod
+    auditData --> storage
+
+    wcagAudit[wcag_audit.py] --> configMod
+
+    guiPy --> auditData
+    guiPy --> wcagAudit
 ```
 
 ---
@@ -139,9 +158,10 @@ Used when the application is distributed as a packaged `.app` / `.exe`. It:
 
 1. Calls `storage.migrate_legacy_data()` to handle any data from older versions
 2. Probes TCP ports starting at **5001** (up to 10 attempts) to find a free one
-3. Starts a daemon thread that polls the port until Flask is ready, then calls `webbrowser.open`
-4. Registers `SIGINT` / `SIGTERM` handlers so the app exits cleanly
-5. Calls `gui.app.run(host="127.0.0.1", port=port, debug=False, threaded=True)`
+3. Starts Flask in a **daemon thread**
+4. Opens a **native `pywebview` window** (WebKit on macOS, Edge/WebView2 on Windows, WebKitGTK on Linux) pointing at the Flask server. If the `pywebview` backend is not available, falls back to `webbrowser.open`.
+5. Registers `SIGINT` / `SIGTERM` handlers so the app exits cleanly
+6. Wraps the entire `main()` call in a crash handler that writes `crash.log` to `DATA_DIR` on unhandled exceptions
 
 ### 3.2 `gui.py` — Flask web application
 
@@ -497,7 +517,7 @@ The header row is written once by `initialise_outputs` / `resume_outputs` at run
 
 | File | Key fields |
 |------|-----------|
-| `pages.csv` | 58 fields: Phase 1–4 metadata + WCAG + provenance (see README for full list) |
+| `pages.csv` | ~78 fields: Phase 1–4 metadata + WCAG (15 columns) + provenance (see README for full list) |
 | `assets_<category>.csv` | `referrer_page_url`, `asset_url`, `link_text`, `category`, `head_content_type`, `head_content_length`, `discovered_at` |
 | `edges.csv` | `from_url`, `to_url`, `link_text`, `discovered_at` |
 | `tags.csv` | `page_url`, `tag_value`, `tag_source`, `discovered_at` |
@@ -537,7 +557,7 @@ When `--resume` is passed (or the GUI resumes a run):
 
 ## 9. Ecosystem visualisation layer
 
-The ecosystem dashboard is a separate read-only layer that sits entirely on top of the completed crawl output. It never writes to disk.
+The ecosystem dashboard is a separate read-only layer that sits entirely on top of the completed crawl output. It never writes to disk. ~20 D3 panels are organised into **5 tab groups** (Governance, Trust, Findability, Technology, Provenance), and all panels share a unified filter system (runs, domains, CMS, content kind, schema, date range, coverage).
 
 ### 9.1 Architecture
 
@@ -667,7 +687,79 @@ It is used by `tests/test_signals_audit.py` and can be used standalone for debug
 
 ---
 
-## 12. Desktop packaging
+## 12. Audit engines
+
+Two post-crawl audit modules analyse completed crawl data and surface findings via dedicated GUI routes.
+
+### 12.1 Content audit (`audit_data.py`)
+
+`audit_data.py` reads `pages.csv`, `edges.csv`, and `crawl_errors.csv` from one or more run directories and produces structured findings across **10 finding types**:
+
+| Finding type | What it detects |
+|-------------|----------------|
+| Duplicate content | Pages with identical or near-identical titles and meta descriptions |
+| Redirect chains | Pages whose `requested_url` ≠ `final_url` (HTTP redirects) |
+| Thin content | Pages below a configurable word-count threshold |
+| Title quality | Missing, duplicate, or excessively long page titles |
+| Meta description quality | Missing, duplicate, or excessively long meta descriptions |
+| Orphan pages | Pages with no inbound internal links (based on `edges.csv`) |
+| Link distribution | Pages with unusually high or low internal/external link counts |
+| Image accessibility | Pages with a high proportion of images missing `alt` text |
+| URL structure | URLs with problematic patterns (excessive depth, query parameters, non-lowercase) |
+| Content decay | Pages whose published/modified dates suggest stale content |
+| Broken links | Entries from `crawl_errors.csv` indicating unreachable pages |
+
+The top-level function `run_full_audit(run_dirs)` orchestrates all checks and returns them keyed by finding type, each with a severity summary and a list of finding rows.
+
+**Route:** `/p/<slug>/audit` — renders the `audit.html` template with the audit results for the selected project runs.
+
+### 12.2 WCAG 2.1 audit (`wcag_audit.py`)
+
+`wcag_audit.py` analyses the WCAG signal columns in `pages.csv` against **13 testable Level A and AA success criteria**, organised by the four WCAG principles:
+
+| Principle | Criteria tested |
+|-----------|----------------|
+| Perceivable | Image alt text, heading structure, page title |
+| Operable | Keyboard navigation (links/buttons), search landmark, navigation landmark |
+| Understandable | Language attribute, form labels, autocomplete attributes, vague link text |
+| Robust | Duplicate IDs, empty interactive elements, table headers |
+
+Each criterion returns a result dict with pass/fail counts, a conformance percentage, and a list of failing page URLs.
+
+**Route:** `/p/<slug>/wcag` — renders the `wcag.html` template with per-criterion conformance results.
+
+---
+
+## 13. Docker deployment
+
+A `Dockerfile` and `docker-compose.yml` are provided for container-based deployment.
+
+```mermaid
+graph LR
+    dockerfile[Dockerfile]
+    compose[docker-compose.yml]
+    image[Python 3.12-slim image ~191 MB]
+    container[Container: gui.py on port 5001]
+    volume[csj-data volume → /app/projects]
+
+    dockerfile --> image
+    compose --> container
+    image --> container
+    container --> volume
+```
+
+**`Dockerfile`** — based on `python:3.12-slim`, installs system dependencies for `lxml`, copies the application, exposes port 5001, and runs `gui.py` directly (not the desktop launcher). A `VOLUME` declaration at `/app/projects` marks the project data directory for persistence.
+
+**`docker-compose.yml`** — defines a single `csj` service with port mapping (`5001:5001`), a named volume (`csj-data`), and `restart: unless-stopped`.
+
+```bash
+docker compose up            # build and start
+docker compose up -d         # detached mode
+```
+
+---
+
+## 14. Desktop packaging
 
 The desktop application is built with **PyInstaller** using `collector.spec`.
 
@@ -695,7 +787,7 @@ graph LR
 |------|-----|
 | `templates/` tree | Flask's `render_template` resolves paths via `BUNDLE_DIR` |
 | `static/` tree | `url_for('static', ...)` served from the frozen bundle |
-| `hiddenimports` | Flask, Jinja2, Werkzeug internals; `bs4`, `lxml`, `textstat`, SSL modules not auto-detected by PyInstaller |
+| `hiddenimports` | Flask, Jinja2, Werkzeug internals; `bs4`, `lxml`, `textstat`, `tldextract`, SSL modules not auto-detected by PyInstaller |
 
 **`BUNDLE_DIR` resolution in `config.py`:**
 
@@ -712,9 +804,15 @@ else:
 
 | Platform | Output | Notes |
 |----------|--------|-------|
-| macOS | `The Crawl Street Journal.app` | Bundle ID `io.csj.crawlstreetjournal`, `.icns` icon, `console=False` |
+| macOS | `The Crawl Street Journal.app` | Bundle ID `io.csj.crawlstreetjournal`, `.icns` icon, `console=False`, ATS exception for local HTTP |
 | Windows | `The Crawl Street Journal.exe` | `.ico` icon, `console=False` |
-| Linux | `The Crawl Street Journal` | `.png` icon |
+| Linux | `The Crawl Street Journal` | `.png` icon, `console=True` (tracebacks visible in terminal) |
+
+**Additional build notes:**
+
+- UPX compression is disabled for reliability
+- `tldextract` offline suffix list (`.tld_set_snapshot`) is bundled so the frozen binary can resolve domains without a network request
+- `launcher.py` writes a crash log (`crash.log`) to `DATA_DIR` if the app encounters an unhandled exception at startup
 
 Build command:
 
@@ -726,9 +824,9 @@ pyinstaller collector.spec --noconfirm
 
 ---
 
-## 13. Testing
+## 15. Testing
 
-The test suite lives in `tests/` and uses `pytest`. There are no live HTTP requests; all tests use synthetic HTML fixtures and temporary directories.
+The test suite lives in `tests/` and uses `pytest`. Unit tests use synthetic HTML fixtures and temporary directories; Playwright tests exercise the full Flask GUI in a browser; real-data tests validate integration with live crawl output.
 
 ```bash
 source .venv/bin/activate
@@ -737,12 +835,14 @@ python3 -m pytest tests/ -v
 
 | File | What it tests | Key techniques |
 |------|--------------|---------------|
-| `tests/test_parser.py` | Phase 1–4 extraction, content kind classification, URL hints, WCAG signals, coverage %, full `build_page_inventory_row` integration | Inline HTML fixtures, `response_meta` / `sitemap_meta` dicts |
+| `tests/test_parser.py` | Phase 1–4 extraction, content kind classification, URL hints, WCAG signals (all 15 columns), coverage %, full `build_page_inventory_row` integration | Inline HTML fixtures, `response_meta` / `sitemap_meta` dicts |
 | `tests/test_sitemap.py` | Sitemap XML parsing (urlset + index), malformed XML resilience, domain allowlist case-insensitivity across `scraper` and `parser` | Inline XML strings, `monkeypatch` / direct `config.ALLOWED_DOMAINS` mutation |
 | `tests/test_signals_audit.py` | `audit_page` top-level keys, per-category signal extraction, `summarise_audit` output | Single comprehensive HTML fixture with all signal types present |
 | `tests/test_viz_data.py` | `filter_pages` (no filter, CMS, content kind, schema format, coverage, combined AND), `aggregate_domains`, `aggregate_technology`, `aggregate_authorship`, `aggregate_schema_insights`, `get_filter_options` | `tempfile.mkdtemp`, synthetic `pages.csv` with full schema including WCAG and Phase 4 columns |
+| `tests/test_playwright.py` | End-to-end GUI testing: project creation, configuration, crawl lifecycle, results viewing, ecosystem dashboard interactions | Playwright browser automation against a live Flask instance |
+| `tests/test_real_crawl.py` | Integration tests with real crawl data: CSV schema validation, data consistency, output completeness | Real crawl output directories |
 
-**Total: 56 tests.**
+**Total: 225+ tests** (58+ unit, 154 Playwright, plus real-data integration tests).
 
 Linting:
 
