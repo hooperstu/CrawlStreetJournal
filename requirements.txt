@@ -5,3 +5,4 @@ urllib3>=2.0.0
 flask>=3.0.0
 textstat>=0.7.3
 tldextract>=5.0.0
+pywebview>=5.0

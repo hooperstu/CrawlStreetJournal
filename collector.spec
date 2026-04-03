@@ -114,6 +114,9 @@ a = Analysis(
         # NLTK (textstat dependency) — needed submodules.
         "nltk",
         "nltk.corpus",
+        # Native desktop window — pywebview uses the OS webview engine
+        # (WebKit on macOS, Edge WebView2 on Windows, WebKitGTK on Linux).
+        "webview",
     ],
     hookspath=[],
     hooksconfig={},

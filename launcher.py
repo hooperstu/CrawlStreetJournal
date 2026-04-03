@@ -2,11 +2,11 @@
 """
 The Crawl Street Journal — Desktop Launcher
 
-Entry point for the packaged macOS .app.  Scans for a free TCP port starting
-at 5001 (incrementing up to ``MAX_PORT_ATTEMPTS`` times if the default is
-occupied), starts the Flask server on that port, then opens the user's default
-browser once the server accepts connections.  Handles clean shutdown on
-SIGINT / SIGTERM / window close.
+Opens a native desktop window (via pywebview) containing the Flask GUI.
+Falls back to the default browser if pywebview is not available.
+
+The Flask server runs in a background thread; the main thread owns the
+native window lifecycle (required by macOS and Windows GUI toolkits).
 """
 
 import logging
@@ -22,16 +22,15 @@ HOST = "127.0.0.1"
 PORT = 5001
 MAX_PORT_ATTEMPTS = 10
 
+_WEBVIEW_AVAILABLE = False
+try:
+    import webview  # pywebview
+    _WEBVIEW_AVAILABLE = True
+except ImportError:
+    pass
+
 
 def _find_free_port(start: int = PORT, attempts: int = MAX_PORT_ATTEMPTS) -> int:
-    """Return the first available port in ``[start, start + attempts)``.
-
-    Probes each candidate by attempting to bind a TCP socket; a successful
-    bind confirms the port is free.
-
-    Raises:
-        RuntimeError: If every port in the range is already occupied.
-    """
     for port in range(start, start + attempts):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
@@ -40,30 +39,32 @@ def _find_free_port(start: int = PORT, attempts: int = MAX_PORT_ATTEMPTS) -> int
             except OSError:
                 continue
     raise RuntimeError(
-        f"No free port found in range {start}–{start + attempts - 1}"
+        f"No free port found in range {start}\u2013{start + attempts - 1}"
     )
 
 
-def _wait_and_open(port: int) -> None:
-    """Poll until the Flask server accepts TCP connections, then open the browser.
-
-    Retries up to 40 times at 250 ms intervals (~10 s total).  Runs in a
-    daemon thread so the main thread is free to start Flask immediately.
-    """
-    for _ in range(40):
+def _wait_for_server(port: int, retries: int = 60, interval: float = 0.25) -> bool:
+    """Block until the Flask server accepts connections."""
+    for _ in range(retries):
         try:
             with socket.create_connection((HOST, port), timeout=0.25):
-                webbrowser.open(f"http://{HOST}:{port}")
-                return
+                return True
         except OSError:
-            time.sleep(0.25)
-    logging.getLogger(__name__).warning(
-        "Server did not become ready on port %d — skipping browser launch", port
-    )
+            time.sleep(interval)
+    return False
+
+
+def _open_in_browser(port: int) -> None:
+    """Fallback: open in the default browser (used when pywebview is missing)."""
+    if _wait_for_server(port):
+        webbrowser.open(f"http://{HOST}:{port}")
+    else:
+        logging.getLogger(__name__).warning(
+            "Server did not become ready on port %d — skipping browser launch", port
+        )
 
 
 def _crash_log_path() -> str:
-    """Return a writable path for the crash log, next to the executable."""
     if getattr(sys, "frozen", False):
         import config
         return os.path.join(config.DATA_DIR, "crash.log")
@@ -83,19 +84,51 @@ def main() -> int:
     storage_module.migrate_legacy_data()
 
     port = _find_free_port()
-
-    threading.Thread(target=_wait_and_open, args=(port,), daemon=True).start()
+    url = f"http://{HOST}:{port}"
 
     def _shutdown(*_args):
-        print("\nShutting down…", file=sys.stderr)
+        print("\nShutting down\u2026", file=sys.stderr)
         raise SystemExit(0)
 
     signal.signal(signal.SIGINT, _shutdown)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _shutdown)
 
-    print(f"The Crawl Street Journal: http://{HOST}:{port}")
-    app.run(host=HOST, port=port, debug=False, threaded=True)
+    print(f"The Crawl Street Journal: {url}")
+
+    # Start Flask in a daemon thread — the main thread drives the UI.
+    flask_thread = threading.Thread(
+        target=app.run,
+        kwargs={"host": HOST, "port": port, "debug": False, "threaded": True},
+        daemon=True,
+    )
+    flask_thread.start()
+
+    if _WEBVIEW_AVAILABLE:
+        _wait_for_server(port)
+        try:
+            webview.create_window(
+                "The Crawl Street Journal",
+                url,
+                width=1280,
+                height=860,
+                min_size=(900, 600),
+            )
+            webview.start()
+            return 0
+        except Exception as wv_err:
+            # GUI backend not available (no GTK/QT/WebKit installed).
+            # Fall through to browser mode silently.
+            logging.getLogger(__name__).info(
+                "Native window unavailable (%s) — opening in browser", wv_err
+            )
+
+    _open_in_browser(port)
+    try:
+        flask_thread.join()
+    except KeyboardInterrupt:
+        pass
+
     return 0
 
 
@@ -103,7 +136,6 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except Exception:
-        import os
         import traceback
         crash_path = _crash_log_path()
         tb = traceback.format_exc()
