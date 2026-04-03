@@ -161,6 +161,9 @@ Edit `config.py` before you run. You do not need to change Python code elsewhere
 | `REQUEST_DELAY_SECONDS` | Pause between requests — either a single number (fixed) or a `(min, max)` tuple for a random delay in that range (default `(3, 5)`). Keep at least 1 second in production to be polite. |
 | `REQUEST_TIMEOUT_SECONDS` | How long to wait for a response before giving up. |
 | `MAX_RETRIES` | Retries after transient network errors. |
+| `CONCURRENT_WORKERS` | Number of parallel fetch workers (default 1). Per-domain rate limiting is still enforced. |
+| `CONTENT_DEDUP` | Skip pages with identical visible text hash (default True). |
+| `CHANGE_DETECTION` | Compare content hashes across runs to flag changes (default False). |
 
 ### Output and optional features
 
@@ -425,7 +428,7 @@ This prevents the same page being fetched multiple times under cosmetically diff
 
 ## Robots and politeness
 
-- The crawler reads **`robots.txt`** per host and **does not fetch** URLs disallowed for the configured `USER_AGENT`.
+- The crawler reads **`robots.txt`** per host and **does not fetch** URLs disallowed for the configured `USER_AGENT`. It parses and respects **`Crawl-delay`** directives from `robots.txt` (as a floor for per-domain delay, together with `REQUEST_DELAY_SECONDS`).
 - A **delay** is applied between page fetches (`REQUEST_DELAY_SECONDS`).
 - On **HTTP 429**, the crawler backs off briefly before retrying (behaviour defined in `scraper.py`).
 
@@ -441,6 +444,7 @@ This prevents the same page being fetched multiple times under cosmetically diff
 | `run_background_crawl.py` | Headless entry point for long background runs with file logging. |
 | `run_pre_crawl_analysis.py` | Pre-crawl sampler — fetches a diverse sample of pages per domain, detects tech stack, and reports field coverage before a full crawl. |
 | `config.py` | All configuration defaults and the `CrawlConfig` dataclass. |
+| `FUNCTIONAL_SPEC.md` | Detailed function-level specification of all internal workflows. |
 | `scraper.py` | Crawl orchestrator: dual-queue scheduling, robots.txt, rate limiting, URL normalisation, Playwright fallback. |
 | `parser.py` | HTML extraction: Phase 1–4 metadata, content classification, tags, WCAG signals, structured data. |
 | `sitemap.py` | Sitemap XML parsing (index and urlset formats, namespace-agnostic). |
