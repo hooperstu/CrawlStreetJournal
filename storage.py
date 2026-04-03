@@ -22,6 +22,7 @@ Each crawl run lives in a timestamped subfolder under the project's
         sitemap_urls.csv    — raw sitemap entries (loc + lastmod)
         nav_links.csv       — links inside <nav> elements
         link_checks.csv     — HEAD-check results for outbound links
+        phone_numbers.csv   — tel: href links found on crawled pages
 
 A ``.latest`` marker file in the ``runs/`` root points to the most recent
 run folder; ``get_latest_run_dir()`` resolves it.
@@ -171,6 +172,14 @@ LINK_CHECK_FIELDS = (
     "discovered_at",
 )
 
+PHONE_NUMBER_FIELDS = (
+    "page_url",
+    "raw_href",
+    "phone_number",
+    "link_text",
+    "discovered_at",
+)
+
 
 # ── Per-crawl storage context ─────────────────────────────────────────────
 
@@ -284,6 +293,11 @@ class StorageContext:
             self._output_path(config.LINK_CHECKS_CSV), LINK_CHECK_FIELDS, row,
         )
 
+    def write_phone_number(self, row: Dict[str, Any]) -> None:
+        self.append_row(
+            self._output_path(config.PHONE_NUMBERS_CSV), PHONE_NUMBER_FIELDS, row,
+        )
+
     # -- latest-run marker ------------------------------------------------
 
     def _write_latest_marker(self, run_folder_name: str) -> None:
@@ -369,6 +383,9 @@ class StorageContext:
             self._write_header(
                 self._output_path(config.LINK_CHECKS_CSV), LINK_CHECK_FIELDS,
             )
+        self._write_header(
+            self._output_path(config.PHONE_NUMBERS_CSV), PHONE_NUMBER_FIELDS,
+        )
         seen: set[str] = set()
         for cat in set(config.ASSET_CATEGORY_BY_EXT.values()):
             if cat not in seen:
@@ -886,6 +903,44 @@ def migrate_legacy_data() -> Optional[str]:
     return slug
 
 
+def recover_stale_running_states() -> int:
+    """On startup, mark any run whose _state.json says 'running' as 'interrupted'.
+
+    A 'running' state left on disk after a server restart means the crawl
+    process was killed without a clean shutdown.  Leaving it as 'running'
+    confuses the UI (the config page shows an inaccurate status banner).
+    Returns the number of runs that were corrected.
+    """
+    projects_dir = config.PROJECTS_DIR
+    if not os.path.isdir(projects_dir):
+        return 0
+    corrected = 0
+    for slug in os.listdir(projects_dir):
+        runs_dir = os.path.join(projects_dir, slug, "runs")
+        if not os.path.isdir(runs_dir):
+            continue
+        for run_name in os.listdir(runs_dir):
+            run_dir = os.path.join(runs_dir, run_name)
+            state_path = os.path.join(run_dir, "_state.json")
+            if not os.path.isfile(state_path):
+                continue
+            try:
+                with open(state_path, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                if state.get("status") == "running":
+                    state["status"] = "interrupted"
+                    with open(state_path, "w", encoding="utf-8") as f:
+                        json.dump(state, f, ensure_ascii=False)
+                    corrected += 1
+                    logger.info(
+                        "Recovered stale 'running' state for run %s/%s → interrupted",
+                        slug, run_name,
+                    )
+            except Exception as e:
+                logger.warning("Could not check state for %s/%s: %s", slug, run_name, e)
+    return corrected
+
+
 # ── Crawl state (for resume) ─────────────────────────────────────────────
 
 def save_crawl_state(
@@ -1042,6 +1097,7 @@ def initialise_outputs(run_folder: Optional[str] = None, run_name: Optional[str]
         _write_header(_output_path(config.NAV_LINKS_CSV), NAV_LINK_FIELDS)
     if config.CHECK_OUTBOUND_LINKS:
         _write_header(_output_path(config.LINK_CHECKS_CSV), LINK_CHECK_FIELDS)
+    _write_header(_output_path(config.PHONE_NUMBERS_CSV), PHONE_NUMBER_FIELDS)
     seen: set[str] = set()
     for cat in set(config.ASSET_CATEGORY_BY_EXT.values()):
         if cat not in seen:
@@ -1203,3 +1259,7 @@ def write_link_check(row: Dict[str, Any]) -> None:
     if not config.CHECK_OUTBOUND_LINKS:
         return
     append_row(_output_path(config.LINK_CHECKS_CSV), LINK_CHECK_FIELDS, row)
+
+
+def write_phone_number(row: Dict[str, Any]) -> None:
+    append_row(_output_path(config.PHONE_NUMBERS_CSV), PHONE_NUMBER_FIELDS, row)

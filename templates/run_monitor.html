@@ -25,16 +25,16 @@
   <a href="{{ url_for('run_config', slug=project.slug, run_name=run_name) }}">Config</a>
   <a href="{{ url_for('run_monitor', slug=project.slug, run_name=run_name) }}" class="active">Monitor</a>
   <a href="{{ url_for('run_results', slug=project.slug, run_name=run_name) }}">Results</a>
-  <a href="{{ url_for('ecosystem.ecosystem_dashboard', slug=project.slug, runs=run_name) }}">Ecosystem</a>
 </div>
 {% endblock %}
 
 
 {% block content %}
 <div class="flex-between" style="margin-bottom:20px;">
-  <h1 class="page-title" style="margin-bottom:0;">
-    {% if friendly_name %}{{ friendly_name }}{% else %}{{ run_name }}{% endif %}
-  </h1>
+  <div>
+    <h1 class="page-title" style="margin-bottom:2px;">{{ project.name }} — Crawl Runs</h1>
+    <p class="text-muted" style="font-size:14px;">{% if friendly_name %}{{ friendly_name }}{% else %}{{ run_name }}{% endif %} &mdash; Monitor</p>
+  </div>
   {# Badge priority: stopping > running > per-run status. The JS SSE handler
      mirrors this logic to update the badge live once the crawl state changes. #}
   <span id="badge" class="badge
@@ -56,15 +56,27 @@
 <div class="card">
   <div class="stats" id="stats">
     <div class="stat">
-      <div class="stat-value" id="s-pages">{{ status.pages if status.run_folder == run_name else 0 }}</div>
+      <div class="stat-value" id="s-pages">
+        {%- if status.run_folder == run_name -%}{{ status.pages }}
+        {%- elif pages_written -%}{{ pages_written }}
+        {%- else -%}0{%- endif -%}
+      </div>
       <div class="stat-label">Pages crawled</div>
     </div>
     <div class="stat">
-      <div class="stat-value" id="s-assets">{{ status.assets if status.run_folder == run_name else 0 }}</div>
+      <div class="stat-value" id="s-assets">
+        {%- if status.run_folder == run_name -%}{{ status.assets }}
+        {%- elif assets_written -%}{{ assets_written }}
+        {%- else -%}0{%- endif -%}
+      </div>
       <div class="stat-label">Asset rows</div>
     </div>
     <div class="stat">
-      <div class="stat-value" id="s-elapsed">{{ status.elapsed if status.run_folder == run_name else "—" }}</div>
+      <div class="stat-value" id="s-elapsed">
+        {%- if status.run_folder == run_name -%}{{ status.elapsed or "—" }}
+        {%- elif elapsed_written -%}{{ elapsed_written }}
+        {%- else -%}—{%- endif -%}
+      </div>
       <div class="stat-label">Elapsed</div>
     </div>
   </div>
@@ -141,16 +153,26 @@
 
   var progressEs = null;
   var reconnectTimer = null;
+  // Set to true once we receive a definitive "finished" message from the
+  // crawl slot.  After that we never reconnect (avoids wiping counts with
+  // the empty-slot 0s that the server sends once the slot is gone).
+  var crawlFinished = false;
 
   function update(d) {
     if (d.run_folder !== runFolder && d.running) return;
 
-    sPages.textContent   = d.pages;
-    sAssets.textContent  = d.assets;
-    sElapsed.textContent = d.elapsed || '—';
-    phaseEl.textContent  = d.phase_detail || '';
-    curUrl.textContent   = d.current_url || '';
-    finished.textContent = d.finished_message || '';
+    // Only update the numeric stats when the data actually belongs to this
+    // run.  Ignore the empty-slot snapshot (run_folder === '') so that the
+    // counters keep showing the last known-good values after the crawl ends.
+    if (d.run_folder === runFolder) {
+      sPages.textContent   = d.pages;
+      sAssets.textContent  = d.assets;
+      sElapsed.textContent = d.elapsed || '—';
+      phaseEl.textContent  = d.phase_detail || '';
+      curUrl.textContent   = d.current_url || '';
+      finished.textContent = d.finished_message || '';
+      if (d.finished_message) crawlFinished = true;
+    }
 
     if (d.running && d.stopping && d.run_folder === runFolder) {
       badge.className = 'badge badge-stopping';
@@ -162,7 +184,7 @@
       badge.textContent = 'Running';
       if (btnStart) btnStart.disabled = true;
       btnStop.disabled = false;
-    } else if (!d.running && d.finished_message) {
+    } else if (!d.running && d.run_folder === runFolder && d.finished_message) {
       badge.className = 'badge badge-idle';
       badge.textContent = 'Completed';
       if (btnStart) btnStart.disabled = false;
@@ -177,9 +199,23 @@
     progressEs.onmessage = function(e) {
       var d = JSON.parse(e.data);
       update(d);
-      if (!d.running) { progressEs.close(); progressEs = null; reconnectTimer = setTimeout(connectProgress, 10000); }
+      if (!d.running) {
+        progressEs.close();
+        progressEs = null;
+        // Don't reconnect once we've received a clean "finished" message —
+        // the slot has been torn down and all subsequent responses would
+        // return the empty-status zeros.  We do still reconnect after an
+        // unexpected drop (network error, server restart) so the page
+        // picks up a new crawl that may start on this project later.
+        if (!crawlFinished) {
+          reconnectTimer = setTimeout(connectProgress, 10000);
+        }
+      }
     };
-    progressEs.onerror = function() { if (progressEs) { progressEs.close(); progressEs = null; } reconnectTimer = setTimeout(connectProgress, 10000); };
+    progressEs.onerror = function() {
+      if (progressEs) { progressEs.close(); progressEs = null; }
+      if (!crawlFinished) { reconnectTimer = setTimeout(connectProgress, 10000); }
+    };
   }
 
   connectProgress();

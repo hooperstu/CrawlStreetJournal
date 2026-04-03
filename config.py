@@ -87,6 +87,7 @@ PAGES_CSV = "pages.csv"
 EDGES_CSV = "edges.csv"
 TAGS_CSV = "tags.csv"
 ERRORS_CSV = "crawl_errors.csv"
+PHONE_NUMBERS_CSV = "phone_numbers.csv"
 
 # Prefix for per-type asset files, e.g. output/assets_pdf.csv
 ASSETS_CSV_PREFIX = "assets_"
@@ -134,7 +135,7 @@ SKIP_EXTENSIONS = (
     ".pdf", ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp",
     ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods",
     ".zip", ".mp3", ".mp4", ".woff", ".woff2", ".ttf", ".eot",
-    ".css", ".js", ".xml", ".json",
+    ".css", ".js", ".xml", ".json", ".atom", ".rss",
 )
 
 # Map file extension (lowercase, with dot) to asset CSV suffix.
@@ -167,11 +168,13 @@ ASSET_CATEGORY_BY_EXT = {
     ".js": "script",
     ".xml": "xml",
     ".json": "json",
+    ".atom": "xml",
+    ".rss": "xml",
 }
 
 # ── DOMAIN OWNERSHIP ──────────────────────────────────────────────────
 # Rules for classifying crawled domains into ownership categories
-# (used in ecosystem visualisations). Each rule is a (domain_suffix, label)
+# (used in reports visualisations). Each rule is a (domain_suffix, label)
 # tuple — first match wins. Populate via project defaults or edit here.
 DOMAIN_OWNERSHIP_RULES = []
 DOMAIN_OWNERSHIP_DEFAULT = "Uncategorised"

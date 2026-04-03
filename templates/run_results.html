@@ -23,16 +23,16 @@
   <a href="{{ url_for('run_config', slug=project.slug, run_name=run_name) }}">Config</a>
   <a href="{{ url_for('run_monitor', slug=project.slug, run_name=run_name) }}">Monitor</a>
   <a href="{{ url_for('run_results', slug=project.slug, run_name=run_name) }}" class="active">Results</a>
-  <a href="{{ url_for('ecosystem.ecosystem_dashboard', slug=project.slug, runs=run_name) }}">Ecosystem</a>
 </div>
 {% endblock %}
 
 
 {% block content %}
 <div class="flex-between" style="margin-bottom:20px;">
-  <h1 class="page-title" style="margin-bottom:0;">
-    {% if friendly_name %}{{ friendly_name }}{% else %}{{ run_name }}{% endif %} — Results
-  </h1>
+  <div>
+    <h1 class="page-title" style="margin-bottom:2px;">{{ project.name }} — Crawl Runs</h1>
+    <p class="text-muted" style="font-size:14px;">{% if friendly_name %}{{ friendly_name }}{% else %}{{ run_name }}{% endif %} &mdash; Results</p>
+  </div>
   <a href="{{ url_for('run_download_all', slug=project.slug, run_name=run_name) }}" class="btn btn-sm btn-primary">Download All CSVs</a>
 </div>
 
