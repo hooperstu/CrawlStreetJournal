@@ -33,6 +33,22 @@ import config
 import utils
 
 
+# ── Parser backend ────────────────────────────────────────────────────────
+
+def _bs4_parser() -> str:
+    """Return the best available BeautifulSoup parser backend.
+
+    Prefers ``lxml`` for speed and robustness, but falls back to the
+    stdlib ``html.parser`` when lxml is not installed (e.g. on Android
+    where cross-compiling C extensions is impractical).
+    """
+    try:
+        import lxml  # noqa: F401
+        return "lxml"
+    except ImportError:
+        return "html.parser"
+
+
 # ── URL helpers ───────────────────────────────────────────────────────────
 
 
@@ -523,7 +539,7 @@ def extract_classified_links(
         - *edge_rows* — dicts for the link-graph CSV (``edges.csv``).
         - *phone_rows* — dicts matching ``PHONE_NUMBER_FIELDS`` for ``tel:`` hrefs.
     """
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, _bs4_parser())
     html_urls: Set[str] = set()
     asset_rows: List[dict] = []
     edge_rows: List[dict] = []
@@ -1483,7 +1499,7 @@ def build_page_inventory_row(
     """
     response_meta = response_meta or {}
     sitemap_meta = sitemap_meta or {}
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, _bs4_parser())
 
     seo = _extract_seo_meta(soup, final_url)
     quality = _extract_quality_signals(
@@ -1759,7 +1775,7 @@ def extract_inline_assets(
     ``head_content_type`` / ``head_content_length``; HEAD is skipped for
     inline assets to avoid excessive requests).
     """
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, _bs4_parser())
     assets: List[dict] = []
     seen: Set[str] = set()
 
