@@ -255,11 +255,12 @@ def _build_ownership_map(all_domains: List[str]) -> Dict[str, str]:
                 break
         if not matched:
             # tldextract decomposes the domain into (subdomain, domain,
-            # suffix) using the Public Suffix List, so registrable_domain
-            # reliably groups subdomains under one organisation even for
-            # multi-part TLDs like .co.uk or .nhs.uk.
+            # suffix) using the Public Suffix List, so
+            # top_domain_under_public_suffix reliably groups subdomains
+            # under one organisation even for multi-part TLDs like
+            # .co.uk or .nhs.uk.
             ext = tldextract.extract(dom)
-            ownership[dom] = ext.registered_domain or dom
+            ownership[dom] = ext.top_domain_under_public_suffix or dom
 
     return ownership
 
@@ -274,7 +275,7 @@ def _ownership_fallback(domain: str) -> str:
     for suffix, label in config.DOMAIN_OWNERSHIP_RULES:
         if d.endswith(suffix.lower()) or d == suffix.lower():
             return label
-    return tldextract.extract(domain).registered_domain or domain
+    return tldextract.extract(domain).top_domain_under_public_suffix or domain
 
 
 # -- Domain Aggregation ---------------------------------------------------
