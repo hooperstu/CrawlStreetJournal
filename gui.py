@@ -223,11 +223,6 @@ logging.root.setLevel(getattr(logging, config.LOG_LEVEL, logging.INFO))
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 
-def _apply_log_level() -> None:
-    """Re-sync the root logger level with the current ``config.LOG_LEVEL``."""
-    level = getattr(logging, config.LOG_LEVEL, logging.INFO)
-    logging.root.setLevel(level)
-
 
 # ── Crawl runner ──────────────────────────────────────────────────────────
 
@@ -355,12 +350,12 @@ def _start_crawl_thread(
     cfg.OUTPUT_DIR = runs_dir
     ctx = StorageContext(runs_dir, cfg)
 
-    status: Dict[str, Any] = {
-        "running": True, "stopping": False, "pages": 0, "assets": 0,
-        "current_url": "", "start_time": "", "elapsed": "",
-        "finished_message": "",
-        "run_folder": run_folder or "", "project_slug": project_slug,
-    }
+    status: Dict[str, Any] = dict(
+        _EMPTY_STATUS,
+        running=True,
+        run_folder=run_folder or "",
+        project_slug=project_slug,
+    )
 
     stop_event = threading.Event()
     # Thread is set to None initially and patched after creation because

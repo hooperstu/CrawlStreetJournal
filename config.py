@@ -18,7 +18,7 @@ import copy
 import os
 import sys
 from dataclasses import dataclass, field, fields as dc_fields
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple, Union
 
 # ── Path resolution ───────────────────────────────────────────────────
 # When running inside a PyInstaller bundle the source tree is extracted
@@ -255,7 +255,7 @@ class CrawlConfig:
     MAX_SITEMAP_URLS: int = 1_000_000
     MAX_PAGES_TO_CRAWL: int = 1_000_000
     MAX_DEPTH: Optional[int] = None
-    REQUEST_DELAY_SECONDS: Any = (3, 5)
+    REQUEST_DELAY_SECONDS: Union[float, Tuple[float, float]] = (3, 5)
     REQUEST_TIMEOUT_SECONDS: int = 20
     MAX_RETRIES: int = 3
     CONCURRENT_WORKERS: int = 1
@@ -274,7 +274,7 @@ class CrawlConfig:
     LINK_CHECK_DELAY_SECONDS: float = 0.5
     CAPTURE_READABILITY: bool = True
     RENDER_JAVASCRIPT: bool = False
-    ALLOWED_DOMAINS: Any = ()
+    ALLOWED_DOMAINS: Union[tuple, list] = ()
     DOMAIN_OWNERSHIP_RULES: list = field(default_factory=list)
     EXCLUDED_DOMAINS: list = field(default_factory=list)
     URL_EXCLUDE_PATTERNS: list = field(default_factory=list)
