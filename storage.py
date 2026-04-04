@@ -744,13 +744,6 @@ def load_project(slug: str) -> Optional[Dict[str, Any]]:
         return json.load(f)
 
 
-def save_project(slug: str, data: Dict[str, Any]) -> None:
-    """Write (or overwrite) ``_project.json`` for *slug*."""
-    path = os.path.join(get_project_dir(slug), "_project.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-
 def delete_project(slug: str) -> None:
     """Remove the project directory tree.  Validates the path stays inside PROJECTS_DIR."""
     pdir = get_project_dir(slug)

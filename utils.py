@@ -78,7 +78,6 @@ def count_csv_rows(filepath: str) -> int:
     Counts by iterating lines rather than loading the full CSV into memory, so
     it is safe to call on large output files.
     """
-    import os
     if not os.path.isfile(filepath):
         return 0
     try:
