@@ -42,7 +42,6 @@ import re
 import socket
 import threading
 import time
-from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
@@ -138,6 +137,54 @@ class _PriorityQueue:
         """Serialise for state persistence."""
         with self._lock:
             return [(url, ref, d) for _, _, url, ref, d in self._heap]
+
+
+class _ThreadSafeSet:
+    """Thread-safe set wrapper for visited/queued URLs in concurrent mode."""
+
+    def __init__(self, initial: Optional[set] = None):
+        self._set: set = initial or set()
+        self._lock = threading.Lock()
+
+    def add(self, item):
+        with self._lock:
+            self._set.add(item)
+
+    def __contains__(self, item):
+        with self._lock:
+            return item in self._set
+
+    def __len__(self):
+        with self._lock:
+            return len(self._set)
+
+
+class _ThreadSafeDict:
+    """Thread-safe dict wrapper for content hashes in concurrent mode."""
+
+    def __init__(self):
+        self._dict: Dict[str, str] = {}
+        self._lock = threading.Lock()
+
+    def get(self, key, default=None):
+        with self._lock:
+            return self._dict.get(key, default)
+
+    def __contains__(self, key):
+        with self._lock:
+            return key in self._dict
+
+    def __setitem__(self, key, value):
+        with self._lock:
+            self._dict[key] = value
+
+    def to_dict(self) -> Dict[str, str]:
+        with self._lock:
+            return dict(self._dict)
+
+    def __bool__(self):
+        with self._lock:
+            return bool(self._dict)
 
 
 # ── DNS cache ─────────────────────────────────────────────────────────────
@@ -733,8 +780,8 @@ def _init_run(
     Returns a tuple of all mutable crawl-state components.
     """
     pq = _PriorityQueue()
-    queued: Set[str] = set()
-    visited: Set[str] = set()
+    queued = _ThreadSafeSet()
+    visited = _ThreadSafeSet()
     sitemap_meta: Dict[str, Dict[str, str]] = {}
     pages_crawled = 0
     assets_from_pages = 0
@@ -760,7 +807,7 @@ def _init_run(
     run_dir = ctx.get_active_run_dir()
 
     if resume and run_folder:
-        visited = storage.rebuild_visited_from_csvs(run_dir)
+        visited = _ThreadSafeSet(storage.rebuild_visited_from_csvs(run_dir))
         sitemap_meta = storage.rebuild_sitemap_meta_from_csv(run_dir)
         saved_state = storage.load_crawl_state(run_dir)
         if saved_state:
@@ -917,6 +964,7 @@ def _process_one_url(
                 if rendered is not None:
                     r_html, r_status, r_final, r_ct, r_headers = rendered
                     if r_html and len(r_html.strip()) > len(html.strip()):
+                        original_len = len(html)
                         html = r_html
                         status = r_status
                         final_url = r_final
@@ -925,7 +973,7 @@ def _process_one_url(
                             "x_robots_tag": (r_headers.get("x-robots-tag") or "").strip(),
                             "server": (r_headers.get("server") or resp_meta.get("server", "")).strip(),
                         })
-                        logger.debug("JS-rendered %s (%d → %d bytes)", url, len(html), len(r_html))
+                        logger.debug("JS-rendered %s (%d → %d bytes)", url, original_len, len(r_html))
         except ImportError:
             pass
         except Exception as render_err:
@@ -1199,7 +1247,7 @@ def crawl(
 
     interrupted = False
     last_state_save = pages_crawled
-    content_hashes: Dict[str, str] = {}
+    content_hashes = _ThreadSafeDict()
 
     # Change detection: load hashes from the previous run if enabled
     prev_hashes: Dict[str, str] = {}
@@ -1296,7 +1344,7 @@ def crawl(
     finally:
         if content_hashes:
             try:
-                storage.save_content_hashes(run_dir, content_hashes)
+                storage.save_content_hashes(run_dir, content_hashes.to_dict())
             except Exception as hash_err:
                 logger.warning("Failed to save content hashes: %s", hash_err)
 

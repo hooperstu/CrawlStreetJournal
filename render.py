@@ -17,6 +17,7 @@ If Playwright is not installed the module gracefully degrades and
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 _PLAYWRIGHT_AVAILABLE = False
 _browser = None
 _playwright_instance = None
+_browser_lock = threading.Lock()
 
 try:
     from playwright.sync_api import sync_playwright  # noqa: F401
@@ -38,21 +40,18 @@ def is_available() -> bool:
 
 
 def _get_browser():
-    """Lazy-initialise a shared headless Chromium browser instance.
-
-    The instance is kept in module-level globals so subsequent calls reuse it
-    rather than paying the Chromium startup cost on every page render.
-    """
+    """Lazy-initialise a shared headless Chromium browser instance (thread-safe)."""
     global _browser, _playwright_instance
     if not _PLAYWRIGHT_AVAILABLE:
         return None
-    if _browser is None:
-        try:
-            _playwright_instance = sync_playwright().start()
-            _browser = _playwright_instance.chromium.launch(headless=True)
-            logger.info("Playwright headless browser started")
-        except Exception as e:
-            logger.warning("Could not start Playwright browser: %s", e)
+    with _browser_lock:
+        if _browser is None:
+            try:
+                _playwright_instance = sync_playwright().start()
+                _browser = _playwright_instance.chromium.launch(headless=True)
+                logger.info("Playwright headless browser started")
+            except Exception as e:
+                logger.warning("Could not start Playwright browser: %s", e)
             return None
     return _browser
 
