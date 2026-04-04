@@ -1,0 +1,106 @@
+# ── The Crawl Street Journal — Project & Briefcase Configuration ──────
+#
+# This file configures BeeWare Briefcase for building Android APKs.
+# It also serves as the standard Python project metadata file (PEP 621).
+#
+# Build an Android APK:
+#     pip install briefcase
+#     briefcase create android
+#     briefcase build android
+#     briefcase run android        # launch in emulator
+#     briefcase package android    # produce signed/unsigned APK
+#
+# The desktop builds continue to use PyInstaller (collector.spec).
+
+[project]
+name = "csjapp"
+version = "3.0.0"
+description = "The Crawl Street Journal — web crawler and estate inventory tool"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "Proprietary"}
+authors = [
+    {name = "hooperstu", email = "hooperstu@users.noreply.github.com"},
+]
+
+[project.urls]
+Homepage = "https://github.com/hooperstu/CrawlStreetJournal"
+
+# ── Briefcase ─────────────────────────────────────────────────────────
+
+[tool.briefcase]
+project_name = "The Crawl Street Journal"
+bundle = "io.csj"
+version = "3.0.0"
+url = "https://github.com/hooperstu/CrawlStreetJournal"
+license.file = "LICENSE"
+author = "hooperstu"
+author_email = "hooperstu@users.noreply.github.com"
+
+[tool.briefcase.app.csjapp]
+formal_name = "The Crawl Street Journal"
+description = "Web crawler and estate inventory tool"
+icon = "static/img/icon"
+sources = [
+    "src/csjapp",
+    # Include the entire project root so gui.py, scraper.py, parser.py
+    # and all other modules are available at import time.
+    "gui.py",
+    "main.py",
+    "config.py",
+    "scraper.py",
+    "parser.py",
+    "sitemap.py",
+    "storage.py",
+    "utils.py",
+    "viz_api.py",
+    "viz_data.py",
+    "audit_data.py",
+    "wcag_audit.py",
+    "signals_audit.py",
+    "render.py",
+    "run_pre_crawl_analysis.py",
+    "run_background_crawl.py",
+    "launcher.py",
+    "templates",
+    "static",
+]
+requires = [
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "urllib3>=2.0.0",
+    "flask>=3.0.0",
+    "textstat>=0.7.3",
+    "tldextract>=5.0.0",
+]
+
+# ── Android-specific ──────────────────────────────────────────────────
+# lxml is deliberately excluded — the parser falls back to html.parser.
+# pywebview is excluded — Android uses the system browser instead.
+
+[tool.briefcase.app.csjapp.android]
+requires = []
+
+# Android permissions needed for web crawling and serving a local UI.
+permission.INTERNET = true
+permission.ACCESS_NETWORK_STATE = true
+
+# ── Desktop platforms (informational; builds use collector.spec) ──────
+
+[tool.briefcase.app.csjapp.macOS]
+requires = [
+    "lxml>=4.9.0",
+    "pywebview>=5.0",
+]
+
+[tool.briefcase.app.csjapp.windows]
+requires = [
+    "lxml>=4.9.0",
+    "pywebview>=5.0",
+]
+
+[tool.briefcase.app.csjapp.linux]
+requires = [
+    "lxml>=4.9.0",
+    "pywebview>=5.0",
+]
