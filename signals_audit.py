@@ -23,6 +23,7 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
+from parser import _bs4_parser
 import utils
 
 
@@ -36,7 +37,7 @@ def audit_page(
     The result dict groups signals by category, each containing a list of
     found items.  This is intended for analysis, not for CSV output.
     """
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, _bs4_parser())
     headers = response_headers or {}
 
     return {

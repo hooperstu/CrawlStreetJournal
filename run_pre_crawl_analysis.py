@@ -35,6 +35,7 @@ import requests
 from bs4 import BeautifulSoup
 
 import config
+from parser import _bs4_parser
 import parser as parser_module
 import sitemap as sitemap_module
 import storage
@@ -118,7 +119,7 @@ def detect_tech_stack(
         for k, v in (resp_headers or {}).items()
     }
 
-    soup = BeautifulSoup(html[:100_000], "lxml")
+    soup = BeautifulSoup(html[:100_000], _bs4_parser())
     gen_tag = soup.find("meta", attrs={"name": "generator"})
     if not gen_tag:
         gen_tag = soup.find("meta", attrs={"name": re.compile(r"^generator$", re.I)})
@@ -403,7 +404,7 @@ def _bfs_collect(
     """
     if allowed_netlocs is None:
         allowed_netlocs = {urlparse(origin).netloc.lower()}
-    soup = BeautifulSoup(homepage_html, "lxml")
+    soup = BeautifulSoup(homepage_html, _bs4_parser())
     found: List[str] = [origin.rstrip("/")]
     seen: Set[str] = {origin.rstrip("/")}
     queue: deque[str] = deque()
