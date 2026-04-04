@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from bs4 import BeautifulSoup
 import parser as parser_module
+from parser import _bs4_parser
 
 
 SAMPLE_HTML = """\
@@ -72,7 +73,7 @@ SAMPLE_HTML = """\
 
 
 def _soup():
-    return BeautifulSoup(SAMPLE_HTML, "lxml")
+    return BeautifulSoup(SAMPLE_HTML, _bs4_parser())
 
 
 def test_heading_outline():
@@ -320,7 +321,7 @@ JOB_HTML = """\
 
 
 def _phase4_soup():
-    return BeautifulSoup(PHASE4_HTML, "lxml")
+    return BeautifulSoup(PHASE4_HTML, _bs4_parser())
 
 
 def test_extract_author():
@@ -331,7 +332,7 @@ def test_extract_author_from_meta():
     """Fallback path: author is read from <meta name="author"> when no
     JSON-LD author is present."""
     html = '<html><head><meta name="author" content="Alice"></head><body></body></html>'
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, _bs4_parser())
     assert parser_module._extract_author(soup) == "Alice"
 
 
@@ -343,7 +344,7 @@ def test_extract_publisher_fallback_og():
     """Fallback path: publisher is derived from og:site_name when JSON-LD
     publisher is absent."""
     html = '<html><head><meta property="og:site_name" content="Fallback Pub"></head><body></body></html>'
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, _bs4_parser())
     assert parser_module._extract_publisher(soup) == "Fallback Pub"
 
 
@@ -359,7 +360,7 @@ def test_detect_cms_generator_from_html_signals():
     """Fallback path: CMS is inferred from known CDN script-src patterns
     when no <meta name="generator"> tag is present."""
     html = '<html><head></head><body><script src="https://cdn.shopify.com/s/files/foo.js"></script></body></html>'
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, _bs4_parser())
     assert parser_module._detect_cms_generator(soup) == "Shopify"
 
 
@@ -372,7 +373,7 @@ def test_extract_robots_directives_with_header():
     """Robots directives also surface from the X-Robots-Tag HTTP header,
     prefixed with 'header:' to distinguish from meta-tag directives."""
     html = "<html><head></head><body></body></html>"
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, _bs4_parser())
     result = parser_module._extract_robots_directives(
         soup, response_meta={"x_robots_tag": "noindex"}
     )
@@ -420,7 +421,7 @@ def test_extract_rdfa_types():
 
 
 def test_schema_specific_product():
-    soup = BeautifulSoup(PRODUCT_HTML, "lxml")
+    soup = BeautifulSoup(PRODUCT_HTML, _bs4_parser())
     result = parser_module._extract_schema_specific(soup)
     assert result["schema_price"] == "29.99"
     assert result["schema_currency"] == "GBP"
@@ -430,14 +431,14 @@ def test_schema_specific_product():
 
 
 def test_schema_specific_event():
-    soup = BeautifulSoup(EVENT_HTML, "lxml")
+    soup = BeautifulSoup(EVENT_HTML, _bs4_parser())
     result = parser_module._extract_schema_specific(soup)
     assert "2025-09-15" in result["schema_event_date"]
     assert "Town Hall" in result["schema_event_location"]
 
 
 def test_schema_specific_job():
-    soup = BeautifulSoup(JOB_HTML, "lxml")
+    soup = BeautifulSoup(JOB_HTML, _bs4_parser())
     result = parser_module._extract_schema_specific(soup)
     assert result["schema_job_title"] == "Senior Engineer"
     assert "London" in result["schema_job_location"]
