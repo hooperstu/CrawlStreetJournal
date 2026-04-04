@@ -31,12 +31,8 @@ def _resolve_run_dirs(slug: str) -> List[str]:
     When ``runs`` is absent or empty every ``run_*`` directory under the
     project is included.  Otherwise the parameter is a comma-separated
     list of run folder names (e.g. ``run_2025-04-01_12-00-00``).
-
-    Side effect: calls ``storage_module.activate_project(slug)`` which
-    mutates ``config.OUTPUT_DIR``.
     """
-    storage_module.activate_project(slug)
-    base = config.OUTPUT_DIR
+    base = storage_module.get_project_runs_dir(slug)
 
     runs_param = request.args.get("runs", "").strip()
     if runs_param:
@@ -106,7 +102,9 @@ def reports_dashboard(slug: str):
     if not project:
         return "Project not found", 404
     project["slug"] = slug
-    ctx = storage_module.activate_project(slug)
+    runs_base = storage_module.get_project_runs_dir(slug)
+    os.makedirs(runs_base, exist_ok=True)
+    ctx = storage_module.StorageContext(runs_base, config.CrawlConfig.from_module())
     runs = ctx.list_run_dirs()
     preselected = request.args.get("runs", "")
 
@@ -117,7 +115,7 @@ def reports_dashboard(slug: str):
         "total_errors": 0,
     }
     for r in runs:
-        run_dir_path = os.path.join(ctx.output_dir, r["name"])
+        run_dir_path = os.path.join(runs_base, r["name"])
         state = storage_module.load_crawl_state(run_dir_path)
         if state:
             overview["total_assets"] += state.get("assets_from_pages", 0)
@@ -149,7 +147,9 @@ def api_runs(slug: str):
     project = storage_module.load_project(slug)
     if not project:
         return jsonify({"error": "Project not found"}), 404
-    ctx = storage_module.activate_project(slug)
+    runs_base = storage_module.get_project_runs_dir(slug)
+    os.makedirs(runs_base, exist_ok=True)
+    ctx = storage_module.StorageContext(runs_base, config.CrawlConfig.from_module())
     return jsonify(ctx.list_run_dirs())
 
 
