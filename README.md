@@ -18,6 +18,40 @@ Pre-built desktop apps are available from the [latest release](https://github.co
 
 The app opens in a **native desktop window** (via `pywebview`). If the native window backend is not available on your system, it falls back to opening your default browser automatically.
 
+### Android
+
+An Android APK can be built using [BeeWare Briefcase](https://beeware.org/). The APK runs the full crawl engine and Flask GUI inside the device's browser — the same interface as the desktop version.
+
+```bash
+pip install briefcase
+briefcase create android
+briefcase build android
+briefcase run android          # launch in emulator
+briefcase package android      # produce distributable APK
+```
+
+**Notes:**
+
+- The `lxml` C extension is excluded from the Android build; the parser falls back to Python's built-in `html.parser` automatically.
+- `pywebview` is excluded — the app opens in the device's default browser (typically Chrome).
+- The APK requires **Internet** and **Access Network State** permissions (configured in `pyproject.toml`).
+- Crawls should be run with the app in the foreground; Android may terminate background processes.
+- Optional Playwright-based JS rendering (`render.py`) is not supported on Android.
+
+### Progressive Web App (PWA)
+
+The web GUI also supports **Progressive Web App** installation. When you visit the GUI from Chrome on Android (or any modern browser), you can tap **"Add to Home Screen"** to install it as an app-like shortcut. This works whether the server is running locally (via the APK or [Termux](https://termux.dev/)) or on a remote machine.
+
+### Termux (advanced)
+
+For users comfortable with the terminal, CSJ runs directly on Android via [Termux](https://termux.dev/) with no code changes:
+
+```bash
+pkg install python
+pip install -r requirements.txt
+python3 gui.py                 # open http://localhost:5001 in your browser
+```
+
 ---
 
 ## What this tool is for
