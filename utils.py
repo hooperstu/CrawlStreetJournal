@@ -9,8 +9,10 @@ creating circular dependencies.
 
 from __future__ import annotations
 
+import csv
+import os
 from datetime import datetime, timezone
-from typing import Any, Iterable, List
+from typing import Any, Dict, Iterable, List
 from urllib.parse import urlparse
 
 
@@ -141,3 +143,32 @@ def parse_robots_for_sitemaps(text: str) -> List[str]:
         if line.lower().startswith("sitemap:"):
             found.append(line[len("sitemap:"):].strip())
     return found
+
+
+# ── Shared CSV / numeric helpers ──────────────────────────────────────────
+
+def read_csv(path: str) -> List[Dict[str, str]]:
+    """Read a CSV file into a list of dicts, returning empty on any error."""
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+    except Exception:
+        return []
+
+
+def safe_int(val: str, default: int = 0) -> int:
+    """Parse an integer from a string, returning *default* on failure."""
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_float(val: str, default: float = 0.0) -> float:
+    """Parse a float from a string, returning *default* on failure."""
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
