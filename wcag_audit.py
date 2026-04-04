@@ -25,8 +25,11 @@ def _read_pages(run_dirs: List[str]) -> List[Dict[str, str]]:
         path = os.path.join(rd, config.PAGES_CSV)
         if not os.path.isfile(path):
             continue
-        with open(path, "r", encoding="utf-8") as f:
-            rows.extend(csv.DictReader(f))
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                rows.extend(csv.DictReader(f))
+        except Exception:
+            pass
     return rows
 
 

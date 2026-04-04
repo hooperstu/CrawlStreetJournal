@@ -608,6 +608,8 @@ def audit_content_decay(run_dirs: List[str]) -> Dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def audit_broken_links(run_dirs: List[str]) -> Dict[str, Any]:
+    pages = _read_pages(run_dirs)
+    total_pages = len(pages)
     errors = _read_errors(run_dirs)
 
     by_type: Counter = Counter()
@@ -639,8 +641,8 @@ def audit_broken_links(run_dirs: List[str]) -> Dict[str, Any]:
         "id": "broken_links",
         "title": "Broken Links & Errors",
         "count": len(findings),
-        "severity": _severity(len(findings) / max(len(findings), 1) * 100) if findings else "none",
-        "total": len(findings),
+        "severity": _severity(len(findings) / max(total_pages, 1) * 100) if findings else "none",
+        "total": total_pages,
         "by_type": [{"type": t, "count": c} for t, c in by_type.most_common(10)],
         "by_domain": [{"domain": d, "count": c} for d, c in by_domain.most_common(20)],
         "by_status": [{"status": s, "count": c} for s, c in by_status.most_common(10)],

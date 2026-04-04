@@ -1167,6 +1167,7 @@ def resume_run_route(slug: str, run_name: str):
     with _crawls_lock:
         if slug in _active_crawls:
             return redirect(url_for("run_monitor", slug=slug, run_name=run_name))
+    storage_module.activate_project(slug)
     _start_crawl_thread(slug, run_folder=run_name, resume=True)
     return redirect(url_for("run_monitor", slug=slug, run_name=run_name))
 
@@ -1219,6 +1220,8 @@ def run_results_detail(slug: str, run_name: str, filename: str):
     """
     if not filename.endswith(".csv"):
         return "Not found", 404
+    # Prevent path traversal: strip directory components
+    filename = os.path.basename(filename)
     project = storage_module.load_project(slug)
     if not project:
         return "Project not found", 404
@@ -1226,6 +1229,9 @@ def run_results_detail(slug: str, run_name: str, filename: str):
     storage_module.activate_project(slug)
     run_dir = os.path.join(config.OUTPUT_DIR, run_name)
     filepath = os.path.join(run_dir, filename)
+    # Verify the resolved path is within the run directory
+    if not os.path.realpath(filepath).startswith(os.path.realpath(run_dir)):
+        return "Not found", 404
     if not os.path.isfile(filepath):
         return "Not found", 404
     try:

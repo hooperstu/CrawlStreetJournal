@@ -17,7 +17,6 @@ more crawl runs within a project.
 from __future__ import annotations
 
 import csv
-import math
 import os
 import re
 from collections import Counter, defaultdict

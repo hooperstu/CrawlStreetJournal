@@ -275,6 +275,7 @@ class CrawlConfig:
     CAPTURE_READABILITY: bool = True
     RENDER_JAVASCRIPT: bool = False
     ALLOWED_DOMAINS: Any = ()
+    DOMAIN_OWNERSHIP_RULES: list = field(default_factory=list)
     EXCLUDED_DOMAINS: list = field(default_factory=list)
     URL_EXCLUDE_PATTERNS: list = field(default_factory=list)
     URL_INCLUDE_PATTERNS: list = field(default_factory=list)
