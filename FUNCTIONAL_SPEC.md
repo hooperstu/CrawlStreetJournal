@@ -36,11 +36,18 @@ The crawl engine orchestrates fetching, scope enforcement, rate limiting, and ou
 | `_score_url(url, depth, is_seed)` | Compute priority score (lower = higher priority). Factors: seed bonus (−100), depth penalty (×10), homepage bonus (−5), low-value path penalty (+20 for `/tag/`, `/page/`, `/wp-content/`, etc.). |
 | `_PriorityQueue` | Thread-safe priority queue backed by `heapq`. Items are `(score, counter, url, referrer, depth)`. Counter breaks ties in FIFO order. Methods: `push()`, `pop()`, `to_list()` (for state serialisation). |
 
+#### Thread-safe data structures
+
+| Class | Purpose |
+|-------|---------|
+| `_ThreadSafeSet` | Lock-guarded `set` wrapper for `visited` and `queued` URL sets in concurrent mode. |
+| `_ThreadSafeDict` | Lock-guarded `dict` wrapper for `content_hashes` in concurrent mode. |
+
 #### DNS caching
 
 | Function | Purpose |
 |----------|---------|
-| `_cached_getaddrinfo(*args)` | Process-global DNS cache wrapping `socket.getaddrinfo`. Thread-safe via `_dns_lock`. Avoids repeated DNS lookups for the same hostname across all crawl threads. Installed as `socket.getaddrinfo` on module import. |
+| `_cached_getaddrinfo(*args)` | Process-global DNS cache wrapping `socket.getaddrinfo`. Thread-safe via `_dns_lock`. Entries expire after a 5-minute TTL (`_DNS_TTL = 300`). Installed as `socket.getaddrinfo` on module import. |
 
 #### Robots.txt & Crawl-delay
 
@@ -66,7 +73,7 @@ The crawl engine orchestrates fetching, scope enforcement, rate limiting, and ou
 |----------|---------|
 | `_resolve_delay(value)` | Return a sleep duration — fixed float or random within `(min, max)` range. |
 | `_per_domain_delay(hostname, base_delay)` | Compute delay with adaptive backoff: base delay + exponential penalty for domains with repeated failures (`_domain_fail_count`). Capped at 60s extra. |
-| `_wait_for_domain(hostname, delay_cfg, url)` | Sleep to enforce per-domain rate limiting. Uses the **maximum** of: configured delay, adaptive backoff, and `Crawl-delay` from robots.txt. Thread-safe via `_global_state_lock`. |
+| `_wait_for_domain(hostname, delay_cfg, url)` | Sleep to enforce per-domain rate limiting. Uses the **maximum** of: configured delay, adaptive backoff, and `Crawl-delay` from robots.txt. All shared-state reads/writes are thread-safe via `_global_state_lock`. |
 | `_record_domain_success(hostname)` | Clear failure count for domain. |
 | `_record_domain_failure(hostname)` | Increment failure count for domain (drives adaptive backoff). |
 
@@ -201,7 +208,7 @@ Extracts metadata from raw HTML. Organised in extraction phases.
 
 | Function | Purpose |
 |----------|---------|
-| `extract_classified_links(html, base_url, discovered_at)` | Separate `<a>` links into HTML URLs (to crawl), asset rows, and edge rows. |
+| `extract_classified_links(html, base_url, discovered_at, allowed_domains=None)` | Separate `<a>` links into HTML URLs (to crawl), asset rows, and edge rows. Accepts explicit `allowed_domains` for thread safety. |
 | `extract_inline_assets(html, base_url, discovered_at)` | Extract assets from `<img>`, `<link>`, `<script>`, `<video>`, `<audio>`, `<source>`. |
 | `extract_nav_links(soup, page_url, discovered_at)` | Distinct nav links for `nav_links.csv`. |
 
@@ -224,7 +231,7 @@ Filesystem persistence: CSV writing, project/run lifecycle, config snapshots, re
 | Function | Purpose |
 |----------|---------|
 | `_sanitise(value)` | Strip null bytes, coerce None to empty string, truncate >32K chars. |
-| `append_row(path, fieldnames, row)` | Append one sanitised row to a CSV file with `QUOTE_ALL`. |
+| `append_row(path, fieldnames, row)` | Append one sanitised row to a CSV file with `QUOTE_ALL`. Thread-safe via `_csv_lock` when using `StorageContext`. |
 | `write_page(row)` | Write to `pages.csv`. |
 | `write_asset(row, category)` | Write to `assets_<category>.csv`. |
 | `write_edge(row)` | Write to `edges.csv` (if enabled). |
@@ -262,6 +269,20 @@ Filesystem persistence: CSV writing, project/run lifecycle, config snapshots, re
 |----------|---------|
 | `save_content_hashes(run_dir, hashes)` | Write content hash dict to `_content_hashes.json`. |
 | `load_content_hashes(run_dir)` | Load content hashes from a previous run. |
+
+### Module: `utils.py`
+
+Shared stateless helpers used across the codebase.
+
+| Function | Purpose |
+|----------|---------|
+| `flatten_json_ld(obj)` | Recursively flatten JSON-LD `@graph` structures into a list of node dicts. |
+| `sanitise_csv_value(value)` | Strip null bytes, coerce None to empty string, truncate >32K chars. |
+| `is_allowed_domain(url, domains)` | Check if a URL's hostname matches any of the given domain substrings. |
+| `parse_robots_for_sitemaps(text)` | Parse `Sitemap:` lines from a robots.txt body. |
+| `read_csv(path)` | Read a CSV file and return a list of row dicts. |
+| `safe_int(val, default=0)` | Parse a string to int, returning `default` on failure. |
+| `safe_float(val, default=0.0)` | Parse a string to float, returning `default` on failure. |
 
 ---
 
@@ -337,7 +358,7 @@ WCAG 2.1 accessibility audit — 13 criteria across 4 principles.
 
 ### Module: `gui.py`
 
-Flask application serving the web interface.
+Flask application serving the web interface. All routes resolve run and project paths via pure helper functions (`_runs_dir`, `_run_dir`, `get_project_runs_dir`) rather than mutating `config.OUTPUT_DIR`.
 
 | Route | Method | Purpose |
 |-------|--------|---------|
