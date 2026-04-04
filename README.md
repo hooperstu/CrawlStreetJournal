@@ -99,7 +99,7 @@ Output is saved under `projects/my-project/runs/`.
 ### Development tools
 
 ```bash
-# Tests (225+ across unit, Playwright, and real-data tests)
+# Tests (225 across unit, Playwright, and real-data tests)
 python3 -m pytest tests/ -v
 
 # Linting
@@ -447,7 +447,7 @@ This prevents the same page being fetched multiple times under cosmetically diff
 | `run_pre_crawl_analysis.py` | Pre-crawl sampler — fetches a diverse sample of pages per domain, detects tech stack, and reports field coverage before a full crawl. |
 | `config.py` | All configuration defaults and the `CrawlConfig` dataclass. |
 | `FUNCTIONAL_SPEC.md` | Detailed function-level specification of all internal workflows. |
-| `scraper.py` | Crawl orchestrator: dual-queue scheduling, robots.txt, rate limiting, URL normalisation, Playwright fallback. |
+| `scraper.py` | Crawl orchestrator: priority-queue scheduling, robots.txt, rate limiting, URL normalisation, Playwright fallback. Thread-safe data structures (`_ThreadSafeSet`, `_ThreadSafeDict`) for concurrent mode. DNS cache with 5-minute TTL. |
 | `parser.py` | HTML extraction: Phase 1–4 metadata, content classification, tags, WCAG signals, structured data. |
 | `sitemap.py` | Sitemap XML parsing (index and urlset formats, namespace-agnostic). |
 | `render.py` | Optional Playwright-based JS rendering (not installed by default; gated by `RENDER_JAVASCRIPT`). |
@@ -457,13 +457,13 @@ This prevents the same page being fetched multiple times under cosmetically diff
 | `audit_data.py` | Content audit engine — 10 finding types (duplicate content, redirects, thin content, title/meta quality, orphan pages, link distribution, image accessibility, URL structure, content decay, broken links). Route: `/p/<slug>/audit`. |
 | `wcag_audit.py` | WCAG 2.1 accessibility audit engine — 13 testable criteria (Level A + AA) organised by WCAG principles. Route: `/p/<slug>/wcag`. |
 | `signals_audit.py` | Standalone research tool — full metadata signal inventory of a single page (not in the main crawl pipeline). |
-| `utils.py` | Shared stateless helpers: JSON-LD flattening, URL domain checks, robots.txt sitemap parsing, CSV sanitisation. |
+| `utils.py` | Shared stateless helpers: JSON-LD flattening, URL domain checks, robots.txt sitemap parsing, CSV sanitisation, `read_csv`, `safe_int`, `safe_float`. |
 | `Dockerfile` | Container image definition (~191 MB, runs `gui.py`, persists data via volume). |
 | `docker-compose.yml` | Single-service Compose file — maps port 5001 and a named data volume. |
 | `collector.spec` | PyInstaller spec for building the desktop app (macOS `.app`, Windows `.exe`, Linux binary). |
 | `static/js/ecosystem.js` | D3 v7 frontend driving all ~20 ecosystem dashboard charts. |
 | `templates/` | Jinja2 HTML templates for all GUI views. |
-| `tests/` | 225+ tests across 6 files covering parser, sitemap, signals audit, viz data, Playwright end-to-end, and real-data integration. |
+| `tests/` | 225 tests across 6 files covering parser, sitemap, signals audit, viz data, Playwright end-to-end, and real-data integration. |
 | `requirements.txt` | Python dependencies: `requests`, `beautifulsoup4`, `lxml`, `urllib3`, `flask`, `textstat`, `tldextract`, `pywebview`. |
 
 ---
@@ -489,6 +489,7 @@ pyinstaller collector.spec --noconfirm
 - macOS: produces `The Crawl Street Journal.app` with bundle ID `io.csj.crawlstreetjournal`, `.icns` icon, and ATS exception for local HTTP
 - Windows: produces `The Crawl Street Journal.exe` with `.ico` icon
 - `launcher.py` writes a crash log (`crash.log`) to `DATA_DIR` if the app encounters an unhandled exception
+- The crawl engine's `finally` block calls `render.close()` so the Playwright browser is properly shut down on crawl completion
 - Output is in `dist/The Crawl Street Journal/`
 
 To update the app version, edit the `version` key in the `info_plist` dict inside `collector.spec`.
