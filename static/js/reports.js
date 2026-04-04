@@ -189,17 +189,46 @@
 
   var tabs = document.querySelectorAll(".viz-tab");
   var panels = document.querySelectorAll(".viz-panel");
+  var activeVizLabel = document.getElementById("activeVizLabel");
+  var tabSearch = document.getElementById("viz-tab-search");
+  var tabSearchEmpty = document.getElementById("vizTabSearchEmpty");
+
+  function updateActiveViz(tab) {
+    if (!activeVizLabel || !tab) return;
+    activeVizLabel.textContent = tab.textContent.trim();
+  }
+
+  function applyTabSearchFilter(query) {
+    var q = (query || "").trim().toLowerCase();
+    var visibleCount = 0;
+    tabs.forEach(function (tab) {
+      var label = tab.textContent.toLowerCase();
+      var show = !q || label.indexOf(q) !== -1;
+      tab.style.display = show ? "" : "none";
+      if (show) visibleCount++;
+    });
+    if (tabSearchEmpty) tabSearchEmpty.style.display = visibleCount ? "none" : "";
+  }
 
   tabs.forEach(function (tab) {
     tab.addEventListener("click", function () {
       tabs.forEach(function (t) { t.classList.remove("active"); });
       panels.forEach(function (p) { p.classList.remove("active"); });
       tab.classList.add("active");
+      updateActiveViz(tab);
       var panelId = "panel-" + tab.dataset.panel;
       document.getElementById(panelId).classList.add("active");
       renderPanel(tab.dataset.panel);
     });
   });
+
+  if (tabSearch) {
+    tabSearch.addEventListener("input", function () {
+      applyTabSearchFilter(tabSearch.value);
+    });
+  }
+  applyTabSearchFilter("");
+  updateActiveViz(document.querySelector(".viz-tab.active"));
 
   /**
    * Render a panel's chart if it has not already been drawn.  The
