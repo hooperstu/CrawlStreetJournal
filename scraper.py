@@ -994,7 +994,7 @@ def _process_one_url(
     content_hash = ""
     if content_hashes is not None:
         from bs4 import BeautifulSoup as _BS
-        visible = parser_module.get_visible_text(_BS(html, "lxml"))
+        visible = parser_module.get_visible_text(_BS(html, parser_module._bs4_parser()))
         content_hash = hashlib.sha256(visible.encode("utf-8", errors="replace")).hexdigest()[:16]
         if content_hash in content_hashes:
             logger.debug("Content dedup: %s matches %s", url, content_hashes[content_hash])
@@ -1046,7 +1046,7 @@ def _process_one_url(
             try:
                 from bs4 import BeautifulSoup as _BS
                 nav_rows = parser_module.extract_nav_links(
-                    _BS(html, "lxml"), final_url, now,
+                    _BS(html, parser_module._bs4_parser()), final_url, now,
                 )
                 for nr in nav_rows:
                     ctx.write_nav_link(nr)
