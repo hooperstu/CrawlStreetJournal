@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 _PRIORITY_PATH_BOOST = {
     "/": -5, "": -5,
 }
-_PRIORITY_PATH_PENALTY_PREFIXES = (
+_PRIORITY_PATH_PENALTY_SUBSTRINGS = (
     "/tag/", "/tags/", "/page/", "/wp-content/", "/wp-includes/",
     "/feed/", "/author/", "/attachment/", "/trackback/",
     "/comment-page-", "/?replytocom=", "/print/",
@@ -94,7 +94,7 @@ def _score_url(url: str, depth: int, is_seed: bool) -> float:
     if path in _PRIORITY_PATH_BOOST:
         score += _PRIORITY_PATH_BOOST[path]
 
-    for prefix in _PRIORITY_PATH_PENALTY_PREFIXES:
+    for prefix in _PRIORITY_PATH_PENALTY_SUBSTRINGS:
         if prefix in path:
             score += 20.0
             break
@@ -189,20 +189,23 @@ class _ThreadSafeDict:
 
 # ── DNS cache ─────────────────────────────────────────────────────────────
 
-_dns_cache: Dict[Tuple[str, int], Any] = {}
+_DNS_TTL = 300  # 5 minutes
+_dns_cache: Dict[Tuple, Tuple[float, Any]] = {}
 _dns_lock = threading.Lock()
 _original_getaddrinfo = socket.getaddrinfo
 
 
 def _cached_getaddrinfo(*args, **kwargs):
-    """Process-global DNS cache to avoid repeated lookups for the same host."""
+    """Process-global DNS cache with TTL to avoid repeated lookups."""
     key = (args[0], args[1]) if len(args) >= 2 else args
+    now = time.monotonic()
     with _dns_lock:
-        if key in _dns_cache:
-            return _dns_cache[key]
+        entry = _dns_cache.get(key)
+        if entry and (now - entry[0]) < _DNS_TTL:
+            return entry[1]
     result = _original_getaddrinfo(*args, **kwargs)
     with _dns_lock:
-        _dns_cache[key] = result
+        _dns_cache[key] = (now, result)
     return result
 
 
@@ -1067,7 +1070,7 @@ def _process_one_url(
 
     try:
         html_links, asset_rows, edge_rows, phone_rows = parser_module.extract_classified_links(
-            html, final_url, now
+            html, final_url, now, allowed_domains=cfg.ALLOWED_DOMAINS,
         )
     except Exception as e:
         logger.debug("Link extraction error on %s: %s", final_url, e)
@@ -1347,6 +1350,14 @@ def crawl(
                 storage.save_content_hashes(run_dir, content_hashes.to_dict())
             except Exception as hash_err:
                 logger.warning("Failed to save content hashes: %s", hash_err)
+
+        # Close Playwright browser if it was started during this crawl
+        if cfg.RENDER_JAVASCRIPT:
+            try:
+                import render as render_module
+                render_module.close()
+            except Exception:
+                pass
 
         _finalise_run(
             run_dir, interrupted, pages_crawled,

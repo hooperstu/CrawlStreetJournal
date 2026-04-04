@@ -52,17 +52,15 @@ def _normalise_url(url: str, base_url: str) -> Optional[str]:
         return None
 
 
-def _is_allowed_domain(url: str) -> bool:
-    """Check whether *url*'s hostname matches ``config.ALLOWED_DOMAINS``.
+def _is_allowed_domain(url: str, allowed_domains=None) -> bool:
+    """Check whether *url*'s hostname matches the allowed-domain list.
 
-    Matches both exact hostnames and subdomains (e.g. ``blog.example.com``
-    matches an allowed domain of ``example.com``).  Returns ``False`` on
-    any parsing failure so that malformed URLs are silently excluded.
-
-    Delegates to ``utils.is_allowed_domain`` with the current
-    ``config.ALLOWED_DOMAINS`` list.
+    When *allowed_domains* is ``None``, falls back to the module-level
+    ``config.ALLOWED_DOMAINS``.  Callers in threaded contexts should pass
+    the domains explicitly to avoid reading a potentially stale global.
     """
-    return utils.is_allowed_domain(url, config.ALLOWED_DOMAINS)
+    domains = allowed_domains if allowed_domains is not None else config.ALLOWED_DOMAINS
+    return utils.is_allowed_domain(url, domains)
 
 
 def _path_extension_lower(path: str) -> str:
@@ -82,8 +80,6 @@ def asset_category_for_url(url: str) -> Optional[str]:
     """Return asset category for a downloadable URL, or None if not a skipped extension."""
     ext = _path_extension_lower(urlparse(url).path)
     if not ext:
-        return None
-    if ext not in tuple(config.SKIP_EXTENSIONS):
         return None
     return config.ASSET_CATEGORY_BY_EXT.get(ext, "other")
 
@@ -516,6 +512,7 @@ def extract_classified_links(
     html: str,
     base_url: str,
     discovered_at: str,
+    allowed_domains=None,
 ) -> Tuple[Set[str], List[dict], List[dict], List[dict]]:
     """Partition ``<a href>`` links into crawlable HTML URLs, assets, edges, and phone numbers.
 
@@ -557,7 +554,7 @@ def extract_classified_links(
             })
             continue
         full = _normalise_url(href, base_url)
-        if not full or not _is_allowed_domain(full):
+        if not full or not _is_allowed_domain(full, allowed_domains):
             continue
         anchor = (a.get_text() or "").strip()
         edge_rows.append({
