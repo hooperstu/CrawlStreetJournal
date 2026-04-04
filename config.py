@@ -22,6 +22,7 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 # ── Platform helpers ──────────────────────────────────────────────────
 
+
 def _is_android() -> bool:
     """Detect if running on Android (Briefcase / Chaquopy / Termux)."""
     return "ANDROID_DATA" in os.environ or (
