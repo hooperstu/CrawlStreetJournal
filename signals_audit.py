@@ -104,12 +104,7 @@ def _audit_link_tags(
 
 # ── JSON-LD ───────────────────────────────────────────────────────────────
 
-def _flatten_json_ld(obj: Any) -> List[dict]:
-    """Recursively collect JSON-LD node dicts (handling ``@graph``).
-
-    Thin wrapper around ``utils.flatten_json_ld`` kept for internal use.
-    """
-    return utils.flatten_json_ld(obj)
+_flatten_json_ld = utils.flatten_json_ld
 
 
 def _audit_json_ld(soup: BeautifulSoup) -> List[Dict[str, Any]]:

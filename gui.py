@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import csv
 import io
+import itertools
 import json
 import logging
 import os
@@ -389,7 +390,7 @@ def _start_crawl_thread(
 
 # ── CSV / metrics helpers ────────────────────────────────────────────────
 
-def _human_size(nbytes: int) -> str:
+def _human_size(nbytes: float) -> str:
     """Format a byte count as a human-readable string (e.g. ``4.2 MB``)."""
     for unit in ("B", "KB", "MB", "GB"):
         if nbytes < 1024:
@@ -471,7 +472,6 @@ def _read_csv_page(
         A 4-tuple of (headers, rows_on_page, total_rows, total_pages).
         All values are empty/zero when the file does not exist.
     """
-    import itertools
     if not os.path.isfile(filepath):
         return [], [], 0, 0
 

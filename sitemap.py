@@ -25,12 +25,18 @@ def _local_tag(tag: str) -> str:
     return tag
 
 
-def _fetch_xml(url: str) -> str:
-    headers = {"User-Agent": config.USER_AGENT}
+def _fetch_xml(
+    url: str,
+    user_agent: str = "",
+    timeout: int = 0,
+) -> str:
+    ua = user_agent or config.USER_AGENT
+    to = timeout or config.REQUEST_TIMEOUT_SECONDS
+    headers = {"User-Agent": ua}
     resp = requests.get(
         url,
         headers=headers,
-        timeout=config.REQUEST_TIMEOUT_SECONDS,
+        timeout=to,
         allow_redirects=True,
     )
     resp.raise_for_status()

@@ -194,8 +194,7 @@ def detect_tech_stack(
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _now_iso() -> str:
-    return utils.now_iso()
+_now_iso = utils.now_iso
 
 
 def _sanitise_domain(netloc: str) -> str:
@@ -256,12 +255,7 @@ def _backfill_summary_from_csv(domain_path: str, summary: Dict[str, Any]) -> Non
     summary["distinct_content_kinds"] = "|".join(sorted(kinds))
 
 
-def _sanitise(value) -> str:
-    """Coerce a field value to a safe CSV string.
-
-    Delegates to ``utils.sanitise_csv_value``.
-    """
-    return utils.sanitise_csv_value(value)
+_sanitise = utils.sanitise_csv_value
 
 
 def _write_csv_header(path: str, fieldnames: tuple) -> None:
@@ -362,7 +356,8 @@ def _pick_diverse(urls: List[str], n: int) -> List[str]:
 
     by_segment: Dict[str, List[str]] = defaultdict(list)
     for u in urls:
-        seg = urlparse(u).path.strip("/").split("/")[0] if urlparse(u).path.strip("/") else "/"
+        _path = urlparse(u).path.strip("/")
+        seg = _path.split("/")[0] if _path else "/"
         by_segment[seg].append(u)
 
     picked: List[str] = []
