@@ -109,12 +109,11 @@ def main() -> int:
         logging.exception("Crawl failed")
         return 1
 
-    import storage
     logging.info(
         "Finished: %s HTML pages; %s asset rows from links. CSVs in %s/",
         pages,
         assets,
-        storage.get_active_run_dir(),
+        storage_module.get_active_run_dir(),
     )
     return 0
 

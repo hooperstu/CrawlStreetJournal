@@ -152,12 +152,7 @@ def _dedupe_case_insensitive(seq: List[str]) -> List[str]:
     return out
 
 
-def _collect_json_ld_nodes(obj: Any) -> List[dict]:
-    """Recursively flatten a JSON-LD object (or ``@graph`` array) into a list of node dicts.
-
-    Thin wrapper around ``utils.flatten_json_ld`` kept for backwards compatibility.
-    """
-    return utils.flatten_json_ld(obj)
+_collect_json_ld_nodes = utils.flatten_json_ld
 
 
 def _extract_json_ld(

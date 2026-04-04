@@ -380,12 +380,7 @@ def is_url_allowed(url: str, cfg: Optional[CrawlConfig] = None) -> bool:
 
 # ── Helpers ───────────────────────────────────────────────────────────────
 
-def _now_iso() -> str:
-    """UTC timestamp string for ``discovered_at`` fields.
-
-    Thin wrapper around ``utils.now_iso`` kept so internal call-sites are unchanged.
-    """
-    return utils.now_iso()
+_now_iso = utils.now_iso
 
 
 def _is_probably_html(content_type: str) -> bool:
