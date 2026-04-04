@@ -42,15 +42,97 @@ briefcase package android      # produce distributable APK
 
 The web GUI also supports **Progressive Web App** installation. When you visit the GUI from Chrome on Android (or any modern browser), you can tap **"Add to Home Screen"** to install it as an app-like shortcut. This works whether the server is running locally (via the APK or [Termux](https://termux.dev/)) or on a remote machine.
 
-### Termux (advanced)
+### Termux — step-by-step
 
-For users comfortable with the terminal, CSJ runs directly on Android via [Termux](https://termux.dev/) with no code changes:
+[Termux](https://termux.dev/) turns your Android device into a Linux terminal.
+CSJ runs directly inside it with no code changes.  Follow every step below
+in order — copy-paste each command into Termux.
+
+#### 1. Install Termux
+
+Download **Termux** from [F-Droid](https://f-droid.org/en/packages/com.termux/)
+(recommended) or the Google Play Store.  Open it once installed — you will see
+a terminal prompt.
+
+#### 2. Update packages and install dependencies
 
 ```bash
-pkg install python
-pip install -r requirements.txt
-python3 gui.py                 # open http://localhost:5001 in your browser
+pkg update && pkg upgrade -y
+pkg install -y python git libxml2 libxslt
 ```
+
+- `python` gives you Python 3 and `pip`.
+- `git` lets you clone the repository.
+- `libxml2` and `libxslt` are optional — they let `lxml` compile for faster
+  HTML parsing.  If they fail to install, skip them; the crawler falls back to
+  Python's built-in `html.parser` automatically.
+
+#### 3. Clone the repository
+
+```bash
+git clone https://github.com/hooperstu/CrawlStreetJournal.git
+cd CrawlStreetJournal
+```
+
+#### 4. Create a virtual environment and install Python packages
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+If `lxml` fails to compile (some devices lack the build toolchain), install
+everything except lxml and continue — the crawler will use `html.parser`
+instead:
+
+```bash
+pip install requests beautifulsoup4 urllib3 flask textstat tldextract
+```
+
+#### 5. Start the web GUI
+
+```bash
+python3 gui.py
+```
+
+You will see output like:
+
+```
+ * Serving Flask app 'gui'
+ * Running on http://127.0.0.1:5001
+```
+
+#### 6. Open in your browser
+
+Open **Chrome** (or any browser) on the same device and go to:
+
+```
+http://localhost:5001
+```
+
+You can now create projects, configure crawls, and view results — the full
+desktop experience on your phone.
+
+#### 7. (Optional) Add to Home Screen as a PWA
+
+While viewing `http://localhost:5001` in Chrome:
+
+1. Tap the **⋮** menu (top-right).
+2. Tap **"Add to Home Screen"** (or **"Install app"**).
+3. The app now appears on your home screen and opens in standalone mode
+   (no browser address bar).
+
+> **Tip:** To keep Termux running in the background, pull down the Android
+> notification shade — you will see a persistent Termux notification.  As
+> long as that notification is present, the server stays alive even when you
+> switch to Chrome.
+
+#### 8. Stopping the server
+
+Switch back to Termux and press **Ctrl+C** to stop the server.  Any crawl
+data already written to disk is preserved.
 
 ---
 
