@@ -44,6 +44,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -221,6 +222,7 @@ class StorageContext:
         self.output_dir = output_dir
         self.cfg = cfg
         self.active_run_dir = active_run_dir
+        self._csv_lock = threading.Lock()
 
     # -- path helpers -----------------------------------------------------
 
@@ -246,16 +248,21 @@ class StorageContext:
             ).writeheader()
 
     def append_row(self, path: str, fieldnames: tuple, row: Dict[str, Any]) -> None:
-        """Append a single CSV row, sanitising values and creating the file if needed."""
+        """Append a single CSV row, sanitising values and creating the file if needed.
+
+        Thread-safe: uses ``_csv_lock`` to prevent interleaved writes when
+        ``CONCURRENT_WORKERS > 1``.
+        """
         self.ensure_output_dir()
         safe = {k: _sanitise(row.get(k, "")) for k in fieldnames}
         try:
-            with open(path, "a", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(
-                    f, fieldnames=fieldnames,
-                    extrasaction="ignore", quoting=csv.QUOTE_ALL,
-                )
-                w.writerow(safe)
+            with self._csv_lock:
+                with open(path, "a", newline="", encoding="utf-8") as f:
+                    w = csv.DictWriter(
+                        f, fieldnames=fieldnames,
+                        extrasaction="ignore", quoting=csv.QUOTE_ALL,
+                    )
+                    w.writerow(safe)
         except Exception as e:
             url = safe.get("final_url") or safe.get("url") or safe.get("page_url") or "?"
             logger.warning("CSV write failed for %s → %s: %s", url, path, e)
@@ -567,6 +574,7 @@ _SNAPSHOT_KEYS = (
     "EXCLUDED_DOMAINS",
     "URL_EXCLUDE_PATTERNS",
     "URL_INCLUDE_PATTERNS",
+    "DOMAIN_OWNERSHIP_RULES",
     "USER_AGENT",
     "LOG_LEVEL",
 )
