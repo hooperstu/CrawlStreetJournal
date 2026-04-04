@@ -20,6 +20,16 @@ import sys
 from dataclasses import dataclass, field, fields as dc_fields
 from typing import Any, Dict, Optional, Tuple, Union
 
+# ── Platform helpers ──────────────────────────────────────────────────
+
+
+def _is_android() -> bool:
+    """Detect if running on Android (Briefcase / Chaquopy / Termux)."""
+    return "ANDROID_DATA" in os.environ or (
+        hasattr(sys, "getandroidapilevel")  # CPython built for Android
+    )
+
+
 # ── Path resolution ───────────────────────────────────────────────────
 # When running inside a PyInstaller bundle the source tree is extracted
 # to a temporary folder (sys._MEIPASS).  Read-only assets (templates)
@@ -27,7 +37,14 @@ from typing import Any, Dict, Optional, Tuple, Union
 _FROZEN = getattr(sys, "frozen", False)
 BUNDLE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 
-if _FROZEN:
+if _is_android():
+    # On Android, use the app-private files directory.  Briefcase and
+    # Chaquopy set ANDROID_FILES_DIR; Termux provides a home directory.
+    DATA_DIR = os.environ.get(
+        "ANDROID_FILES_DIR",
+        os.path.join(os.path.expanduser("~"), "CrawlStreetJournal"),
+    )
+elif _FROZEN:
     if sys.platform == "win32":
         _appdata = os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))
         DATA_DIR = os.path.join(_appdata, "CrawlStreetJournal")
