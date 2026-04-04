@@ -630,6 +630,22 @@
     padding: 1px 6px;
     margin-left: 4px;
   }
+  .dashboard-analysis-links {
+    margin: 12px 0 20px;
+    padding: 12px 14px;
+    background: var(--csj-paper);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+    font-size: 13px;
+  }
+  .dashboard-analysis-links strong {
+    color: var(--csj-headline);
+  }
 </style>
 
 <div class="eco-page">
@@ -762,6 +778,13 @@
         <button class="viz-tab" data-panel="schemainsights">Schema Insights</button>
       </div>
     </div>
+  </div>
+
+  <div class="dashboard-analysis-links">
+    <strong>Additional analysis:</strong>
+    <a href="{{ url_for('project_audit', slug=project.slug) }}">Content Audit</a>
+    <span aria-hidden="true">|</span>
+    <a href="{{ url_for('project_wcag', slug=project.slug) }}">WCAG</a>
   </div>
 
   <!-- 1. Force-Directed Network Graph -->
