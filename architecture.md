@@ -86,6 +86,8 @@ graph TD
 
 The directed graph below shows which modules import which. `utils.py` and `config.py` are the only leaf dependencies; no CSJ module is imported by them (preventing circular imports).
 
+**Note:** `gui.py` and `viz_api.py` no longer mutate `config.OUTPUT_DIR`. All path resolution goes through pure helper functions (`_runs_dir`, `_run_dir`, `get_project_runs_dir`). Global `config.OUTPUT_DIR` mutation is preserved only for CLI backward compatibility (`main.py`, `run_background_crawl.py`).
+
 ```mermaid
 graph LR
     utils[utils.py]
@@ -385,7 +387,8 @@ The crawl engine uses a **priority queue** (heap-based `_PriorityQueue`) instead
 
 Additional cross-cutting behaviours:
 
-- **DNS caching** — A process-global cache wraps `socket.getaddrinfo` (monkey-patched for the process) so repeated hostname lookups during crawling are fast.
+- **DNS caching** — A process-global cache wraps `socket.getaddrinfo` (monkey-patched for the process) so repeated hostname lookups during crawling are fast. Entries expire after a **5-minute TTL** (`_DNS_TTL = 300`) to avoid unbounded growth.
+- **Thread-safe data structures** — `_ThreadSafeSet` and `_ThreadSafeDict` wrap the visited set, queued set, and content hashes dict so concurrent workers (`CONCURRENT_WORKERS > 1`) cannot corrupt shared state. `StorageContext.append_row` is guarded by a per-instance `_csv_lock` to prevent interleaved CSV writes.
 - **Crawl-delay from robots.txt** — `Crawl-delay` values in `robots.txt` are parsed and applied as a **floor** for per-domain delay, combined with `REQUEST_DELAY_SECONDS` and the existing rate limiting.
 - **Content hash deduplication** — Each page’s **visible text** is hashed with **SHA-256**; when `CONTENT_DEDUP` is enabled, URLs whose hash matches an already-seen page in the same run are skipped so identical content is not crawled twice.
 - **Change detection across runs** — When `CHANGE_DETECTION` is enabled, content hashes are compared against prior run data so unchanged vs changed pages can be flagged between runs.
@@ -530,7 +533,7 @@ The header row is written once by `initialise_outputs` / `resume_outputs` at run
 
 | File | Key fields |
 |------|-----------|
-| `pages.csv` | ~78 fields: Phase 1–4 metadata + WCAG (15 columns) + provenance (see README for full list) |
+| `pages.csv` | ~80 fields: Phase 1–4 metadata + WCAG (15 columns) + provenance + `content_hash` + `content_changed` (see README for full list) |
 | `assets_<category>.csv` | `referrer_page_url`, `asset_url`, `link_text`, `category`, `head_content_type`, `head_content_length`, `discovered_at` |
 | `edges.csv` | `from_url`, `to_url`, `link_text`, `discovered_at` |
 | `tags.csv` | `page_url`, `tag_value`, `tag_source`, `discovered_at` |
@@ -857,7 +860,7 @@ python3 -m pytest tests/ -v
 | `tests/test_playwright.py` | End-to-end GUI testing: project creation, configuration, crawl lifecycle, results viewing, ecosystem dashboard interactions | Playwright browser automation against a live Flask instance |
 | `tests/test_real_crawl.py` | Integration tests with real crawl data: CSV schema validation, data consistency, output completeness | Real crawl output directories |
 
-**Total: 225+ tests** (58+ unit, 154 Playwright, plus real-data integration tests).
+**Total: 225 tests** (71 unit, 113 Playwright, 41 real-data integration tests).
 
 Linting:
 
