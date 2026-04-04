@@ -638,6 +638,22 @@ def _run_metrics(run_dir: str) -> Dict[str, Any]:
     return m
 
 
+def _runs_dir(slug: str) -> str:
+    """Return the runs directory for a project without mutating globals.
+
+    This is the thread-safe replacement for the former pattern of
+    ``activate_project(slug); config.OUTPUT_DIR``.
+    """
+    rd = storage_module.get_project_runs_dir(slug)
+    os.makedirs(rd, exist_ok=True)
+    return rd
+
+
+def _run_dir(slug: str, run_name: str) -> str:
+    """Return the full path to a specific run folder."""
+    return os.path.join(_runs_dir(slug), run_name)
+
+
 def _project_overview_metrics(slug: str) -> Dict[str, Any]:
     """Aggregate metrics across all runs in a project."""
     runs_dir = storage_module.get_project_runs_dir(slug)
@@ -937,15 +953,12 @@ def api_wcag(slug: str):
     if not project:
         return jsonify({"error": "Project not found"}), 404
     import wcag_audit
-    ctx = storage_module.activate_project(slug)
-    run_dirs = []
-    base = config.OUTPUT_DIR
-    if os.path.isdir(base):
-        run_dirs = [
-            os.path.join(base, n)
-            for n in sorted(os.listdir(base))
-            if n.startswith("run_") and os.path.isdir(os.path.join(base, n))
-        ]
+    base = _runs_dir(slug)
+    run_dirs = [
+        os.path.join(base, n)
+        for n in sorted(os.listdir(base))
+        if n.startswith("run_") and os.path.isdir(os.path.join(base, n))
+    ] if os.path.isdir(base) else []
     if not run_dirs:
         return jsonify({"total_pages": 0, "criteria": []})
     return jsonify(wcag_audit.run_wcag_audit(run_dirs))
@@ -958,15 +971,12 @@ def api_audit(slug: str):
     if not project:
         return jsonify({"error": "Project not found"}), 404
     import audit_data
-    ctx = storage_module.activate_project(slug)
-    run_dirs = []
-    base = config.OUTPUT_DIR
-    if os.path.isdir(base):
-        run_dirs = [
-            os.path.join(base, n)
-            for n in sorted(os.listdir(base))
-            if n.startswith("run_") and os.path.isdir(os.path.join(base, n))
-        ]
+    base = _runs_dir(slug)
+    run_dirs = [
+        os.path.join(base, n)
+        for n in sorted(os.listdir(base))
+        if n.startswith("run_") and os.path.isdir(os.path.join(base, n))
+    ] if os.path.isdir(base) else []
     if not run_dirs:
         return jsonify({"summary": {"checks_run": 0, "total_findings": 0}, "checks": {}})
     return jsonify(audit_data.run_full_audit(run_dirs))
@@ -1000,8 +1010,8 @@ def project_runs(slug: str):
     if not project:
         return "Project not found", 404
     project["slug"] = slug
-    storage_module.activate_project(slug)
-    run_list = storage_module.list_run_dirs()
+    ctx = storage_module.StorageContext(_runs_dir(slug), config.CrawlConfig.from_module())
+    run_list = ctx.list_run_dirs()
     return render_template(
         "runs.html", project=project, runs=run_list, status=_project_status(slug),
     )
@@ -1018,14 +1028,11 @@ def create_run_route(slug: str):
     Form fields:
         run_name: Optional human-friendly label for the new run.
     """
-    storage_module.activate_project(slug)
-    defaults = storage_module.load_project_defaults(slug)
-    if defaults:
-        # Writes project defaults into the module-level config globals so that
-        # parsers and helpers that read globals directly pick them up.
-        storage_module.apply_run_config(defaults)
+    defaults = storage_module.load_project_defaults(slug) or storage_module.snapshot_config()
+    cfg = config.CrawlConfig.from_dict(defaults)
+    ctx = storage_module.StorageContext(_runs_dir(slug), cfg)
     name = request.form.get("run_name", "").strip() or None
-    folder = storage_module.create_run(name)
+    folder = ctx.create_run(name)
     return redirect(url_for("run_config", slug=slug, run_name=folder))
 
 
@@ -1040,8 +1047,7 @@ def run_config(slug: str, run_name: str):
     if not project:
         return "Project not found", 404
     project["slug"] = slug
-    storage_module.activate_project(slug)
-    run_dir = os.path.join(config.OUTPUT_DIR, run_name)
+    run_dir = _run_dir(slug, run_name)
     if not os.path.isdir(run_dir):
         return "Run not found", 404
     cfg = storage_module.load_run_config(run_dir) or storage_module.snapshot_config()
@@ -1063,8 +1069,7 @@ def save_run_config_route(slug: str, run_name: str):
         friendly_name: Optional display label persisted alongside the run.
         (remaining): Crawl settings parsed by :func:`_build_config_dict_from_form`.
     """
-    storage_module.activate_project(slug)
-    run_dir = os.path.join(config.OUTPUT_DIR, run_name)
+    run_dir = _run_dir(slug, run_name)
     if not os.path.isdir(run_dir):
         return "Run not found", 404
 
@@ -1090,8 +1095,7 @@ def run_monitor(slug: str, run_name: str):
     if not project:
         return "Project not found", 404
     project["slug"] = slug
-    storage_module.activate_project(slug)
-    run_dir = os.path.join(config.OUTPUT_DIR, run_name)
+    run_dir = _run_dir(slug, run_name)
     if not os.path.isdir(run_dir):
         return "Run not found", 404
     run_status = storage_module.get_run_status(run_dir)
@@ -1149,8 +1153,7 @@ def start_run_route(slug: str, run_name: str):
     with _crawls_lock:
         if slug in _active_crawls:
             return redirect(url_for("run_monitor", slug=slug, run_name=run_name))
-    storage_module.activate_project(slug)
-    run_dir = os.path.join(config.OUTPUT_DIR, run_name)
+    run_dir = _run_dir(slug, run_name)
     rs = storage_module.get_run_status(run_dir)
     resume = rs == "interrupted"
     _start_crawl_thread(slug, run_folder=run_name, resume=resume)
@@ -1167,7 +1170,6 @@ def resume_run_route(slug: str, run_name: str):
     with _crawls_lock:
         if slug in _active_crawls:
             return redirect(url_for("run_monitor", slug=slug, run_name=run_name))
-    storage_module.activate_project(slug)
     _start_crawl_thread(slug, run_folder=run_name, resume=True)
     return redirect(url_for("run_monitor", slug=slug, run_name=run_name))
 
@@ -1196,8 +1198,7 @@ def run_results(slug: str, run_name: str):
     if not project:
         return "Project not found", 404
     project["slug"] = slug
-    storage_module.activate_project(slug)
-    run_dir = os.path.join(config.OUTPUT_DIR, run_name)
+    run_dir = _run_dir(slug, run_name)
     if not os.path.isdir(run_dir):
         return "Run not found", 404
     friendly = storage_module._read_run_name(run_dir) or ""
@@ -1226,8 +1227,7 @@ def run_results_detail(slug: str, run_name: str, filename: str):
     if not project:
         return "Project not found", 404
     project["slug"] = slug
-    storage_module.activate_project(slug)
-    run_dir = os.path.join(config.OUTPUT_DIR, run_name)
+    run_dir = _run_dir(slug, run_name)
     filepath = os.path.join(run_dir, filename)
     # Verify the resolved path is within the run directory
     if not os.path.realpath(filepath).startswith(os.path.realpath(run_dir)):
@@ -1278,8 +1278,7 @@ def run_download(slug: str, run_name: str, filename: str):
             "This run is still in progress. Please stop the crawl before "
             "downloading files to avoid incomplete or corrupted data."
         ), 409
-    storage_module.activate_project(slug)
-    run_dir = os.path.join(config.OUTPUT_DIR, run_name)
+    run_dir = _run_dir(slug, run_name)
     abs_dir = os.path.abspath(run_dir)
     return send_from_directory(abs_dir, filename, as_attachment=True)
 
@@ -1297,8 +1296,7 @@ def run_download_all(slug: str, run_name: str):
             "This run is still in progress. Please stop the crawl before "
             "downloading files to avoid incomplete or corrupted data."
         ), 409
-    storage_module.activate_project(slug)
-    run_dir = os.path.join(config.OUTPUT_DIR, run_name)
+    run_dir = _run_dir(slug, run_name)
     abs_dir = os.path.abspath(run_dir)
     if not os.path.isdir(abs_dir):
         return "No output directory", 404
@@ -1332,9 +1330,9 @@ def delete_run_route(slug: str, run_name: str):
     import shutil
     if not run_name.startswith("run_"):
         return "Cannot delete this entry", 400
-    storage_module.activate_project(slug)
-    target = os.path.join(config.OUTPUT_DIR, run_name)
-    real_base = os.path.realpath(config.OUTPUT_DIR) + os.sep
+    runs_base = _runs_dir(slug)
+    target = os.path.join(runs_base, run_name)
+    real_base = os.path.realpath(runs_base) + os.sep
     if not os.path.realpath(target).startswith(real_base):
         return "Invalid path", 400
     if os.path.isdir(target):
@@ -1351,8 +1349,9 @@ def rename_run_route(slug: str, run_name: str):
         friendly_name: New display name; an empty string clears it.
     """
     new_name = request.form.get("friendly_name", "").strip()
-    storage_module.activate_project(slug)
-    storage_module.rename_run(run_name, new_name)
+    run_path = _run_dir(slug, run_name)
+    if os.path.isdir(run_path):
+        storage_module._write_run_name(run_path, new_name)
     logging.info("Renamed run %s → %s", run_name, new_name or "(cleared)")
     return redirect(url_for("project_runs", slug=slug))
 
