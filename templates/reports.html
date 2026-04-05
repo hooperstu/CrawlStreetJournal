@@ -798,6 +798,8 @@
           <button class="viz-tab" data-panel="chord">Chord</button>
           <button class="viz-tab" data-panel="bubble">Bubble Chart</button>
           <button class="viz-tab" data-panel="contenttypes">Content Types</button>
+          <button class="viz-tab" data-panel="pagedepth">Page Depth</button>
+          <button class="viz-tab" data-panel="landscape">Crawl Landscape</button>
         </div>
       </div>
       <div class="viz-tab-group vtg-trust">
@@ -810,6 +812,7 @@
           <button class="viz-tab" data-panel="freshness">Freshness</button>
           <button class="viz-tab" data-panel="radar">Quality Radar</button>
           <button class="viz-tab" data-panel="parallel">Parallel Coords</button>
+          <button class="viz-tab" data-panel="contenthealth">Content Health</button>
         </div>
       </div>
       <div class="viz-tab-group vtg-findability">
@@ -1226,6 +1229,94 @@
       <div class="viz-canvas" id="viz-schemainsights"></div>
     </div>
   </div>
+
+  <!-- 21. Crawl Landscape (Scatter Plot) -->
+  <div class="viz-panel" id="panel-landscape">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Crawl Landscape</h2>
+          <p class="viz-desc">Every domain plotted on two axes of your choice. Bubble size = page count. Spot outliers, clusters, and gaps at a glance.</p>
+        </div>
+        <div class="viz-controls">
+          <label style="font-size:11px;font-weight:600;color:var(--csj-body);">X</label>
+          <select id="landscape-x">
+            <option value="page_count" selected>Pages</option>
+            <option value="avg_word_count">Avg Words</option>
+            <option value="avg_readability">Readability</option>
+            <option value="avg_extraction_coverage">Coverage %</option>
+            <option value="error_count">Errors</option>
+            <option value="total_images">Images</option>
+            <option value="avg_internal_links">Int. Links</option>
+            <option value="avg_external_links">Ext. Links</option>
+            <option value="has_json_ld_pct">JSON-LD %</option>
+            <option value="wcag_lang_pct">WCAG Lang %</option>
+          </select>
+          <label style="font-size:11px;font-weight:600;color:var(--csj-body);">Y</label>
+          <select id="landscape-y">
+            <option value="page_count">Pages</option>
+            <option value="avg_word_count">Avg Words</option>
+            <option value="avg_readability">Readability</option>
+            <option value="avg_extraction_coverage" selected>Coverage %</option>
+            <option value="error_count">Errors</option>
+            <option value="total_images">Images</option>
+            <option value="avg_internal_links">Int. Links</option>
+            <option value="avg_external_links">Ext. Links</option>
+            <option value="has_json_ld_pct">JSON-LD %</option>
+            <option value="wcag_lang_pct">WCAG Lang %</option>
+          </select>
+        </div>
+      </div>
+      <div class="viz-loading" id="loading-landscape">Loading domain data&hellip;</div>
+      <div class="viz-canvas" id="viz-landscape"></div>
+      <div class="viz-legend" id="legend-landscape"></div>
+    </div>
+  </div>
+
+  <!-- 22. Page Depth Analysis -->
+  <div class="viz-panel" id="panel-pagedepth">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Page Depth Analysis</h2>
+          <p class="viz-desc">Does content quality degrade the deeper pages are buried? Bars show page volume at each crawl depth; the line overlay tracks how a chosen metric changes.</p>
+        </div>
+        <div class="viz-controls">
+          <select id="pagedepth-overlay">
+            <option value="words" selected>Line: Avg Words</option>
+            <option value="coverage">Line: Coverage %</option>
+            <option value="readability">Line: Readability</option>
+          </select>
+        </div>
+      </div>
+      <div id="pagedepth-kpis" class="stats" style="margin-bottom:14px;"></div>
+      <div class="viz-loading" id="loading-pagedepth">Loading depth data&hellip;</div>
+      <div class="viz-canvas" id="viz-pagedepth"></div>
+      <div class="viz-legend" id="legend-pagedepth"></div>
+    </div>
+  </div>
+
+  <!-- 23. Content Health Matrix -->
+  <div class="viz-panel" id="panel-contenthealth">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Content Health Matrix</h2>
+          <p class="viz-desc">Which quality signals are domains missing? Each cell shows the percentage of pages with that indicator present. Hover a row or column to highlight it.</p>
+        </div>
+        <div class="viz-controls">
+          <select id="health-sort">
+            <option value="pages" selected>Sort: Page count</option>
+            <option value="score">Sort: Health score</option>
+            <option value="alpha">Sort: A &ndash; Z</option>
+          </select>
+        </div>
+      </div>
+      <div id="health-summary" style="margin-bottom:8px;font-size:12px;color:var(--csj-body);"></div>
+      <div class="viz-loading" id="loading-contenthealth">Loading health data&hellip;</div>
+      <div class="viz-canvas" id="viz-contenthealth" style="overflow-x:auto;"></div>
+    </div>
+  </div>
 </div>
 
 <div class="viz-tooltip" id="vizTooltip"></div>
@@ -1250,6 +1341,8 @@
     technology:     "{{ url_for('reports.api_technology',     slug=project.slug) }}",
     authorship:     "{{ url_for('reports.api_authorship',     slug=project.slug) }}",
     schema_insights:"{{ url_for('reports.api_schema_insights',slug=project.slug) }}",
+    page_depth:     "{{ url_for('reports.api_page_depth',     slug=project.slug) }}",
+    content_health: "{{ url_for('reports.api_content_health', slug=project.slug) }}",
     runs:           "{{ url_for('reports.api_runs',           slug=project.slug) }}"
   };
   window.ECO_PRESELECTED_RUNS = "{{ preselected_runs }}";
