@@ -3686,7 +3686,8 @@
           .curve(d3.curveMonotoneX);
 
         svg.append("path").datum(quality).attr("class", "depth-overlay")
-          .attr("fill", colour).attr("fill-opacity", 0.08).attr("d", area);
+          .attr("fill", colour).attr("fill-opacity", 0.08).attr("d", area)
+          .attr("pointer-events", "none");
 
         var lineGen = d3.line()
           .x(function (d) { return x(d.depth) + x.bandwidth() / 2; })
@@ -3695,13 +3696,15 @@
 
         svg.append("path").datum(quality).attr("class", "depth-overlay")
           .attr("fill", "none").attr("stroke", colour).attr("stroke-width", 2.5)
-          .attr("stroke-dasharray", "6,3").attr("d", lineGen);
+          .attr("stroke-dasharray", "6,3").attr("d", lineGen)
+          .attr("pointer-events", "none");
 
         svg.selectAll(".depth-dot")
           .data(quality).join("circle").attr("class", "depth-overlay")
           .attr("cx", function (d) { return x(d.depth) + x.bandwidth() / 2; })
           .attr("cy", function (d) { return y2(d[metric]); })
-          .attr("r", 5).attr("fill", "#fff").attr("stroke", colour).attr("stroke-width", 2);
+          .attr("r", 5).attr("fill", "#fff").attr("stroke", colour).attr("stroke-width", 2)
+          .attr("pointer-events", "none");
 
         svg.append("text").attr("class", "depth-overlay-label depth-overlay")
           .attr("x", W + 10)
