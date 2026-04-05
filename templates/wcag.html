@@ -22,13 +22,17 @@
 
   .wcag-overview {
     display: grid;
-    grid-template-columns: 180px 1fr;
-    gap: 16px;
+    grid-template-columns: repeat(5, minmax(140px, 1fr));
+    gap: 10px;
     align-items: stretch;
   }
+  .wcag-overview > .wcag-level-card {
+    width: 100%;
+    margin: 0;
+  }
   .wcag-score-ring {
-    width: 164px;
-    height: 164px;
+    width: 112px;
+    height: 112px;
     position: relative;
     margin: 0 auto;
   }
@@ -42,7 +46,7 @@
     justify-content: center;
   }
   .wcag-score-val {
-    font-size: 38px;
+    font-size: 28px;
     font-weight: 700;
     color: var(--csj-headline);
     line-height: 1;
@@ -52,17 +56,16 @@
     color: var(--csj-body);
     margin-top: 4px;
   }
-  .wcag-level-cards {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(140px, 1fr));
-    gap: 10px;
-  }
   .wcag-level-card {
     background: var(--csj-paper);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: 12px 14px;
     box-shadow: var(--shadow);
+    min-height: 166px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
   }
   .wcag-level-card h3 {
     font-size: 12px;
@@ -83,6 +86,15 @@
     color: var(--csj-body);
     margin-top: 4px;
   }
+  .wcag-overall-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 8px;
+  }
+  .wcag-overall-card h3 { margin-bottom: 0; }
+  .wcag-overall-card .lbl { margin-top: 0; }
   .wcag-legend {
     display: flex;
     flex-wrap: wrap;
@@ -338,8 +350,7 @@
   }
 
   @media (max-width: 980px) {
-    .wcag-overview { grid-template-columns: 1fr; }
-    .wcag-level-cards { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
+    .wcag-overview { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
     .wcag-summary-grid { grid-template-columns: 1fr; }
     .criterion-header {
       grid-template-columns: 66px 1fr auto;
@@ -359,6 +370,9 @@
       margin-right: 6px;
     }
     .criterion-stats-grid { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 620px) {
+    .wcag-overview { grid-template-columns: 1fr; }
   }
 </style>
 
@@ -450,31 +464,30 @@
       var html = '';
       html += '<div class="wcag-shell">';
       html += '<section class="wcag-overview">';
-      html += '<div class="wcag-score-ring" aria-label="Overall conformance score">' +
-        '<svg width="164" height="164">' +
-          '<circle cx="82" cy="82" r="66" fill="none" stroke="var(--csj-newsprint)" stroke-width="14"/>' +
-          '<circle cx="82" cy="82" r="66" fill="none" stroke="' + circleColour + '" stroke-width="14" stroke-linecap="round" stroke-dasharray="' + circumference + '" stroke-dashoffset="' + offset + '"/>' +
-        '</svg>' +
-        '<div class="wcag-score-label">' +
-          '<div class="wcag-score-val">' + pct.toFixed(1).replace('.0', '') + '%</div>' +
-          '<div class="wcag-score-sub">overall conformance</div>' +
+      html += '<div class="wcag-level-card wcag-overall-card">' +
+        '<h3>Overall</h3>' +
+        '<div class="wcag-score-ring" aria-label="Overall conformance score">' +
+          '<svg width="112" height="112">' +
+            '<circle cx="56" cy="56" r="45" fill="none" stroke="var(--csj-newsprint)" stroke-width="10"/>' +
+            '<circle cx="56" cy="56" r="45" fill="none" stroke="' + circleColour + '" stroke-width="10" stroke-linecap="round" stroke-dasharray="' + (2 * Math.PI * 45) + '" stroke-dashoffset="' + ((2 * Math.PI * 45) * (1 - pct / 100)) + '"/>' +
+          '</svg>' +
+          '<div class="wcag-score-label">' +
+            '<div class="wcag-score-val">' + pct.toFixed(1).replace('.0', '') + '%</div>' +
+            '<div class="wcag-score-sub">conformance</div>' +
+          '</div>' +
         '</div>' +
-      '</div>';
-
-      html += '<div>' +
-        '<div class="wcag-level-cards">' +
-          '<div class="wcag-level-card"><h3>Level A</h3><div class="val">' + num(data.level_a_pass) + '/' + num(data.level_a_total) + '</div><div class="lbl">criteria fully passing</div></div>' +
-          '<div class="wcag-level-card"><h3>Level AA</h3><div class="val">' + num(data.level_aa_pass) + '/' + num(data.level_aa_total) + '</div><div class="lbl">criteria fully passing</div></div>' +
-          '<div class="wcag-level-card"><h3>Pages tested</h3><div class="val">' + num(data.total_pages) + '</div><div class="lbl">from all analysed runs</div></div>' +
-          '<div class="wcag-level-card"><h3>Criteria failing</h3><div class="val">' + num(failingCriteria.length) + '</div><div class="lbl">need follow-up checks</div></div>' +
-        '</div>' +
-        '<div class="wcag-legend">' +
-          '<span class="wcag-chip"><span class="wcag-chip-dot dot-pass"></span>Pass = 100%</span>' +
-          '<span class="wcag-chip"><span class="wcag-chip-dot dot-partial"></span>Partial = 80–99%</span>' +
-          '<span class="wcag-chip"><span class="wcag-chip-dot dot-fail"></span>Fail = below 80%</span>' +
-        '</div>' +
-      '</div>';
+        '<div class="lbl">all criteria</div>' +
+      '</div>' +
+      '<div class="wcag-level-card"><h3>Level A</h3><div class="val">' + num(data.level_a_pass) + '/' + num(data.level_a_total) + '</div><div class="lbl">criteria fully passing</div></div>' +
+      '<div class="wcag-level-card"><h3>Level AA</h3><div class="val">' + num(data.level_aa_pass) + '/' + num(data.level_aa_total) + '</div><div class="lbl">criteria fully passing</div></div>' +
+      '<div class="wcag-level-card"><h3>Pages tested</h3><div class="val">' + num(data.total_pages) + '</div><div class="lbl">from all analysed runs</div></div>' +
+      '<div class="wcag-level-card"><h3>Criteria failing</h3><div class="val">' + num(failingCriteria.length) + '</div><div class="lbl">need follow-up checks</div></div>';
       html += '</section>';
+      html += '<div class="wcag-legend">' +
+        '<span class="wcag-chip"><span class="wcag-chip-dot dot-pass"></span>Pass = 100%</span>' +
+        '<span class="wcag-chip"><span class="wcag-chip-dot dot-partial"></span>Partial = 80–99%</span>' +
+        '<span class="wcag-chip"><span class="wcag-chip-dot dot-fail"></span>Fail = below 80%</span>' +
+      '</div>';
 
       html += '<section class="wcag-summary-grid">';
       html += '<div class="wcag-panel"><h2>Top failing criteria</h2>';
