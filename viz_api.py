@@ -259,3 +259,38 @@ def api_schema_insights(slug: str):
         run_dirs, filters=_parse_filters(),
     )
     return jsonify(data)
+
+
+@eco_bp.route("/p/<slug>/api/viz/page_depth")
+def api_page_depth(slug: str):
+    """Page depth histogram and quality-by-depth scatter data."""
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return jsonify({"depth_histogram": [], "depth_quality": [],
+                        "domain_depth": []})
+    data = viz_data.aggregate_page_depth(run_dirs, filters=_parse_filters())
+    return jsonify(data)
+
+
+@eco_bp.route("/p/<slug>/api/viz/content_health")
+def api_content_health(slug: str):
+    """Domain × signal content health heatmap data."""
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return jsonify({"domains": [], "signals": [], "matrix": [],
+                        "page_counts": []})
+    data = viz_data.aggregate_content_health(run_dirs, filters=_parse_filters())
+    return jsonify(data)
+
+
+@eco_bp.route("/p/<slug>/api/viz/link_flow")
+def api_link_flow(slug: str):
+    """Directional link flow (Sankey) data between top domains."""
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return jsonify({"nodes": [], "links": []})
+    top_n = request.args.get("top", 20, type=int)
+    data = viz_data.aggregate_link_flow(
+        run_dirs, top_n=top_n, filters=_parse_filters(),
+    )
+    return jsonify(data)

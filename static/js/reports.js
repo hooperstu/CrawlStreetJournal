@@ -3414,18 +3414,388 @@
     });
   };
 
+  // ────────────────────────────────────────────────────────────────
+  // 21. Link Flow (Sankey Diagram)
+  // ────────────────────────────────────────────────────────────────
+
+  VIZ.linkflow = function () {
+    var topN = parseInt(document.getElementById("linkflow-top").value, 10) || 15;
+    var url = API.link_flow + (API.link_flow.indexOf("?") > -1 ? "&" : "?") + "top=" + topN;
+    fetchJSON(url).then(function (data) {
+      hideLoading("loading-linkflow");
+      var container = d3.select("#viz-linkflow");
+
+      if (!data.nodes || !data.nodes.length || !data.links || !data.links.length) {
+        container.append("p").attr("class", "viz-desc")
+          .style("text-align", "center").style("padding", "60px 0")
+          .text("No cross-domain link data available for a Sankey diagram.");
+        return;
+      }
+
+      _assignOwnerColours(data.nodes);
+
+      var sz = vizSize("viz-linkflow");
+      var margin = { top: 10, right: 10, bottom: 10, left: 10 };
+      var W = sz.w - margin.left - margin.right;
+      var H = Math.max(500, data.nodes.length * 30);
+
+      var svg = container.append("svg")
+        .attr("width", W + margin.left + margin.right)
+        .attr("height", H + margin.top + margin.bottom)
+        .append("g").attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+      var sankey = d3.sankey()
+        .nodeId(function (d) { return d.index; })
+        .nodeWidth(18)
+        .nodePadding(12)
+        .nodeSort(null)
+        .extent([[0, 0], [W, H]]);
+
+      var graph = sankey({
+        nodes: data.nodes.map(function (d, i) { return Object.assign({}, d, { index: i }); }),
+        links: data.links.map(function (d) { return Object.assign({}, d); })
+      });
+
+      svg.append("g")
+        .selectAll("rect")
+        .data(graph.nodes)
+        .join("rect")
+        .attr("x", function (d) { return d.x0; })
+        .attr("y", function (d) { return d.y0; })
+        .attr("height", function (d) { return Math.max(1, d.y1 - d.y0); })
+        .attr("width", function (d) { return d.x1 - d.x0; })
+        .attr("fill", function (d) { return ownerColour(d.ownership); })
+        .attr("stroke", "#333")
+        .attr("stroke-width", 0.5)
+        .on("mouseover", function (evt, d) {
+          showTip(evt, "<strong>" + shortDomain(d.name) + "</strong><br>" +
+            fmt(d.pages) + " pages<br>Owner: " + d.ownership);
+        })
+        .on("mouseout", hideTip);
+
+      svg.append("g")
+        .attr("fill", "none")
+        .selectAll("path")
+        .data(graph.links)
+        .join("path")
+        .attr("d", d3.sankeyLinkHorizontal())
+        .attr("stroke", function (d) { return ownerColour(d.source.ownership); })
+        .attr("stroke-opacity", 0.35)
+        .attr("stroke-width", function (d) { return Math.max(1, d.width); })
+        .on("mouseover", function (evt, d) {
+          d3.select(this).attr("stroke-opacity", 0.65);
+          showTip(evt, shortDomain(d.source.name) + " → " + shortDomain(d.target.name) +
+            "<br><strong>" + fmt(d.value) + "</strong> links");
+        })
+        .on("mouseout", function () {
+          d3.select(this).attr("stroke-opacity", 0.35);
+          hideTip();
+        });
+
+      svg.append("g")
+        .selectAll("text")
+        .data(graph.nodes)
+        .join("text")
+        .attr("x", function (d) { return d.x0 < W / 2 ? d.x1 + 6 : d.x0 - 6; })
+        .attr("y", function (d) { return (d.y0 + d.y1) / 2; })
+        .attr("dy", "0.35em")
+        .attr("text-anchor", function (d) { return d.x0 < W / 2 ? "start" : "end"; })
+        .attr("font-size", 11)
+        .attr("fill", "#1A1A1A")
+        .text(function (d) { return shortDomain(d.name); });
+
+      var groups = {};
+      graph.nodes.forEach(function (n) { groups[n.ownership] = ownerColour(n.ownership); });
+      buildLegend("legend-linkflow", Object.keys(groups).map(function (g) {
+        return { label: g, colour: groups[g] };
+      }));
+    });
+  };
+
+
+  // ────────────────────────────────────────────────────────────────
+  // 22. Page Depth Analysis
+  // ────────────────────────────────────────────────────────────────
+
+  VIZ.pagedepth = function () {
+    fetchJSON(API.page_depth).then(function (data) {
+      hideLoading("loading-pagedepth");
+      var container = d3.select("#viz-pagedepth");
+
+      var hist = data.depth_histogram || [];
+      var quality = data.depth_quality || [];
+
+      if (!hist.length) {
+        container.append("p").attr("class", "viz-desc")
+          .style("text-align", "center").style("padding", "60px 0")
+          .text("No page depth data available.");
+        return;
+      }
+
+      var sz = vizSize("viz-pagedepth");
+      var margin = { top: 30, right: 60, bottom: 50, left: 60 };
+      var W = sz.w - margin.left - margin.right;
+      var H = sz.h - margin.top - margin.bottom;
+
+      var svg = container.append("svg")
+        .attr("width", sz.w)
+        .attr("height", sz.h)
+        .append("g").attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+      var xDomain = hist.map(function (d) { return d.depth; });
+      var x = d3.scaleBand().domain(xDomain).range([0, W]).padding(0.2);
+      var yMax = d3.max(hist, function (d) { return d.count; }) || 1;
+      var y = d3.scaleLinear().domain([0, yMax * 1.1]).range([H, 0]);
+
+      svg.append("g").attr("transform", "translate(0," + H + ")")
+        .call(d3.axisBottom(x).tickFormat(function (d) { return "Depth " + d; }))
+        .selectAll("text").attr("font-size", 10);
+
+      svg.append("g").call(d3.axisLeft(y).ticks(6).tickFormat(fmt))
+        .selectAll("text").attr("font-size", 10);
+
+      svg.append("text").attr("x", W / 2).attr("y", H + 40).attr("text-anchor", "middle")
+        .attr("font-size", 12).attr("fill", "#5A5246").text("Crawl Depth");
+      svg.append("text").attr("transform", "rotate(-90)").attr("x", -H / 2).attr("y", -45)
+        .attr("text-anchor", "middle").attr("font-size", 12).attr("fill", "#5A5246").text("Pages");
+
+      svg.selectAll(".depth-bar")
+        .data(hist)
+        .join("rect")
+        .attr("class", "depth-bar")
+        .attr("x", function (d) { return x(d.depth); })
+        .attr("y", function (d) { return y(d.count); })
+        .attr("width", x.bandwidth())
+        .attr("height", function (d) { return H - y(d.count); })
+        .attr("fill", "#2D6A4F")
+        .attr("fill-opacity", 0.75)
+        .attr("rx", 2)
+        .on("mouseover", function (evt, d) {
+          d3.select(this).attr("fill-opacity", 1);
+          var q = quality.find(function (q) { return q.depth === d.depth; });
+          var tipHtml = "<strong>Depth " + d.depth + "</strong><br>" +
+            fmt(d.count) + " pages";
+          if (q) {
+            tipHtml += "<br>Avg words: " + fmt(q.avg_words) +
+              "<br>Avg coverage: " + q.avg_coverage + "%" +
+              "<br>Avg readability: " + q.avg_readability;
+          }
+          showTip(evt, tipHtml);
+        })
+        .on("mouseout", function () {
+          d3.select(this).attr("fill-opacity", 0.75);
+          hideTip();
+        });
+
+      function drawOverlay(metric, colour, label) {
+        svg.selectAll(".depth-overlay").remove();
+        svg.selectAll(".depth-overlay-label").remove();
+
+        if (!quality.length) return;
+
+        var oMax = d3.max(quality, function (d) { return d[metric]; }) || 1;
+        var y2 = d3.scaleLinear().domain([0, oMax * 1.15]).range([H, 0]);
+
+        svg.selectAll(".axis-right").remove();
+        svg.append("g").attr("class", "axis-right")
+          .attr("transform", "translate(" + W + ",0)")
+          .call(d3.axisRight(y2).ticks(5))
+          .selectAll("text").attr("font-size", 10);
+
+        var lineGen = d3.line()
+          .x(function (d) { return x(d.depth) + x.bandwidth() / 2; })
+          .y(function (d) { return y2(d[metric]); })
+          .curve(d3.curveMonotoneX);
+
+        svg.append("path").datum(quality)
+          .attr("class", "depth-overlay")
+          .attr("fill", "none")
+          .attr("stroke", colour)
+          .attr("stroke-width", 2.5)
+          .attr("d", lineGen);
+
+        svg.selectAll(".depth-overlay-dot")
+          .data(quality)
+          .join("circle")
+          .attr("class", "depth-overlay")
+          .attr("cx", function (d) { return x(d.depth) + x.bandwidth() / 2; })
+          .attr("cy", function (d) { return y2(d[metric]); })
+          .attr("r", 4)
+          .attr("fill", colour)
+          .attr("stroke", "#fff")
+          .attr("stroke-width", 1.5);
+
+        svg.append("text").attr("class", "depth-overlay-label")
+          .attr("x", W + 8).attr("y", y2(quality[quality.length - 1][metric]) - 8)
+          .attr("font-size", 10).attr("fill", colour).text(label);
+      }
+
+      var overlaySelect = document.getElementById("pagedepth-overlay");
+      var overlayMap = {
+        words: { metric: "avg_words", colour: "#C4841D", label: "Avg Words" },
+        coverage: { metric: "avg_coverage", colour: "#1565c0", label: "Avg Coverage %" },
+        readability: { metric: "avg_readability", colour: "#A4243B", label: "Avg Readability" }
+      };
+
+      function applyOverlay() {
+        var sel = overlayMap[overlaySelect.value] || overlayMap.words;
+        drawOverlay(sel.metric, sel.colour, sel.label);
+      }
+      applyOverlay();
+
+      overlaySelect.addEventListener("change", function () {
+        applyOverlay();
+      });
+
+      buildLegend("legend-pagedepth", [
+        { label: "Page count (bars)", colour: "#2D6A4F" },
+        { label: "Quality overlay (line)", colour: "#C4841D" }
+      ]);
+    });
+  };
+
+
+  // ────────────────────────────────────────────────────────────────
+  // 23. Content Health Matrix (Heatmap)
+  // ────────────────────────────────────────────────────────────────
+
+  VIZ.contenthealth = function () {
+    fetchJSON(API.content_health).then(function (data) {
+      hideLoading("loading-contenthealth");
+      var container = d3.select("#viz-contenthealth");
+
+      if (!data.domains || !data.domains.length) {
+        container.append("p").attr("class", "viz-desc")
+          .style("text-align", "center").style("padding", "60px 0")
+          .text("No content health data available.");
+        return;
+      }
+
+      var domains = data.domains;
+      var signals = data.signals;
+      var matrix = data.matrix;
+      var pageCounts = data.page_counts;
+
+      var cellW = 52, cellH = 22;
+      var labelW = 180, headerH = 90;
+      var countColW = 55;
+      var margin = { top: 8, right: 30, bottom: 20, left: 8 };
+      var gridW = signals.length * cellW;
+      var gridH = domains.length * cellH;
+      var totalW = margin.left + labelW + gridW + countColW + margin.right;
+      var totalH = margin.top + headerH + gridH + margin.bottom;
+
+      var colour = d3.scaleSequential(d3.interpolateRdYlGn).domain([0, 100]);
+
+      var svg = container.append("svg")
+        .attr("width", totalW)
+        .attr("height", totalH);
+
+      var g = svg.append("g")
+        .attr("transform", "translate(" + (margin.left + labelW) + "," + (margin.top + headerH) + ")");
+
+      signals.forEach(function (sig, si) {
+        svg.append("text")
+          .attr("x", margin.left + labelW + si * cellW + cellW / 2)
+          .attr("y", margin.top + headerH - 6)
+          .attr("text-anchor", "end")
+          .attr("transform", "rotate(-50," + (margin.left + labelW + si * cellW + cellW / 2) + "," + (margin.top + headerH - 6) + ")")
+          .attr("font-size", 10)
+          .attr("font-weight", 600)
+          .attr("fill", "#1A1A1A")
+          .text(sig);
+      });
+
+      domains.forEach(function (dom, di) {
+        svg.append("text")
+          .attr("x", margin.left + labelW - 6)
+          .attr("y", margin.top + headerH + di * cellH + cellH / 2 + 4)
+          .attr("text-anchor", "end")
+          .attr("font-size", 10)
+          .attr("fill", "#1A1A1A")
+          .text(shortDomain(dom).length > 24 ? shortDomain(dom).slice(0, 22) + "\u2026" : shortDomain(dom));
+
+        svg.append("text")
+          .attr("x", margin.left + labelW + gridW + 6)
+          .attr("y", margin.top + headerH + di * cellH + cellH / 2 + 4)
+          .attr("text-anchor", "start")
+          .attr("font-size", 9)
+          .attr("fill", "#5A5246")
+          .text(fmt(pageCounts[di]) + "p");
+
+        signals.forEach(function (sig, si) {
+          var val = matrix[di][si];
+          g.append("rect")
+            .attr("x", si * cellW + 1)
+            .attr("y", di * cellH + 1)
+            .attr("width", cellW - 2)
+            .attr("height", cellH - 2)
+            .attr("rx", 2)
+            .attr("fill", colour(val))
+            .attr("stroke", "#fff")
+            .attr("stroke-width", 1)
+            .on("mouseover", function (evt) {
+              showTip(evt, "<strong>" + shortDomain(dom) + "</strong><br>" +
+                sig + ": <strong>" + val + "%</strong><br>" +
+                fmt(pageCounts[di]) + " pages");
+            })
+            .on("mouseout", hideTip);
+
+          if (cellW > 30) {
+            g.append("text")
+              .attr("x", si * cellW + cellW / 2)
+              .attr("y", di * cellH + cellH / 2 + 3)
+              .attr("text-anchor", "middle")
+              .attr("font-size", 9)
+              .attr("font-weight", 600)
+              .attr("fill", val > 65 ? "#fff" : (val < 35 ? "#fff" : "#1A1A1A"))
+              .attr("pointer-events", "none")
+              .text(Math.round(val));
+          }
+        });
+      });
+
+      var legendW = 200, legendH = 12;
+      var legendG = svg.append("g")
+        .attr("transform", "translate(" + (margin.left + labelW) + "," + (totalH - margin.bottom + 4) + ")");
+
+      var defs = svg.append("defs");
+      var grad = defs.append("linearGradient").attr("id", "health-grad");
+      grad.append("stop").attr("offset", "0%").attr("stop-color", colour(0));
+      grad.append("stop").attr("offset", "50%").attr("stop-color", colour(50));
+      grad.append("stop").attr("offset", "100%").attr("stop-color", colour(100));
+
+      legendG.append("rect").attr("width", legendW).attr("height", legendH).attr("rx", 2)
+        .attr("fill", "url(#health-grad)");
+      legendG.append("text").attr("x", 0).attr("y", legendH + 11).attr("font-size", 9)
+        .attr("fill", "#5A5246").text("0%");
+      legendG.append("text").attr("x", legendW / 2).attr("y", legendH + 11)
+        .attr("text-anchor", "middle").attr("font-size", 9).attr("fill", "#5A5246").text("50%");
+      legendG.append("text").attr("x", legendW).attr("y", legendH + 11)
+        .attr("text-anchor", "end").attr("font-size", 9).attr("fill", "#5A5246").text("100%");
+    });
+  };
+
+
   // ── One-time control listeners ──────────────────────────────────
   // Registered here (outside VIZ functions) so they are never duplicated,
   // regardless of how many times the corresponding VIZ function is called.
   document.getElementById("chord-top").addEventListener("change", function () {
-    // Clear all chord cache entries so every previously-viewed top-N value
-    // is re-fetched — not just the newly-selected one.
     Object.keys(cache).forEach(function (k) {
       if (k.indexOf(API.chord) === 0) cache[k] = null;
     });
     rendered["chord"] = false;
     d3.select("#viz-chord").selectAll("*").remove();
     VIZ.chord();
+  });
+
+  document.getElementById("linkflow-top").addEventListener("change", function () {
+    Object.keys(cache).forEach(function (k) {
+      if (k.indexOf(API.link_flow) === 0) cache[k] = null;
+    });
+    rendered["linkflow"] = false;
+    d3.select("#viz-linkflow").selectAll("*").remove();
+    VIZ.linkflow();
   });
 
   // ── Initial render ──────────────────────────────────────────────
