@@ -1447,6 +1447,259 @@ def aggregate_schema_insights(
     }
 
 
+# -- Page Depth Analysis ---------------------------------------------------
+
+def aggregate_page_depth(
+    run_dirs: List[str], filters: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Per-depth aggregates: page counts, avg word count, avg coverage.
+
+    Produces data for a depth histogram and a depth-vs-richness scatter
+    so the dashboard can visualise how content quality varies with crawl
+    depth.
+
+    Args:
+        run_dirs: Absolute paths to one or more crawl run directories.
+        filters: Optional cross-cutting filter dict (see ``filter_pages``).
+
+    Returns:
+        Dict with keys:
+        - ``depth_histogram``: list of ``{depth, count}`` for each depth level.
+        - ``depth_quality``: list of ``{depth, avg_words, avg_coverage,
+          avg_readability, page_count}`` for scatter / line overlay.
+        - ``domain_depth``: top 30 domains with ``{domain, depths}`` where
+          ``depths`` is a list of ``{depth, count}``.
+    """
+    pages = filter_pages(
+        _read_csv_multi(run_dirs, config.PAGES_CSV), filters,
+    )
+    if not pages:
+        return {"depth_histogram": [], "depth_quality": [], "domain_depth": []}
+
+    depth_counts: Counter = Counter()
+    depth_words: Dict[int, List[int]] = defaultdict(list)
+    depth_coverage: Dict[int, List[float]] = defaultdict(list)
+    depth_readability: Dict[int, List[float]] = defaultdict(list)
+    domain_depth: Dict[str, Counter] = defaultdict(Counter)
+
+    for r in pages:
+        d = _safe_int(r.get("depth", "0"))
+        depth_counts[d] += 1
+        depth_words[d].append(_safe_int(r.get("word_count", "0")))
+        cov = _safe_float(r.get("extraction_coverage_pct", "0"))
+        if cov > 0:
+            depth_coverage[d].append(cov)
+        rk = _safe_float(r.get("readability_fk_grade", ""))
+        if rk > 0:
+            depth_readability[d].append(rk)
+        dom = r.get("domain", "unknown")
+        domain_depth[dom][d] += 1
+
+    max_depth = max(depth_counts.keys()) if depth_counts else 0
+
+    depth_histogram = [
+        {"depth": d, "count": depth_counts.get(d, 0)}
+        for d in range(0, max_depth + 1)
+    ]
+
+    depth_quality = []
+    for d in range(0, max_depth + 1):
+        words = depth_words.get(d, [])
+        covs = depth_coverage.get(d, [])
+        reads = depth_readability.get(d, [])
+        depth_quality.append({
+            "depth": d,
+            "avg_words": round(sum(words) / len(words)) if words else 0,
+            "avg_coverage": round(sum(covs) / len(covs), 1) if covs else 0,
+            "avg_readability": round(sum(reads) / len(reads), 1) if reads else 0,
+            "page_count": depth_counts.get(d, 0),
+        })
+
+    dom_totals = {dom: sum(c.values()) for dom, c in domain_depth.items()}
+    top_doms = sorted(dom_totals, key=lambda x: -dom_totals[x])[:30]
+    domain_depth_list = []
+    for dom in top_doms:
+        domain_depth_list.append({
+            "domain": dom,
+            "depths": [
+                {"depth": d, "count": domain_depth[dom].get(d, 0)}
+                for d in range(0, max_depth + 1)
+            ],
+        })
+
+    return {
+        "depth_histogram": depth_histogram,
+        "depth_quality": depth_quality,
+        "domain_depth": domain_depth_list,
+    }
+
+
+# -- Content Health Matrix -------------------------------------------------
+
+def aggregate_content_health(
+    run_dirs: List[str], filters: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build a domain × signal health matrix for the heatmap.
+
+    Each cell value is a percentage (0–100) indicating what proportion
+    of a domain's pages have the given quality signal present.  Signals
+    span SEO, accessibility, structured data, and content completeness.
+
+    Args:
+        run_dirs: Absolute paths to one or more crawl run directories.
+        filters: Optional cross-cutting filter dict (see ``filter_pages``).
+
+    Returns:
+        Dict with keys:
+        - ``domains``: list of domain strings (sorted by page count).
+        - ``signals``: list of signal name strings.
+        - ``matrix``: 2-D list ``matrix[domain_idx][signal_idx]`` of
+          percentage floats.
+        - ``page_counts``: list of page counts parallel to ``domains``.
+    """
+    pages = filter_pages(
+        _read_csv_multi(run_dirs, config.PAGES_CSV), filters,
+    )
+    if not pages:
+        return {"domains": [], "signals": [], "matrix": [], "page_counts": []}
+
+    signals = [
+        ("Title", lambda r: bool(r.get("title", "").strip())),
+        ("Meta Desc", lambda r: bool(r.get("meta_description", "").strip())),
+        ("H1", lambda r: bool(r.get("h1_joined", "").strip())),
+        ("Canonical", lambda r: bool(r.get("canonical_url", "").strip())),
+        ("Open Graph", lambda r: bool(r.get("og_title", "").strip())),
+        ("JSON-LD", lambda r: bool(r.get("json_ld_types", "").strip())),
+        ("Alt Text", lambda r: (
+            _safe_int(r.get("img_count", "0")) == 0 or
+            _safe_int(r.get("img_missing_alt_count", "0")) == 0
+        )),
+        ("Lang Attr", lambda r: r.get("wcag_lang_valid", "") == "1"),
+        ("Headings OK", lambda r: r.get("wcag_heading_order_valid", "") == "1"),
+        ("Landmarks", lambda r: r.get("wcag_landmarks_present", "") == "1"),
+        ("Privacy Policy", lambda r: bool(r.get("privacy_policy_url", "").strip())),
+        ("Dates", lambda r: bool(
+            r.get("date_published", "").strip() or
+            r.get("date_modified", "").strip()
+        )),
+        ("Author", lambda r: bool(r.get("author", "").strip())),
+        ("Breadcrumbs", lambda r: bool(r.get("breadcrumb_schema", "").strip())),
+    ]
+
+    signal_names = [s[0] for s in signals]
+    signal_fns = [s[1] for s in signals]
+
+    dom_totals: Counter = Counter()
+    dom_signal_hits: Dict[str, List[int]] = {}
+
+    for r in pages:
+        dom = r.get("domain", "unknown")
+        dom_totals[dom] += 1
+        if dom not in dom_signal_hits:
+            dom_signal_hits[dom] = [0] * len(signal_fns)
+        for i, fn in enumerate(signal_fns):
+            if fn(r):
+                dom_signal_hits[dom][i] += 1
+
+    top_domains = [d for d, _ in dom_totals.most_common(40)]
+
+    matrix = []
+    page_counts = []
+    for dom in top_domains:
+        pc = dom_totals[dom]
+        page_counts.append(pc)
+        row = []
+        for i in range(len(signal_fns)):
+            pct = round(dom_signal_hits[dom][i] / pc * 100, 1) if pc else 0
+            row.append(pct)
+        matrix.append(row)
+
+    return {
+        "domains": top_domains,
+        "signals": signal_names,
+        "matrix": matrix,
+        "page_counts": page_counts,
+    }
+
+
+# -- Link Flow (Sankey-style) ---------------------------------------------
+
+def aggregate_link_flow(
+    run_dirs: List[str], top_n: int = 20,
+    filters: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Produce nodes and weighted links for a Sankey diagram of link flow.
+
+    Reads edges.csv and pages.csv to build directional link counts between
+    the top *top_n* domains by page count.  Unlike the chord endpoint
+    (which is symmetric), this preserves direction: a link from A→B
+    is distinct from B→A, making it suitable for Sankey layout.
+
+    Self-links are excluded.  Domains are annotated with ownership so the
+    Sankey columns can be grouped / coloured by owner.
+
+    Args:
+        run_dirs: Absolute paths to one or more crawl run directories.
+        top_n: Number of highest-traffic domains to include.
+        filters: Optional cross-cutting filter dict (see ``filter_pages``).
+
+    Returns:
+        ``{"nodes": [...], "links": [...]}`` where each node has
+        ``name``, ``pages``, ``ownership``, ``group`` (index); each link
+        has ``source`` (idx), ``target`` (idx), ``value``.
+    """
+    pages = filter_pages(
+        _read_csv_multi(run_dirs, config.PAGES_CSV), filters,
+    )
+    if not pages:
+        return {"nodes": [], "links": []}
+
+    domain_pages: Counter = Counter()
+    for r in pages:
+        domain_pages[r.get("domain", "unknown")] += 1
+
+    top_domains = [d for d, _ in domain_pages.most_common(top_n)]
+    dom_set = set(top_domains)
+    dom_idx = {d: i for i, d in enumerate(top_domains)}
+
+    all_doms = list({r.get("domain", "unknown") for r in pages})
+    ownership_map = _build_ownership_map(all_doms)
+
+    edge_weights: Counter = Counter()
+    for rd in run_dirs:
+        edges_path = os.path.join(rd, config.EDGES_CSV)
+        if not os.path.isfile(edges_path):
+            continue
+        try:
+            with open(edges_path, "r", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    src = _extract_domain(row.get("from_url", ""))
+                    tgt = _extract_domain(row.get("to_url", ""))
+                    if src in dom_set and tgt in dom_set and src != tgt:
+                        edge_weights[(src, tgt)] += 1
+        except Exception:
+            pass
+
+    nodes = []
+    for dom in top_domains:
+        nodes.append({
+            "name": dom,
+            "pages": domain_pages.get(dom, 0),
+            "ownership": ownership_map.get(dom, _ownership_fallback(dom)),
+        })
+
+    links = []
+    for (src, tgt), val in edge_weights.most_common():
+        if val > 0:
+            links.append({
+                "source": dom_idx[src],
+                "target": dom_idx[tgt],
+                "value": val,
+            })
+
+    return {"nodes": nodes, "links": links}
+
+
 # -- Coverage Metrics / Filter Options -------------------------------------
 
 def get_filter_options(run_dirs: List[str]) -> Dict[str, Any]:
