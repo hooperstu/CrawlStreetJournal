@@ -84,7 +84,7 @@ The primary interface is a **browser-based GUI** served by Flask on port **5001*
 - **Per-run configuration** — seeds, allowed domains, sitemaps, crawl limits, feature toggles, all editable in-browser; configuration is saved as JSON alongside the run's output
 - **Live monitor** — real-time progress (pages crawled, assets found, elapsed time) and streaming log output via Server-Sent Events
 - **Results viewer** — paginated in-browser CSV viewer, per-run download links, and a ZIP of all CSVs
-- **Navigation** — Dashboard | Audit | WCAG | Runs | Settings
+- **Navigation** — Dashboard | Runs | Settings (with Content Audit and WCAG audit accessible from the Dashboard and Results pages)
 - **Ecosystem dashboard** — interactive D3 visualisations across ~20 panels (domain network, CMS landscape, freshness, readability, structured-data coverage, author networks, and more)
 
 ```bash
@@ -191,11 +191,14 @@ Edit `config.py` before you run. You do not need to change Python code elsewhere
 | `EXCLUDED_DOMAINS` | Hostnames to reject even if they match `ALLOWED_DOMAINS`. Useful for skipping staging or third-party subdomains. |
 | `URL_EXCLUDE_PATTERNS` | List of regex or substring patterns — URLs matching any pattern are skipped (e.g. `/admin/`, `/login/`, `?print=`). |
 | `URL_INCLUDE_PATTERNS` | If non-empty, **only** URLs matching at least one pattern are crawled. Use to restrict a crawl to e.g. `/blog/` paths only. |
+| `RESPECT_ROBOTS_TXT` | If `True` (default), obey robots.txt Disallow rules. Set to `False` for internal auditing purposes where robots restrictions should be bypassed. |
 | `MAX_PAGES_TO_CRAWL` | Maximum number of **HTML pages** to fetch in one run (default 1 000 000). |
+| `MAX_DEPTH` | Maximum link-following depth from seeds/sitemaps. `None` (default) means unlimited. |
 | `REQUEST_DELAY_SECONDS` | Pause between requests — either a single number (fixed) or a `(min, max)` tuple for a random delay in that range (default `(3, 5)`). Keep at least 1 second in production to be polite. |
 | `REQUEST_TIMEOUT_SECONDS` | How long to wait for a response before giving up. |
 | `MAX_RETRIES` | Retries after transient network errors. |
 | `CONCURRENT_WORKERS` | Number of parallel fetch workers (default 1). Per-domain rate limiting is still enforced. |
+| `STATE_SAVE_INTERVAL` | How often to persist `_state.json` during a crawl, in pages (default 10). |
 | `CONTENT_DEDUP` | Skip pages with identical visible text hash (default True). |
 | `CHANGE_DETECTION` | Compare content hashes across runs to flag changes (default False). |
 
@@ -204,7 +207,7 @@ Edit `config.py` before you run. You do not need to change Python code elsewhere
 | Setting | What it does |
 |--------|----------------|
 | `OUTPUT_DIR` | Directory for all CSV output (created if missing). |
-| `PAGES_CSV`, `EDGES_CSV`, `TAGS_CSV`, `ERRORS_CSV` | Filenames for those outputs (under `OUTPUT_DIR`). |
+| `PAGES_CSV`, `EDGES_CSV`, `TAGS_CSV`, `ERRORS_CSV`, `PHONE_NUMBERS_CSV` | Filenames for those outputs (under `OUTPUT_DIR`). |
 | `ASSETS_CSV_PREFIX` | Prefix for asset files, e.g. `assets_` → `assets_pdf.csv`. |
 | `WRITE_EDGES_CSV` | If `True`, writes `edges.csv` (one row per hyperlink discovered on a crawled page). |
 | `WRITE_TAGS_CSV` | If `True`, writes `tags.csv` (one row per tag/label extracted; see below). |
@@ -231,11 +234,19 @@ Edit `config.py` before you run. You do not need to change Python code elsewhere
 | `SKIP_EXTENSIONS` | Path endings treated as **non-HTML**: not crawled as pages, but recorded as assets. |
 | `ASSET_CATEGORY_BY_EXT` | Maps each extension to a **category** (and thus to `assets_<category>.csv`). Extensions not listed here fall back to **`assets_other.csv`**. |
 
-### Identity
+### Domain ownership
+
+| Setting | What it does |
+|--------|----------------|
+| `DOMAIN_OWNERSHIP_RULES` | List of `(domain_suffix, label)` pairs for classifying crawled domains into ownership categories in the reports dashboard. First match wins. |
+| `DOMAIN_OWNERSHIP_DEFAULT` | Label applied to domains that do not match any rule (default `"Uncategorised"`). |
+
+### Identity and logging
 
 | Setting | What it does |
 |--------|----------------|
 | `USER_AGENT` | Identifies the client to web servers; customise with a contact or project URL if appropriate. |
+| `LOG_LEVEL` | Python log-level name: `DEBUG`, `INFO` (default), `WARNING`, `ERROR`, `CRITICAL`. |
 
 ---
 
@@ -398,6 +409,18 @@ One row per distinct link inside `<nav>` or `[role=navigation]` elements, per cr
 | `nav_text` | Visible link text (truncated to 200 characters). |
 | `discovered_at` | UTC timestamp. |
 
+### `phone_numbers.csv`
+
+One row per `tel:` link found on crawled pages.
+
+| Column | Meaning |
+|--------|---------|
+| `page_url` | Page where the telephone link was found. |
+| `raw_href` | The original `href` value (including `tel:` prefix). |
+| `phone_number` | The telephone number extracted from the `href` (prefix stripped). |
+| `link_text` | Visible anchor text. |
+| `discovered_at` | UTC timestamp. |
+
 ### `link_checks.csv` (optional)
 
 Results of HEAD-checking outbound link targets when `CHECK_OUTBOUND_LINKS` is enabled.
@@ -495,7 +518,7 @@ This prevents the same page being fetched multiple times under cosmetically diff
 | `Dockerfile` | Container image definition (~191 MB, runs `gui.py`, persists data via volume). |
 | `docker-compose.yml` | Single-service Compose file — maps port 5001 and a named data volume. |
 | `collector.spec` | PyInstaller spec for building the desktop app (macOS `.app`, Windows `.exe`, Linux binary). |
-| `static/js/ecosystem.js` | D3 v7 frontend driving all ~20 ecosystem dashboard charts. |
+| `static/js/reports.js` | D3 v7 frontend driving all ~20 ecosystem dashboard charts. |
 | `templates/` | Jinja2 HTML templates for all GUI views. |
 | `tests/` | 225 tests across 6 files covering parser, sitemap, signals audit, viz data, Playwright end-to-end, and real-data integration. |
 | `requirements.txt` | Python dependencies: `requests`, `beautifulsoup4`, `lxml`, `urllib3`, `flask`, `textstat`, `tldextract`, `pywebview`. |

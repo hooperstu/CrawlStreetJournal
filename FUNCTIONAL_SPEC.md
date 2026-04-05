@@ -106,7 +106,7 @@ When `CHANGE_DETECTION` is enabled and the crawl resumes:
 
 | Function | Purpose |
 |----------|---------|
-| `_process_one_url(url, referrer, depth, ...)` | Fetch and process one URL. Workflow: check visited → check robots → wait for domain → fetch → JS render fallback → check content type → content dedup → parse inventory → write page row → write tags → write nav links → extract links → write edges → write assets → queue new URLs. Returns `(page_written, new_assets, final_url)`. |
+| `_process_one_url(url, referrer, depth, ...)` | Fetch and process one URL. Workflow: check visited → check robots → wait for domain → fetch → JS render fallback → check content type → content dedup → parse inventory → write page row → write tags → write nav links → extract links → write edges → write assets → write phone numbers → queue new URLs. Returns `(page_written, new_assets, final_url)`. |
 
 #### Sitemap handling
 
@@ -124,7 +124,7 @@ When `CHANGE_DETECTION` is enabled and the crawl resumes:
 | `_preflight_robots_report(queue_items, cfg)` | Pre-check robots.txt for every unique origin in the queue. Logs blocked origins. |
 | `_persist_state_if_needed(...)` | Save crawl state every `STATE_SAVE_INTERVAL` pages. |
 | `_finalise_run(...)` | Write terminal state record (completed or interrupted). |
-| `crawl(seed_urls, max_pages, delay, ...)` | Main entry point. Initialises run, executes crawl loop, handles interrupts. Sequential processing with per-domain rate limiting. Returns `(pages_crawled, assets_from_pages)`. |
+| `crawl(seed_urls, max_pages, delay, ...)` | Main entry point. Initialises run, executes crawl loop, handles interrupts. Sequential when `CONCURRENT_WORKERS ≤ 1`; concurrent via `ThreadPoolExecutor` otherwise. Returns `(pages_crawled, assets_from_pages)`. |
 
 ---
 
@@ -208,7 +208,8 @@ Extracts metadata from raw HTML. Organised in extraction phases.
 
 | Function | Purpose |
 |----------|---------|
-| `extract_classified_links(html, base_url, discovered_at, allowed_domains=None)` | Separate `<a>` links into HTML URLs (to crawl), asset rows, and edge rows. Accepts explicit `allowed_domains` for thread safety. |
+| `extract_classified_links(html, base_url, discovered_at, allowed_domains=None)` | Separate `<a>` links into HTML URLs (to crawl), asset rows, edge rows, and phone number rows (`tel:` hrefs). Accepts explicit `allowed_domains` for thread safety. Returns `(html_urls, asset_rows, edge_rows, phone_rows)`. |
+| `asset_category_for_url(url)` | Return the asset category string for a URL based on its file extension, or `None` if the URL should be crawled as HTML. |
 | `extract_inline_assets(html, base_url, discovered_at)` | Extract assets from `<img>`, `<link>`, `<script>`, `<video>`, `<audio>`, `<source>`. |
 | `extract_nav_links(soup, page_url, discovered_at)` | Distinct nav links for `nav_links.csv`. |
 
@@ -240,6 +241,7 @@ Filesystem persistence: CSV writing, project/run lifecycle, config snapshots, re
 | `write_sitemap_url(row)` | Write to `sitemap_urls.csv`. |
 | `write_nav_link(row)` | Write to `nav_links.csv`. |
 | `write_link_check(row)` | Write to `link_checks.csv`. |
+| `write_phone_number(row)` | Write to `phone_numbers.csv`. |
 
 #### Project lifecycle
 
@@ -262,6 +264,16 @@ Filesystem persistence: CSV writing, project/run lifecycle, config snapshots, re
 | `save_crawl_state(run_dir, status, ...)` | Persist crawl progress and serialised queue to `_state.json`. |
 | `load_crawl_state(run_dir)` | Load crawl state for resume. |
 | `rebuild_visited_from_csvs(run_dir)` | Reconstruct visited URL set from `pages.csv` and `crawl_errors.csv`. |
+| `rebuild_sitemap_meta_from_csv(run_dir)` | Reconstruct the sitemap metadata lookup from `sitemap_urls.csv` for crawl resume. |
+| `get_run_status(run_dir)` | Return the status of a run (`new`, `running`, `interrupted`, `completed`) from `_state.json`. |
+| `recover_stale_running_states()` | On startup, mark any run left in `running` state as `interrupted` (indicates unclean shutdown). |
+| `load_project(slug)` | Read `_project.json` for a project, or `None` if missing. |
+| `load_project_defaults(slug)` | Load `_defaults.json` for a project. |
+| `save_project_defaults(slug, cfg)` | Write (or overwrite) `_defaults.json` for a project. |
+| `snapshot_config()` | Return a JSON-safe dict of all crawl-relevant module-level config values. |
+| `save_run_config(run_dir, cfg)` | Write config dict as `_config.json` inside a run folder. |
+| `load_run_config(run_dir)` | Load `_config.json` from a run folder. |
+| `apply_run_config(cfg)` | Write config dict values into the live `config` module (CLI backward compat). |
 
 #### Content hash persistence
 
@@ -277,7 +289,9 @@ Shared stateless helpers used across the codebase.
 | Function | Purpose |
 |----------|---------|
 | `flatten_json_ld(obj)` | Recursively flatten JSON-LD `@graph` structures into a list of node dicts. |
+| `now_iso()` | Return the current UTC time as a `YYYY-MM-DD HH:MM:SS` string for `discovered_at` fields. |
 | `sanitise_csv_value(value)` | Strip null bytes, coerce None to empty string, truncate >32K chars. |
+| `count_csv_rows(filepath)` | Return the number of data rows (excluding header) in a CSV file, or 0 on error. |
 | `is_allowed_domain(url, domains)` | Check if a URL's hostname matches any of the given domain substrings. |
 | `parse_robots_for_sitemaps(text)` | Parse `Sitemap:` lines from a robots.txt body. |
 | `read_csv(path)` | Read a CSV file and return a list of row dicts. |
@@ -405,6 +419,9 @@ All configuration is defined as module-level constants with a `CrawlConfig` data
 | Setting | Default | Purpose |
 |---------|---------|---------|
 | `SEED_URLS` | `[]` | Starting pages |
+| `SITEMAP_URLS` | `[]` | Extra sitemap index or urlset URLs |
+| `LOAD_SITEMAPS_FROM_ROBOTS` | True | Also discover sitemaps from each seed origin's `robots.txt` |
+| `MAX_SITEMAP_URLS` | 1,000,000 | Cap on locations read from sitemaps per run |
 | `ALLOWED_DOMAINS` | `()` | Hostname allowlist (dot-boundary match) |
 | `EXCLUDED_DOMAINS` | `[]` | Hostname blocklist (overrides allowed) |
 | `URL_EXCLUDE_PATTERNS` | `[]` | URL substring blocklist |
@@ -420,6 +437,7 @@ All configuration is defined as module-level constants with a `CrawlConfig` data
 | `REQUEST_TIMEOUT_SECONDS` | 20 | Per-request timeout |
 | `MAX_RETRIES` | 3 | Retries on transient errors |
 | `CONCURRENT_WORKERS` | 1 | Parallel fetch workers |
+| `STATE_SAVE_INTERVAL` | 10 | Persist `_state.json` every N pages |
 
 #### Feature flags
 
@@ -431,6 +449,26 @@ All configuration is defined as module-level constants with a `CrawlConfig` data
 | `RESPECT_ROBOTS_TXT` | True | Obey robots.txt |
 | `CAPTURE_READABILITY` | True | Flesch-Kincaid grade level |
 | `CHECK_OUTBOUND_LINKS` | False | HEAD-check outbound targets |
+| `WRITE_EDGES_CSV` | True | Write `edges.csv` link graph |
+| `WRITE_TAGS_CSV` | True | Write `tags.csv` per-tag rows |
+| `WRITE_SITEMAP_URLS_CSV` | True | Write `sitemap_urls.csv` |
+| `WRITE_NAV_LINKS_CSV` | True | Write `nav_links.csv` |
+| `ASSET_HEAD_METADATA` | True | HEAD-request discovered asset links |
+| `CAPTURE_RESPONSE_HEADERS` | True | Persist `Last-Modified`/`ETag` on page rows |
+
+#### Domain ownership
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `DOMAIN_OWNERSHIP_RULES` | `[]` | List of `(domain_suffix, label)` rules for classifying domains in reports |
+| `DOMAIN_OWNERSHIP_DEFAULT` | `"Uncategorised"` | Fallback label for domains matching no rule |
+
+#### Identity and logging
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `USER_AGENT` | `"CSJ/1.0 …"` | HTTP User-Agent string |
+| `LOG_LEVEL` | `"INFO"` | Python log level |
 
 ---
 
