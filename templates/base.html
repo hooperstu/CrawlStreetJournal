@@ -461,8 +461,6 @@
   <div class="nav-bar">
     {% set p_slug = project.slug %}
     <a href="{{ url_for('reports.reports_dashboard', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'dashboard' %}active{% endif %}">Dashboard</a>
-    <a href="{{ url_for('project_audit', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'audit' %}active{% endif %}">Audit</a>
-    <a href="{{ url_for('project_wcag', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'wcag' %}active{% endif %}">WCAG</a>
     <a href="{{ url_for('project_runs', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'runs' %}active{% endif %}">Runs</a>
     <a href="{{ url_for('project_settings', slug=p_slug) }}" class="{% if active_tab is defined and active_tab == 'settings' %}active{% endif %}">Settings</a>
   </div>
