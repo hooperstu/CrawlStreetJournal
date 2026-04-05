@@ -207,7 +207,7 @@
       tab.style.display = show ? "" : "none";
       if (show) visibleCount++;
     });
-    if (tabSearchEmpty) tabSearchEmpty.style.display = visibleCount ? "none" : "";
+    if (tabSearchEmpty) tabSearchEmpty.style.display = visibleCount ? "none" : "block";
   }
 
   tabs.forEach(function (tab) {
