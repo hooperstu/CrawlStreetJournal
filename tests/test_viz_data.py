@@ -375,3 +375,99 @@ def test_get_filter_options(tmp_path):
     assert "product" in opts["content_kinds"]
     assert "Product" in opts["schema_types"]
     assert opts["total_pages"] == 3
+
+
+# ── Page Depth Analysis tests ─────────────────────────────────────────
+
+def test_aggregate_page_depth_basic(tmp_path):
+    """Histogram and quality data are produced for each depth level."""
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
+    result = viz_data.aggregate_page_depth([run_dir])
+
+    assert len(result["depth_histogram"]) >= 2
+    depth_0 = next(d for d in result["depth_histogram"] if d["depth"] == 0)
+    depth_1 = next(d for d in result["depth_histogram"] if d["depth"] == 1)
+    assert depth_0["count"] == 2
+    assert depth_1["count"] == 1
+
+    assert len(result["depth_quality"]) >= 2
+    q0 = next(q for q in result["depth_quality"] if q["depth"] == 0)
+    assert q0["avg_words"] > 0
+    assert q0["page_count"] == 2
+
+
+def test_aggregate_page_depth_domain_breakdown(tmp_path):
+    """Domain depth breakdown includes the top domains."""
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
+    result = viz_data.aggregate_page_depth([run_dir])
+
+    dom_names = [d["domain"] for d in result["domain_depth"]]
+    assert "example.com" in dom_names
+
+
+def test_aggregate_page_depth_empty(tmp_path):
+    """Empty run dirs return empty lists."""
+    run_dir = _make_run_dir(tmp_path, pages=[])
+    result = viz_data.aggregate_page_depth([run_dir])
+    assert result["depth_histogram"] == []
+    assert result["depth_quality"] == []
+    assert result["domain_depth"] == []
+
+
+def test_aggregate_page_depth_with_filter(tmp_path):
+    """Filters restrict the depth analysis to matching rows."""
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
+    result = viz_data.aggregate_page_depth(
+        [run_dir], filters={"cms": ["WordPress"]},
+    )
+    total = sum(d["count"] for d in result["depth_histogram"])
+    assert total == 2
+
+
+# ── Content Health Matrix tests ───────────────────────────────────────
+
+def test_aggregate_content_health_basic(tmp_path):
+    """Matrix has expected dimensions and percentage values."""
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
+    result = viz_data.aggregate_content_health([run_dir])
+
+    assert len(result["domains"]) == 2
+    assert len(result["signals"]) > 5
+    assert len(result["matrix"]) == 2
+    assert len(result["matrix"][0]) == len(result["signals"])
+    assert len(result["page_counts"]) == 2
+
+    for row in result["matrix"]:
+        for val in row:
+            assert 0 <= val <= 100
+
+
+def test_aggregate_content_health_signals(tmp_path):
+    """Key signals (Title, Meta Desc, JSON-LD, etc.) are in the list."""
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
+    result = viz_data.aggregate_content_health([run_dir])
+
+    assert "Title" in result["signals"]
+    assert "JSON-LD" in result["signals"]
+    assert "Canonical" in result["signals"]
+    assert "Lang Attr" in result["signals"]
+
+
+def test_aggregate_content_health_empty(tmp_path):
+    """Empty run dirs return empty matrix."""
+    run_dir = _make_run_dir(tmp_path, pages=[])
+    result = viz_data.aggregate_content_health([run_dir])
+    assert result["domains"] == []
+    assert result["matrix"] == []
+
+
+def test_aggregate_content_health_with_filter(tmp_path):
+    """Filters restrict the health matrix to matching domains."""
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
+    result = viz_data.aggregate_content_health(
+        [run_dir], filters={"domains": ["shop.example.com"]},
+    )
+    assert len(result["domains"]) == 1
+    assert result["domains"][0] == "shop.example.com"
+
+
