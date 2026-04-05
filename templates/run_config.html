@@ -1,23 +1,11 @@
 {#
-  run_config.html — Crawl configuration form for a single run.
+  run_config.html — Crawl settings for a single run.
   Route: GET  /p/<slug>/runs/<run_name>/config  (run_config)
          POST /p/<slug>/runs/<run_name>/config  (save_run_config_route)
-  Context:
-    project        (dict)  — active project metadata.
-    run_name       (str)   — filesystem run folder name.
-    friendly_name  (str)   — optional human-readable label.
-    cfg            (dict)  — current run configuration (keys mirror config.py
-                             constants, e.g. SEED_URLS, ALLOWED_DOMAINS).
-    run_status     (str)   — "new" | "interrupted" | "completed".
-    status         (dict)  — live crawl state; .running disables the start button.
-
-  The form posts to save_run_config_route which persists the config JSON
-  and optional friendly_name. Status-dependent banners warn when editing
-  a completed or interrupted run.
 #}
 {% extends "base.html" %}
 {% set active_tab = 'runs' %}
-{% block title %}Config — {{ friendly_name or run_name }} | CSJ{% endblock %}
+{% block title %}Crawl Settings — {{ friendly_name or run_name }} | CSJ{% endblock %}
 
 {% block subnav %}
 <div class="sub-nav">
@@ -28,12 +16,58 @@
 </div>
 {% endblock %}
 
-
 {% block content %}
+<style>
+  .settings-note {
+    font-size: 13px;
+    color: var(--csj-body);
+    background: var(--csj-newsprint);
+    border-left: 3px solid var(--csj-accent);
+    padding: 10px 14px;
+    border-radius: 0 var(--radius) var(--radius) 0;
+    margin-bottom: 20px;
+  }
+  .collapse-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    user-select: none;
+    padding: 14px 0 4px;
+  }
+  .collapse-header:hover .collapse-arrow { color: var(--csj-accent); }
+  .collapse-arrow {
+    font-size: 12px;
+    color: var(--csj-body);
+    transition: transform .2s;
+  }
+  .collapse-arrow.open { transform: rotate(90deg); }
+  .collapse-body { display: none; padding-top: 12px; }
+  .collapse-body.open { display: block; }
+  .field-explain {
+    font-size: 12px;
+    color: #78716C;
+    margin-top: 2px;
+    line-height: 1.4;
+  }
+  .domain-auto-msg {
+    font-size: 13px;
+    padding: 8px 12px;
+    background: rgba(45,106,79,.08);
+    border-radius: var(--radius);
+    margin-top: 8px;
+    color: var(--csj-success);
+  }
+  .domain-auto-msg.warn {
+    background: rgba(164,36,59,.08);
+    color: var(--csj-error);
+  }
+</style>
+
 <div class="flex-between" style="margin-bottom:20px;">
   <div>
     <h1 class="page-title" style="margin-bottom:2px;">{{ friendly_name or run_name }}</h1>
-    <p class="text-muted" style="font-size:14px;">{% if friendly_name %}{{ friendly_name }}{% else %}{{ run_name }}{% endif %} &mdash; Config</p>
+    <p class="text-muted" style="font-size:14px;">Crawl settings for this run</p>
   </div>
   <div class="gap-8">
     {% if run_status == 'new' %}
@@ -55,166 +89,377 @@
 </div>
 {% endif %}
 
-{# Status-aware banner: only shown for non-new runs to clarify that edits
-   either have no effect (completed) or take effect on resume (interrupted). #}
 {% if run_status not in ('new', 'running') %}
 <div class="card" style="padding:10px 18px;background:#fff3cd;border-left:4px solid var(--csj-amber);">
   <strong>Note:</strong> This run has status <strong>{{ run_status }}</strong>.
   {% if run_status == 'completed' %}
-  Config changes won't affect the completed data.
+  Config changes will not affect the completed data.
   {% elif run_status == 'interrupted' %}
   Config changes will take effect when you resume this run.
   {% endif %}
 </div>
 {% endif %}
 
-<form method="post" action="{{ url_for('save_run_config_route', slug=project.slug, run_name=run_name) }}">
+<div class="settings-note">
+  These settings apply only to <strong>{{ friendly_name or run_name }}</strong>. They do not change project defaults for future runs.
+</div>
 
+<form method="post" action="{{ url_for('save_run_config_route', slug=project.slug, run_name=run_name) }}" id="config-form">
   <div class="card">
-    <div class="card-title">Run Name</div>
-    <div class="form-group" style="max-width:400px;">
+    <div class="card-title">Run details</div>
+    <div class="form-group" style="max-width:420px;">
       <label class="form-label">Friendly name</label>
+      <p class="field-explain">Optional label shown in the runs list and reports.</p>
       <input type="text" name="friendly_name" value="{{ friendly_name }}" placeholder="e.g. Weekly full crawl">
     </div>
   </div>
 
   <div class="card">
-    <div class="card-title">1. Target Sites</div>
+    <div class="card-title">What to crawl</div>
+
     <div class="form-group">
-      <label class="form-label">Seed URLs</label>
-      <textarea name="seed_urls" rows="10">{% for u in cfg.get('SEED_URLS', []) %}{{ u }}
-{% endfor %}</textarea>
+      <label class="form-label">
+        Starting URLs
+        <span id="seed-count" style="font-weight:400;color:var(--csj-accent);margin-left:6px;"></span>
+      </label>
+      <p class="field-explain">Paste one URL per line. These are the pages the crawler visits first, then follows links from.</p>
+      <textarea name="seed_urls" rows="6" id="seed-urls" placeholder="https://www.example.com&#10;https://blog.example.com&#10;https://shop.example.com" style="font-family:monospace;font-size:13px;">{{ cfg.get("SEED_URLS", []) | join('\n') }}</textarea>
+    </div>
+
+    <div class="form-group" style="margin-top:16px;">
+      <label class="form-label">Allowed domains</label>
+      <p class="field-explain">
+        The crawler will only visit pages on these domains (and their subdomains). For example, <code>nhs.uk</code> allows <code>www.nhs.uk</code>, <code>digital.nhs.uk</code>, etc.
+        If left empty, domains are extracted automatically from your starting URLs.
+      </p>
+      <div style="display:flex;gap:8px;align-items:flex-start;">
+        <textarea name="allowed_domains" rows="4" id="allowed-domains" placeholder="example.com&#10;blog.example.com" style="font-family:monospace;font-size:13px;flex:1;">{{ cfg.get("ALLOWED_DOMAINS", []) | join('\n') }}</textarea>
+        <button type="button" class="btn btn-sm btn-secondary" id="btn-extract-domains" title="Auto-detect domains from your starting URLs">Auto-detect</button>
+      </div>
+      <div id="domain-status"></div>
+    </div>
+
+    <div class="form-group" style="margin-top:16px;">
+      <label class="form-label">Excluded domains <span style="font-weight:400;color:var(--csj-body);">(optional)</span></label>
+      <p class="field-explain">
+        Domains to skip even if they match the allowed list above. Useful for excluding specific subdomains like <code>monitoring.ops.digital.nhs.uk</code>.
+      </p>
+      <textarea name="excluded_domains" rows="2" id="excluded-domains" placeholder="monitoring.ops.digital.nhs.uk&#10;staging.example.com" style="font-family:monospace;font-size:13px;">{{ cfg.get("EXCLUDED_DOMAINS", []) | join('\n') }}</textarea>
     </div>
   </div>
 
   <div class="card">
-    <div class="card-title">2. Allowed Domains</div>
-    <div class="form-group">
-      <label class="form-label">Allowed domain substrings</label>
-      <div class="form-hint">One per line.</div>
-      <textarea name="allowed_domains" rows="10">{% for d in cfg.get('ALLOWED_DOMAINS', []) %}{{ d }}
-{% endfor %}</textarea>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">3. Sitemaps</div>
-    <div class="form-group">
-      <label class="form-label">Sitemap URLs</label>
-      <textarea name="sitemap_urls" rows="4">{% for u in cfg.get('SITEMAP_URLS', []) %}{{ u }}
-{% endfor %}</textarea>
-    </div>
-    <div class="checkbox-row">
-      <input type="checkbox" name="load_sitemaps_from_robots" id="cb-robots"
-        {% if cfg.get('LOAD_SITEMAPS_FROM_ROBOTS') %}checked{% endif %}>
-      <label for="cb-robots">Discover sitemaps from robots.txt</label>
-    </div>
-    <div class="checkbox-row">
-      <input type="checkbox" name="respect_robots_txt" id="cb-respect-robots"
-        {% if cfg.get('RESPECT_ROBOTS_TXT') %}checked{% endif %}>
-      <label for="cb-respect-robots">Respect robots.txt Disallow rules</label>
-    </div>
-    <div class="form-group" style="max-width:300px;">
-      <label class="form-label">Max sitemap URLs to read</label>
-      <input type="number" name="max_sitemap_urls" value="{{ cfg.get('MAX_SITEMAP_URLS', 1000000) }}" min="1">
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">4. Crawl Limits</div>
+    <div class="card-title">Crawl behaviour</div>
     <div class="form-grid">
       <div class="form-group">
         <label class="form-label">Max pages to crawl</label>
         <input type="number" name="max_pages" value="{{ cfg.get('MAX_PAGES_TO_CRAWL', 1000000) }}" min="1">
+        <p class="field-explain">Stop after this many HTML pages. Use a smaller number (e.g. 100) for quick surveys.</p>
       </div>
+      <div class="form-group">
+        <label class="form-label">Max link depth</label>
+        <input type="number" name="max_depth" value="{{ cfg.get('MAX_DEPTH', '') or '' }}" min="0" placeholder="Unlimited">
+        <p class="field-explain">How many links deep to follow from a seed. 0 = seeds only, 1 = seeds + one click away.</p>
+      </div>
+    </div>
+
+    <div class="form-group" style="margin-top:4px;">
+      <label class="form-label">Delay between requests</label>
+      <p class="field-explain" style="margin-bottom:6px;">A random pause between each page fetch. Keep ≥ 1 second to be polite to servers.</p>
+      {% set delay = cfg.get("REQUEST_DELAY_SECONDS", [3, 5]) %}
+      <div style="display:flex;gap:8px;align-items:center;max-width:360px;">
+        <div style="flex:1;">
+          <label style="font-size:12px;font-weight:600;color:var(--csj-body);display:block;margin-bottom:2px;">Min (sec)</label>
+          <input type="number" name="delay_min" value="{{ delay[0] if delay is iterable and delay is not string else delay }}" min="0" step="0.1">
+        </div>
+        <span style="color:var(--csj-body);font-size:18px;margin-top:16px;">–</span>
+        <div style="flex:1;">
+          <label style="font-size:12px;font-weight:600;color:var(--csj-body);display:block;margin-bottom:2px;">Max (sec)</label>
+          <input type="number" name="delay_max" value="{{ delay[1] if delay is iterable and delay is not string and delay|length > 1 else delay }}" min="0" step="0.1">
+        </div>
+      </div>
+    </div>
+
+    <div class="form-grid" style="margin-top:12px;">
       <div class="form-group">
         <label class="form-label">Request timeout (seconds)</label>
         <input type="number" name="request_timeout" value="{{ cfg.get('REQUEST_TIMEOUT_SECONDS', 20) }}" min="1">
-      </div>
-      {% set delay = cfg.get('REQUEST_DELAY_SECONDS', [3, 5]) %}
-      <div class="form-group">
-        <label class="form-label">Delay min (seconds)</label>
-        <input type="number" name="delay_min" step="0.1" min="0"
-          value="{{ delay[0] if delay is iterable and delay is not string else delay }}">
+        <p class="field-explain">Give up on a page if the server does not respond within this time.</p>
       </div>
       <div class="form-group">
-        <label class="form-label">Delay max (seconds)</label>
-        <input type="number" name="delay_max" step="0.1" min="0"
-          value="{{ delay[1] if delay is iterable and delay is not string else delay }}">
-      </div>
-      <div class="form-group">
-        <label class="form-label">Max retries</label>
+        <label class="form-label">Max retries per page</label>
         <input type="number" name="max_retries" value="{{ cfg.get('MAX_RETRIES', 3) }}" min="0">
+        <p class="field-explain">Retry failed requests this many times before recording an error.</p>
       </div>
-      <div class="form-group">
-        <label class="form-label">Max depth (blank = unlimited)</label>
-        <input type="number" name="max_depth" value="{{ cfg.get('MAX_DEPTH', '') if cfg.get('MAX_DEPTH') is not none else '' }}" min="0" placeholder="unlimited">
-      </div>
+    </div>
+
+    <div class="form-grid">
       <div class="form-group">
         <label class="form-label">State save interval (pages)</label>
-        <input type="number" name="state_save_interval" value="{{ cfg.get('STATE_SAVE_INTERVAL', 10) }}" min="1">
+        <input type="number" name="state_save_interval" value="{{ cfg.get('STATE_SAVE_INTERVAL', 50) }}" min="1">
+        <p class="field-explain">How often to checkpoint run progress to disk.</p>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Concurrent workers</label>
+        <input type="number" name="concurrent_workers" value="{{ cfg.get('CONCURRENT_WORKERS', 1) }}" min="1" max="10">
+        <p class="field-explain">Number of pages fetched in parallel. Per-domain rate limiting is still enforced.</p>
+      </div>
+    </div>
+
+    <div class="checkbox-row" style="margin-top:8px;">
+      <input type="checkbox" name="respect_robots_txt" value="1" {% if cfg.get("RESPECT_ROBOTS_TXT", True) %}checked{% endif %}>
+      <label class="form-label" style="margin-bottom:0;">Respect robots.txt rules</label>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="collapse-header" data-target="adv-scope">
+      <div class="card-title" style="margin-bottom:0;border:none;padding-bottom:0;">Advanced: URL scope rules</div>
+      <span class="collapse-arrow" id="arrow-adv-scope">▶</span>
+    </div>
+    <div class="collapse-body" id="adv-scope">
+      <div class="form-group">
+        <label class="form-label">URL exclude patterns</label>
+        <p class="field-explain">Skip any URL containing these text fragments (one per line). Case-insensitive.</p>
+        <textarea name="url_exclude_patterns" rows="3" placeholder="/admin/&#10;/login&#10;/search?&#10;/wp-json/&#10;/?print=" style="font-family:monospace;font-size:13px;">{{ cfg.get("URL_EXCLUDE_PATTERNS", []) | join('\n') }}</textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label">URL include patterns <span style="font-weight:400;color:var(--csj-body);">(optional — restricts crawl)</span></label>
+        <p class="field-explain">If set, <strong>only</strong> URLs containing at least one of these patterns are crawled. Leave empty to crawl everything.</p>
+        <textarea name="url_include_patterns" rows="2" placeholder="/blog/&#10;/products/" style="font-family:monospace;font-size:13px;">{{ cfg.get("URL_INCLUDE_PATTERNS", []) | join('\n') }}</textarea>
       </div>
     </div>
   </div>
 
   <div class="card">
-    <div class="card-title">5. CSV Outputs</div>
-    <div class="form-grid">
-      <div class="checkbox-row">
-        <input type="checkbox" name="write_edges" {% if cfg.get('WRITE_EDGES_CSV') %}checked{% endif %}>
-        <label>edges.csv — link graph between pages</label>
+    <div class="collapse-header" data-target="adv-sitemaps">
+      <div class="card-title" style="margin-bottom:0;border:none;padding-bottom:0;">Advanced: Sitemaps</div>
+      <span class="collapse-arrow" id="arrow-adv-sitemaps">▶</span>
+    </div>
+    <div class="collapse-body" id="adv-sitemaps">
+      <div class="form-group">
+        <label class="form-label">Extra sitemap URLs</label>
+        <p class="field-explain">Additional sitemaps to fetch. URLs found here are queued alongside seeds.</p>
+        <textarea name="sitemap_urls" rows="3" style="font-family:monospace;font-size:13px;">{{ cfg.get("SITEMAP_URLS", []) | join('\n') }}</textarea>
       </div>
       <div class="checkbox-row">
-        <input type="checkbox" name="write_tags" {% if cfg.get('WRITE_TAGS_CSV') %}checked{% endif %}>
-        <label>tags.csv — one row per tag per page</label>
+        <input type="checkbox" name="load_sitemaps_from_robots" value="1" {% if cfg.get("LOAD_SITEMAPS_FROM_ROBOTS", True) %}checked{% endif %}>
+        <label class="form-label" style="margin-bottom:0;">Auto-discover sitemaps from robots.txt</label>
       </div>
-      <div class="checkbox-row">
-        <input type="checkbox" name="asset_head" {% if cfg.get('ASSET_HEAD_METADATA') %}checked{% endif %}>
-        <label>HEAD-check assets for size and content-type</label>
-      </div>
-      <div class="checkbox-row">
-        <input type="checkbox" name="capture_headers" {% if cfg.get('CAPTURE_RESPONSE_HEADERS') %}checked{% endif %}>
-        <label>Record Last-Modified / ETag from responses</label>
-      </div>
-      <div class="checkbox-row">
-        <input type="checkbox" name="write_sitemap_urls" {% if cfg.get('WRITE_SITEMAP_URLS_CSV') %}checked{% endif %}>
-        <label>sitemap_urls.csv — all locations from sitemaps</label>
-      </div>
-      <div class="checkbox-row">
-        <input type="checkbox" name="write_nav_links" {% if cfg.get('WRITE_NAV_LINKS_CSV') %}checked{% endif %}>
-        <label>nav_links.csv — links inside &lt;nav&gt; elements</label>
-      </div>
-      <div class="checkbox-row">
-        <input type="checkbox" name="check_outbound" {% if cfg.get('CHECK_OUTBOUND_LINKS') %}checked{% endif %}>
-        <label>link_checks.csv — HEAD-check outbound links (slow)</label>
-      </div>
-      <div class="checkbox-row">
-        <input type="checkbox" name="capture_readability" {% if cfg.get('CAPTURE_READABILITY') %}checked{% endif %}>
-        <label>Flesch–Kincaid readability scores</label>
+      <div class="form-group" style="margin-top:8px;">
+        <label class="form-label">Max sitemap URLs</label>
+        <input type="number" name="max_sitemap_urls" value="{{ cfg.get('MAX_SITEMAP_URLS', 1000000) }}" min="1" style="max-width:200px;">
       </div>
     </div>
   </div>
 
   <div class="card">
-    <div class="card-title">6. Logging</div>
-    <div class="form-group" style="max-width:300px;">
-      <label class="form-label">Log level</label>
-      <select name="log_level">
-        {% for lvl in ["DEBUG","INFO","WARNING","ERROR","CRITICAL"] %}
-        <option value="{{ lvl }}" {% if cfg.get('LOG_LEVEL', 'INFO') == lvl %}selected{% endif %}>{{ lvl }}</option>
-        {% endfor %}
-      </select>
+    <div class="collapse-header" data-target="adv-outputs">
+      <div class="card-title" style="margin-bottom:0;border:none;padding-bottom:0;">Advanced: Output options</div>
+      <span class="collapse-arrow" id="arrow-adv-outputs">▶</span>
+    </div>
+    <div class="collapse-body" id="adv-outputs">
+      <p class="field-explain" style="margin-bottom:12px;">Choose which additional CSV files to generate alongside the core pages.csv.</p>
+      <div class="checkbox-row">
+        <input type="checkbox" name="write_edges" value="1" {% if cfg.get("WRITE_EDGES_CSV", True) %}checked{% endif %}>
+        <label class="form-label" style="margin-bottom:0;">edges.csv — link graph (from → to for every hyperlink)</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="write_tags" value="1" {% if cfg.get("WRITE_TAGS_CSV", True) %}checked{% endif %}>
+        <label class="form-label" style="margin-bottom:0;">tags.csv — one row per tag/label extracted</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="write_sitemap_urls" value="1" {% if cfg.get("WRITE_SITEMAP_URLS_CSV", True) %}checked{% endif %}>
+        <label class="form-label" style="margin-bottom:0;">sitemap_urls.csv — every URL found in sitemaps</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="write_nav_links" value="1" {% if cfg.get("WRITE_NAV_LINKS_CSV", True) %}checked{% endif %}>
+        <label class="form-label" style="margin-bottom:0;">nav_links.csv — links inside &lt;nav&gt; elements</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="capture_readability" value="1" {% if cfg.get("CAPTURE_READABILITY", True) %}checked{% endif %}>
+        <label class="form-label" style="margin-bottom:0;">Compute Flesch–Kincaid readability scores</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="capture_headers" value="1" {% if cfg.get("CAPTURE_RESPONSE_HEADERS", True) %}checked{% endif %}>
+        <label class="form-label" style="margin-bottom:0;">Capture Last-Modified / ETag response headers</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="asset_head" value="1" {% if cfg.get("ASSET_HEAD_METADATA", True) %}checked{% endif %}>
+        <label class="form-label" style="margin-bottom:0;">HEAD requests on asset links (file size / type)</label>
+      </div>
+      <div class="form-group" style="margin-top:8px;max-width:220px;">
+        <label class="form-label">Asset HEAD timeout (sec)</label>
+        <input type="number" name="head_timeout" value="{{ cfg.get('HEAD_TIMEOUT_SECONDS', 10) }}" min="1">
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="check_outbound" value="1" {% if cfg.get("CHECK_OUTBOUND_LINKS", False) %}checked{% endif %}>
+        <label class="form-label" style="margin-bottom:0;">Check outbound links for broken targets (slow at scale)</label>
+      </div>
+      <div class="form-grid" style="margin-top:8px;">
+        <div class="form-group">
+          <label class="form-label">Max outbound checks per page</label>
+          <input type="number" name="max_link_checks" value="{{ cfg.get('MAX_LINK_CHECKS_PER_PAGE', 50) }}" min="1">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Outbound check delay (sec)</label>
+          <input type="number" name="link_check_delay" value="{{ cfg.get('LINK_CHECK_DELAY_SECONDS', 0.5) }}" min="0" step="0.1">
+        </div>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="render_javascript" value="1" {% if cfg.get("RENDER_JAVASCRIPT", False) %}checked{% endif %}>
+        <label class="form-label" style="margin-bottom:0;">Render JavaScript (requires Playwright — for SPA/CSR sites)</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="content_dedup" value="1" {% if cfg.get("CONTENT_DEDUP", True) %}checked{% endif %}>
+        <label class="form-label" style="margin-bottom:0;">Content deduplication — skip pages with identical visible text (saves bandwidth)</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="change_detection" value="1" {% if cfg.get("CHANGE_DETECTION", False) %}checked{% endif %}>
+        <label class="form-label" style="margin-bottom:0;">Change detection — compare content hashes across runs to flag changed pages</label>
+      </div>
     </div>
   </div>
 
   <div class="card">
-    <div class="card-title">7. User-Agent</div>
-    <div class="form-group">
-      <label class="form-label">User-Agent string sent with every request</label>
-      <input type="text" name="user_agent" value="{{ cfg.get('USER_AGENT', '') }}">
+    <div class="collapse-header" data-target="adv-identity">
+      <div class="card-title" style="margin-bottom:0;border:none;padding-bottom:0;">Advanced: Identity &amp; reporting</div>
+      <span class="collapse-arrow" id="arrow-adv-identity">▶</span>
+    </div>
+    <div class="collapse-body" id="adv-identity">
+      <div class="form-group">
+        <label class="form-label">User-Agent string</label>
+        <p class="field-explain">How the crawler identifies itself to web servers. Include a contact URL or email so site owners can reach you.</p>
+        <input type="text" name="user_agent" value="{{ cfg.get('USER_AGENT', '') }}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Log level</label>
+        <p class="field-explain">Controls the amount of crawl diagnostics written to the monitor log stream.</p>
+        <select name="log_level" style="max-width:220px;">
+          {% for lvl in ["DEBUG","INFO","WARNING","ERROR","CRITICAL"] %}
+          <option value="{{ lvl }}" {% if cfg.get('LOG_LEVEL', 'INFO') == lvl %}selected{% endif %}>{{ lvl }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Domain ownership rules <span style="font-weight:400;color:var(--csj-body);">(for reports)</span></label>
+        <p class="field-explain">Group domains into categories for dashboard visualisations. One rule per line: <code>domain = Label</code>. First match wins.</p>
+        <textarea name="domain_ownership_rules" rows="4" placeholder="nhs.uk = NHS&#10;gov.uk = Government&#10;co.uk = Commercial" style="font-family:monospace;font-size:13px;">{% for rule in cfg.get("DOMAIN_OWNERSHIP_RULES", []) %}{% if rule is iterable and rule|length >= 2 %}{{ rule[0] }} = {{ rule[1] }}
+{% endif %}{% endfor %}</textarea>
+      </div>
     </div>
   </div>
 
-  <button type="submit" class="btn btn-primary" style="margin-top:4px;">Save Configuration</button>
+  <button type="submit" class="btn btn-primary" style="margin-bottom:24px;">Save Crawl Settings</button>
 </form>
+
+<script>
+(function() {
+  // Collapsible sections.
+  document.querySelectorAll('.collapse-header').forEach(function(header) {
+    var targetId = header.getAttribute('data-target');
+    var body = document.getElementById(targetId);
+    var arrow = header.querySelector('.collapse-arrow');
+    if (!body) return;
+
+    var hasContent = false;
+    body.querySelectorAll('textarea').forEach(function(ta) {
+      if (ta.value.trim()) hasContent = true;
+    });
+    body.querySelectorAll('input[type="checkbox"]').forEach(function(cb) {
+      var name = cb.name;
+      var defaultOn = ['load_sitemaps_from_robots', 'write_edges', 'write_tags',
+        'write_sitemap_urls', 'write_nav_links', 'capture_readability',
+        'capture_headers', 'asset_head', 'content_dedup'];
+      if (!cb.checked && defaultOn.indexOf(name) >= 0) hasContent = true;
+      if (cb.checked && defaultOn.indexOf(name) < 0) hasContent = true;
+    });
+
+    if (hasContent) {
+      body.classList.add('open');
+      arrow.classList.add('open');
+    }
+
+    header.addEventListener('click', function() {
+      body.classList.toggle('open');
+      arrow.classList.toggle('open');
+    });
+  });
+
+  // Domain auto-detect and coverage checks.
+  var seedsEl = document.getElementById('seed-urls');
+  var domainsEl = document.getElementById('allowed-domains');
+  var excludedEl = document.getElementById('excluded-domains');
+  var btnExtract = document.getElementById('btn-extract-domains');
+  var statusEl = document.getElementById('domain-status');
+  var countEl = document.getElementById('seed-count');
+
+  function getSeeds() { return seedsEl.value.split('\n').map(function(s) { return s.trim(); }).filter(Boolean); }
+  function getDomains() { return domainsEl.value.split('\n').map(function(s) { return s.trim().toLowerCase(); }).filter(Boolean); }
+  function getExcluded() { return excludedEl.value.split('\n').map(function(s) { return s.trim().toLowerCase(); }).filter(Boolean); }
+  function getHostname(url) { try { return new URL(url.indexOf('://') < 0 ? 'https://' + url : url).hostname.toLowerCase(); } catch(e) { return ''; } }
+  function isCovered(host, domains) { return domains.some(function(d) { return host === d || host.endsWith('.' + d); }); }
+
+  function updateSeedCount() {
+    var n = getSeeds().length;
+    countEl.textContent = n ? '(' + n + ' URL' + (n !== 1 ? 's' : '') + ')' : '';
+  }
+
+  function checkCoverage() {
+    var seeds = getSeeds(), allowed = getDomains(), excluded = getExcluded();
+    if (!seeds.length) { statusEl.innerHTML = ''; return; }
+    if (!allowed.length) {
+      statusEl.innerHTML = '<div class="domain-auto-msg">Tip: click <strong>Auto-detect</strong> to populate allowed domains from your URLs, or leave empty to auto-detect at crawl time.</div>';
+      return;
+    }
+    var uncovered = {};
+    var excludedHosts = [];
+    seeds.forEach(function(u) {
+      var h = getHostname(u);
+      if (!h) return;
+      if (isCovered(h, excluded)) { excludedHosts.push(h); return; }
+      if (!isCovered(h, allowed)) uncovered[h] = true;
+    });
+    var missing = Object.keys(uncovered).sort();
+    var html = '';
+    if (missing.length === 0 && excludedHosts.length === 0) {
+      html = '<div class="domain-auto-msg">✓ All seed domains are covered by the allowed list.</div>';
+    } else {
+      if (missing.length > 0) {
+        html += '<div class="domain-auto-msg warn">⚠ ' + missing.length + ' seed host' + (missing.length > 1 ? 's' : '') + ' not in allowed list: <strong>' + missing.join(', ') + '</strong></div>';
+      }
+      if (excludedHosts.length > 0) {
+        var unique = excludedHosts.filter(function(v, i, a) { return a.indexOf(v) === i; });
+        html += '<div class="domain-auto-msg" style="background:rgba(196,132,29,.08);color:#7A5B1E;margin-top:4px;">ℹ ' + unique.length + ' seed host' + (unique.length > 1 ? 's' : '') + ' in exclude list (will be skipped): <strong>' + unique.join(', ') + '</strong></div>';
+      }
+    }
+    statusEl.innerHTML = html;
+  }
+
+  btnExtract.addEventListener('click', function() {
+    var seeds = getSeeds(), existing = getDomains();
+    var newDomains = {};
+    seeds.forEach(function(u) {
+      var h = getHostname(u);
+      if (!h) return;
+      if (isCovered(h, existing)) return;
+      newDomains[h] = true;
+    });
+    var added = Object.keys(newDomains).sort();
+    if (added.length === 0) {
+      statusEl.innerHTML = '<div class="domain-auto-msg">All seed domains are already in the allowed list.</div>';
+    } else {
+      domainsEl.value = existing.concat(added).join('\n') + '\n';
+      statusEl.innerHTML = '<div class="domain-auto-msg">✓ Added ' + added.length + ' domain' + (added.length !== 1 ? 's' : '') + ' to the allowed list.</div>';
+    }
+    setTimeout(function() { checkCoverage(); }, 3000);
+  });
+
+  seedsEl.addEventListener('input', function() { updateSeedCount(); checkCoverage(); });
+  domainsEl.addEventListener('input', checkCoverage);
+  excludedEl.addEventListener('input', checkCoverage);
+  updateSeedCount();
+  checkCoverage();
+})();
+</script>
 {% endblock %}
