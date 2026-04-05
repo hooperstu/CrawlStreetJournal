@@ -58,7 +58,7 @@ graph TD
         storage[storage.py]
         vizData[viz_data.py]
         vizApi[viz_api.py]
-        ecosystemJs[ecosystem.js]
+        reportsJs[reports.js]
     end
     launcher --> guiPy
     guiPy --> scraper
@@ -77,7 +77,7 @@ graph TD
     guiPy --> vizApi
     vizApi --> vizData
     vizData --> storage
-    ecosystemJs --> vizApi
+    reportsJs --> vizApi
 ```
 
 ---
@@ -178,16 +178,19 @@ Each project can have at most one active crawl at a time. A `CrawlSlot` holds:
 - the `CrawlConfig` and `StorageContext` for that run
 - a monotonic start time for elapsed-time calculation
 
+**Startup:** `gui.py` calls `storage_module.migrate_legacy_data()` to handle pre-project-era data layouts, and `storage_module.recover_stale_running_states()` to mark any runs left in `running` state (from unclean shutdowns) as `interrupted`.
+
 **Route groups:**
 
 | Group | Routes |
 |-------|--------|
 | Projects | `/` (list), create, delete, export ZIP, import ZIP |
-| Project pages | overview, defaults (GET/POST), runs list, create run |
+| Project pages | overview (redirect to Dashboard), settings (GET), defaults (GET → redirect to Settings, POST), runs list, create run |
+| Audits | `/p/<slug>/audit` (content audit), `/p/<slug>/wcag` (WCAG audit), `/p/<slug>/api/audit` (JSON), `/p/<slug>/api/wcag` (JSON) |
 | Run management | config (GET/POST), monitor, start, stop, resume, rename, delete |
 | Results | results hub, paginated CSV viewer, single-file download, all-CSVs ZIP |
 | SSE streams | `/api/progress/<slug>`, `/api/logs` |
-| Ecosystem | registered via `viz_api.eco_bp` blueprint |
+| Reports | registered via `viz_api.eco_bp` blueprint — Dashboard and ~12 JSON API endpoints |
 
 **SSE (Server-Sent Events):**
 
@@ -218,11 +221,12 @@ Key categories of settings:
 | Category | Examples |
 |----------|---------|
 | Paths | `OUTPUT_DIR`, `DATA_DIR`, `BUNDLE_DIR`, `PROJECTS_DIR` |
-| Seeds and scope | `SEED_URLS`, `SITEMAP_URLS`, `ALLOWED_DOMAINS` |
-| Crawl behaviour | `MAX_PAGES_TO_CRAWL`, `REQUEST_DELAY_SECONDS`, `MAX_DEPTH` |
-| Feature toggles | `WRITE_EDGES_CSV`, `WRITE_TAGS_CSV`, `CAPTURE_READABILITY`, `RENDER_JAVASCRIPT` |
+| Seeds and scope | `SEED_URLS`, `SITEMAP_URLS`, `ALLOWED_DOMAINS`, `EXCLUDED_DOMAINS`, `URL_EXCLUDE_PATTERNS`, `URL_INCLUDE_PATTERNS` |
+| Crawl behaviour | `MAX_PAGES_TO_CRAWL`, `MAX_DEPTH`, `REQUEST_DELAY_SECONDS`, `CONCURRENT_WORKERS`, `STATE_SAVE_INTERVAL` |
+| Feature toggles | `WRITE_EDGES_CSV`, `WRITE_TAGS_CSV`, `WRITE_SITEMAP_URLS_CSV`, `WRITE_NAV_LINKS_CSV`, `CAPTURE_READABILITY`, `RENDER_JAVASCRIPT`, `CHECK_OUTBOUND_LINKS`, `CONTENT_DEDUP`, `CHANGE_DETECTION`, `RESPECT_ROBOTS_TXT` |
 | Asset handling | `SKIP_EXTENSIONS`, `ASSET_CATEGORY_BY_EXT`, `ASSET_HEAD_METADATA` |
-| Identity | `USER_AGENT` |
+| Domain ownership | `DOMAIN_OWNERSHIP_RULES`, `DOMAIN_OWNERSHIP_DEFAULT` |
+| Identity and logging | `USER_AGENT`, `LOG_LEVEL` |
 
 `DATA_DIR` and `BUNDLE_DIR` are resolved at import time to handle both dev (source tree) and PyInstaller frozen (`sys._MEIPASS`) environments.
 
@@ -281,6 +285,7 @@ projects/
 │       │   ├── assets_video.csv
 │       │   ├── assets_other.csv
 │       │   ├── link_checks.csv
+│       │   ├── phone_numbers.csv
 │       │   └── crawl_errors.csv
 │       └── .latest            # plain text: name of most recent run folder
 └── pre_crawl_analysis/        # output of run_pre_crawl_analysis.py
@@ -339,14 +344,16 @@ sequenceDiagram
     scraper-->>caller: pages_crawled and assets_found
 ```
 
-### 6.2 Dual-queue scheduling
+### 6.2 Priority queue scheduling
 
-The scraper maintains two `collections.deque` queues:
+The scraper uses a heap-based `_PriorityQueue` with URL scoring via `_score_url()`. Each item is `(score, counter, url, referrer, depth)` where lower scores are fetched first. Scoring factors:
 
-- **`crawl_queue`** — URLs discovered by following links on crawled pages (same-domain HTML)
-- **`seed_queue`** — URLs from seeds and sitemaps that have not yet been encountered via link-following
+- **Seed bonus** (−100) — seed and sitemap URLs sort to the top
+- **Depth penalty** (×10) — deeper pages are deferred
+- **Homepage bonus** (−5) — root paths are prioritised
+- **Low-value path penalty** (+20) — archive, pagination, and CMS infrastructure paths (`/tag/`, `/page/`, `/wp-content/`) are deprioritised
 
-The loop always prefers `crawl_queue` over `seed_queue`. This ensures that pages discovered through organic link-following (which are more likely to be navigable, canonical pages) are processed before the full sitemap backlog. It is effectively a BFS over discovered links, with sitemap/seed URLs as a fallback reservoir.
+The counter field breaks ties in FIFO order so URLs at the same score are processed in discovery order. This single-queue design replaces the former dual-deque (crawl_queue + seed_queue) architecture, where seeds naturally sort to the top via scoring rather than requiring a separate queue.
 
 ### 6.3 URL normalisation
 
@@ -379,13 +386,11 @@ This prevents the same logical page being fetched under cosmetically different U
 
 If `config.RENDER_JAVASCRIPT` is `True` and `render.is_available()` returns `True`, the scraper re-fetches any page whose response body is shorter than a configured threshold using a headless Chromium browser via `render.render_page(url)`. This handles pages that rely on client-side rendering for their primary content. Playwright is not installed by default; see the README for installation instructions.
 
-### 6.7 Priority queue, concurrent fetching, and engine optimisations
-
-The crawl engine uses a **priority queue** (heap-based `_PriorityQueue`) instead of plain FIFO deques. URLs are scored by `_score_url()`: seeds get a large bonus (−100), depth adds penalty (×10), homepages get a bonus (−5), and low-value paths (tag archives, paginated URLs, wp-content) get a penalty (+20). This replaces the former dual-deque (crawl_queue + seed_queue) with a single queue where seeds naturally sort to the top.
+### 6.7 Concurrent fetching and engine optimisations
 
 **Concurrent fetching** is supported via `ThreadPoolExecutor` when `CONCURRENT_WORKERS > 1`. The crawl loop drains a batch of URLs from the priority queue and submits them to the pool. Per-domain rate limiting is preserved because `_wait_for_domain()` uses a thread-safe lock. When `CONCURRENT_WORKERS = 1` (default), the original sequential code path is used with zero regression risk.
 
-Additional cross-cutting behaviours:
+Cross-cutting behaviours:
 
 - **DNS caching** — A process-global cache wraps `socket.getaddrinfo` (monkey-patched for the process) so repeated hostname lookups during crawling are fast. Entries expire after a **5-minute TTL** (`_DNS_TTL = 300`) to avoid unbounded growth.
 - **Thread-safe data structures** — `_ThreadSafeSet` and `_ThreadSafeDict` wrap the visited set, queued set, and content hashes dict so concurrent workers (`CONCURRENT_WORKERS > 1`) cannot corrupt shared state. `StorageContext.append_row` is guarded by a per-instance `_csv_lock` to prevent interleaved CSV writes.
@@ -540,6 +545,7 @@ The header row is written once by `initialise_outputs` / `resume_outputs` at run
 | `nav_links.csv` | `page_url`, `nav_href`, `nav_text`, `discovered_at` |
 | `sitemap_urls.csv` | `url`, `lastmod`, `source_sitemap`, `discovered_at` |
 | `link_checks.csv` | `from_url`, `to_url`, `check_status`, `check_final_url`, `discovered_at` |
+| `phone_numbers.csv` | `page_url`, `raw_href`, `phone_number`, `link_text`, `discovered_at` |
 | `crawl_errors.csv` | `url`, `error_type`, `message`, `http_status`, `discovered_at` |
 
 ### 8.4 Project lifecycle
@@ -564,10 +570,11 @@ graph LR
 
 When `--resume` is passed (or the GUI resumes a run):
 
-1. `storage.rebuild_visited_from_csvs(run_dir)` reads all existing `pages.csv` and asset CSV rows to reconstruct the set of already-processed URLs
-2. `storage.load_crawl_state(run_dir)` loads `_state.json` for the pending queue
-3. `storage.resume_outputs(run_dir)` opens existing CSV files in append mode rather than overwriting them
-4. The scraper skips any URL already in the visited set
+1. `storage.rebuild_visited_from_csvs(run_dir)` reads `pages.csv` and `crawl_errors.csv` to reconstruct the set of already-processed URLs
+2. `storage.rebuild_sitemap_meta_from_csv(run_dir)` reconstructs the sitemap metadata lookup from `sitemap_urls.csv`
+3. `storage.load_crawl_state(run_dir)` loads `_state.json` for the pending queue and page/asset counters
+4. `storage.resume_outputs(run_dir)` opens existing CSV files in append mode rather than overwriting them
+5. The scraper skips any URL already in the visited set
 
 ---
 
@@ -580,15 +587,15 @@ The ecosystem dashboard is a separate read-only layer that sits entirely on top 
 ```mermaid
 graph LR
     browser[Browser]
-    ecosystemHtml[ecosystem.html Jinja2 template]
-    ecosystemJs[ecosystem.js D3 v7]
+    reportsHtml[reports.html Jinja2 template]
+    reportsJs[reports.js D3 v7]
     vizApiBp[viz_api.py Flask blueprint]
     vizDataMod[viz_data.py aggregators]
     csvFiles[Run CSVs - pages.csv edges.csv etc]
 
-    browser --> ecosystemHtml
-    ecosystemHtml --> ecosystemJs
-    ecosystemJs -->|JSON API calls with filters| vizApiBp
+    browser --> reportsHtml
+    reportsHtml --> reportsJs
+    reportsJs -->|JSON API calls with filters| vizApiBp
     vizApiBp --> vizDataMod
     vizDataMod -->|csv.DictReader| csvFiles
 ```
@@ -637,13 +644,13 @@ All API endpoints accept the same filter query parameters:
 
 ### 9.4 Frontend caching and filter flow
 
-`ecosystem.js` maintains an in-memory `cache` keyed by full request URL (including query string). On every filter change:
+`reports.js` maintains an in-memory `cache` keyed by full request URL (including query string). On every filter change:
 
 1. `onFilterChange` clears `cache` and the `rendered` guard (which prevents a panel re-rendering on tab revisit)
 2. `reloadFilterOptions()` fetches `/api/filter_options` with the current `runs` selection to populate dropdowns with values present in the selected data
 3. The active panel re-renders via `renderPanel(activePanelName)`
 
-`ECO_PRESELECTED_RUNS` (injected from the template via Jinja2) pre-seeds the runs filter when navigating from a per-run "Ecosystem" link.
+`ECO_PRESELECTED_RUNS` (injected from the template via Jinja2) pre-seeds the runs filter when navigating from a per-run "Reports" link.
 
 ---
 
