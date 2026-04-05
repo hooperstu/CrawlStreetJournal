@@ -118,8 +118,52 @@ a = Analysis(
         "nltk.corpus",
         # Native desktop window — pywebview uses the OS webview engine
         # (WebKit on macOS, Edge WebView2 on Windows, WebKitGTK on Linux).
+        # The top-level `webview` package and its submodules are imported
+        # statically, but the platform backends are loaded dynamically at
+        # runtime in `webview.guilib.initialize()` based on the current OS.
+        # PyInstaller's static analysis never reaches them, so every backend
+        # submodule the current build platform might need must be listed here.
         "webview",
-    ],
+        "webview.guilib",
+        "webview.http",
+        "webview.util",
+        "webview.window",
+        "webview.event",
+        "webview.menu",
+        "webview.screen",
+        "webview.localization",
+        "webview.errors",
+        "webview.models",
+        "webview.state",
+        "webview.dom",
+        # pywebview runtime deps
+        "proxy_tools",
+        "bottle",
+    ]
+    # Platform-specific pywebview backends — only the modules for the current
+    # OS are needed.  Including the wrong platform's imports (e.g. `clr` on
+    # macOS) would cause Analysis to fail.
+    + (
+        [
+            # Windows: pythonnet (.NET CLR bridge) + WinForms/EdgeChromium
+            "clr",
+            "pythonnet",
+            "webview.platforms",
+            "webview.platforms.winforms",
+            "webview.platforms.edgechromium",
+            "webview.platforms.mshtml",
+        ]
+        if sys.platform == "win32"
+        else [
+            "webview.platforms",
+            "webview.platforms.cocoa",
+        ]
+        if sys.platform == "darwin"
+        else [
+            "webview.platforms",
+            "webview.platforms.gtk",
+        ]
+    ),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

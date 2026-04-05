@@ -630,6 +630,78 @@
     padding: 1px 6px;
     margin-left: 4px;
   }
+  .dashboard-options {
+    margin-bottom: 20px;
+    padding: 16px;
+  }
+  .dashboard-options-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .dashboard-options-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--csj-headline);
+  }
+  .dashboard-options-desc {
+    font-size: 12px;
+    color: var(--csj-body);
+    margin-top: 2px;
+  }
+  .dashboard-options-toolbar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+  .dashboard-options-toolbar input {
+    width: 260px;
+    max-width: 100%;
+    font-size: 13px;
+    padding: 6px 10px;
+  }
+  .active-viz-pill {
+    font-size: 12px;
+    background: var(--csj-newsprint);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 4px 10px;
+    color: var(--csj-body);
+  }
+  .active-viz-pill strong { color: var(--csj-headline); }
+  .viz-tab-empty {
+    display: none;
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--csj-body);
+  }
+  .dashboard-analysis-links {
+    margin: 12px 0 0;
+    padding: 12px 14px;
+    background: var(--csj-paper);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: none;
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+    flex-wrap: wrap;
+    font-size: 13px;
+  }
+  .dashboard-analysis-links strong {
+    color: var(--csj-headline);
+  }
+  .dashboard-analysis-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
 </style>
 
 <div class="eco-page">
@@ -702,68 +774,86 @@
     </div>
   </div>
 
-  <div class="viz-tab-groups" id="vizTabs">
-    <div class="viz-tab-group vtg-governance">
-      <div class="viz-tab-group-header">
-        <span class="viz-tab-group-title">Governance</span>
-        <span class="viz-tab-group-desc">Ownership, structure, and oversight of the crawled estate</span>
+  <div class="dashboard-options card">
+    <div class="dashboard-options-head">
+      <div>
+        <div class="dashboard-options-title">Visualisation options</div>
+        <div class="dashboard-options-desc">Pick a view, then refine results with filters above.</div>
       </div>
-      <div class="viz-tab-row">
-        <button class="viz-tab active" data-panel="network">Network Graph</button>
-        <button class="viz-tab" data-panel="treemap">Treemap</button>
-        <button class="viz-tab" data-panel="analytics">Analytics Matrix</button>
-        <button class="viz-tab" data-panel="chord">Chord</button>
-        <button class="viz-tab" data-panel="bubble">Bubble Chart</button>
-        <button class="viz-tab" data-panel="contenttypes">Content Types</button>
-        <button class="viz-tab" data-panel="pagedepth">Page Depth</button>
-        <button class="viz-tab" data-panel="landscape">Crawl Landscape</button>
+      <span class="active-viz-pill">Active: <strong id="activeVizLabel">Network Graph</strong></span>
+    </div>
+    <div class="dashboard-options-toolbar">
+      <input type="search" id="viz-tab-search" placeholder="Find a visualisation (for example: SEO, radar, publishers)">
+    </div>
+    <div class="viz-tab-groups" id="vizTabs">
+      <div class="viz-tab-group vtg-governance">
+        <div class="viz-tab-group-header">
+          <span class="viz-tab-group-title">Governance</span>
+          <span class="viz-tab-group-desc">Ownership, structure, and oversight of the crawled estate</span>
+        </div>
+        <div class="viz-tab-row">
+          <button class="viz-tab active" data-panel="network">Network Graph</button>
+          <button class="viz-tab" data-panel="treemap">Treemap</button>
+          <button class="viz-tab" data-panel="analytics">Analytics Matrix</button>
+          <button class="viz-tab" data-panel="chord">Chord</button>
+          <button class="viz-tab" data-panel="bubble">Bubble Chart</button>
+          <button class="viz-tab" data-panel="contenttypes">Content Types</button>
+          <button class="viz-tab" data-panel="pagedepth">Page Depth</button>
+          <button class="viz-tab" data-panel="landscape">Crawl Landscape</button>
+        </div>
+      </div>
+      <div class="viz-tab-group vtg-trust">
+        <div class="viz-tab-group-header">
+          <span class="viz-tab-group-title">Trust</span>
+          <span class="viz-tab-group-desc">Quality, reliability, errors, and content freshness</span>
+        </div>
+        <div class="viz-tab-row">
+          <button class="viz-tab" data-panel="status">Status &amp; Errors</button>
+          <button class="viz-tab" data-panel="freshness">Freshness</button>
+          <button class="viz-tab" data-panel="radar">Quality Radar</button>
+          <button class="viz-tab" data-panel="parallel">Parallel Coords</button>
+          <button class="viz-tab" data-panel="contenthealth">Content Health</button>
+        </div>
+      </div>
+      <div class="viz-tab-group vtg-findability">
+        <div class="viz-tab-group-header">
+          <span class="viz-tab-group-title">Findability</span>
+          <span class="viz-tab-group-desc">Navigation paths and content themes across the crawled estate</span>
+        </div>
+        <div class="viz-tab-row">
+          <button class="viz-tab" data-panel="sunburst">Navigation</button>
+          <button class="viz-tab" data-panel="wordcloud">Themes</button>
+        </div>
+      </div>
+      <div class="viz-tab-group vtg-technology">
+        <div class="viz-tab-group-header">
+          <span class="viz-tab-group-title" style="color:#6a1b9a;">Technology &amp; Standards</span>
+          <span class="viz-tab-group-desc">Platforms, structured data adoption, and SEO readiness</span>
+        </div>
+        <div class="viz-tab-row">
+          <button class="viz-tab" data-panel="cmslandscape">CMS Landscape</button>
+          <button class="viz-tab" data-panel="structureddata">Structured Data</button>
+          <button class="viz-tab" data-panel="seoreadiness">SEO Readiness</button>
+          <button class="viz-tab" data-panel="coverage">Extraction Coverage</button>
+        </div>
+      </div>
+      <div class="viz-tab-group vtg-provenance">
+        <div class="viz-tab-group-header">
+          <span class="viz-tab-group-title" style="color:#00695c;">Provenance &amp; Authorship</span>
+          <span class="viz-tab-group-desc">Who creates and publishes the content</span>
+        </div>
+        <div class="viz-tab-row">
+          <button class="viz-tab" data-panel="authornetwork">Author Network</button>
+          <button class="viz-tab" data-panel="publishers">Publishers</button>
+          <button class="viz-tab" data-panel="schemainsights">Schema Insights</button>
+        </div>
       </div>
     </div>
-    <div class="viz-tab-group vtg-trust">
-      <div class="viz-tab-group-header">
-        <span class="viz-tab-group-title">Trust</span>
-        <span class="viz-tab-group-desc">Quality, reliability, errors, and content freshness</span>
-      </div>
-      <div class="viz-tab-row">
-        <button class="viz-tab" data-panel="status">Status &amp; Errors</button>
-        <button class="viz-tab" data-panel="freshness">Freshness</button>
-        <button class="viz-tab" data-panel="radar">Quality Radar</button>
-        <button class="viz-tab" data-panel="parallel">Parallel Coords</button>
-        <button class="viz-tab" data-panel="contenthealth">Content Health</button>
-      </div>
-    </div>
-    <div class="viz-tab-group vtg-findability">
-      <div class="viz-tab-group-header">
-        <span class="viz-tab-group-title">Findability</span>
-        <span class="viz-tab-group-desc">Navigation paths and content themes across the crawled estate</span>
-      </div>
-      <div class="viz-tab-row">
-        <button class="viz-tab" data-panel="sunburst">Navigation</button>
-        <button class="viz-tab" data-panel="wordcloud">Themes</button>
-      </div>
-    </div>
-    <div class="viz-tab-group vtg-technology">
-      <div class="viz-tab-group-header">
-        <span class="viz-tab-group-title" style="color:#6a1b9a;">Technology &amp; Standards</span>
-        <span class="viz-tab-group-desc">Platforms, structured data adoption, and SEO readiness</span>
-      </div>
-      <div class="viz-tab-row">
-        <button class="viz-tab" data-panel="cmslandscape">CMS Landscape</button>
-        <button class="viz-tab" data-panel="structureddata">Structured Data</button>
-        <button class="viz-tab" data-panel="seoreadiness">SEO Readiness</button>
-        <button class="viz-tab" data-panel="coverage">Extraction Coverage</button>
-      </div>
-    </div>
-    <div class="viz-tab-group vtg-provenance">
-      <div class="viz-tab-group-header">
-        <span class="viz-tab-group-title" style="color:#00695c;">Provenance &amp; Authorship</span>
-        <span class="viz-tab-group-desc">Who creates and publishes the content</span>
-      </div>
-      <div class="viz-tab-row">
-        <button class="viz-tab" data-panel="authornetwork">Author Network</button>
-        <button class="viz-tab" data-panel="publishers">Publishers</button>
-        <button class="viz-tab" data-panel="schemainsights">Schema Insights</button>
-      </div>
+    <div class="viz-tab-empty" id="vizTabSearchEmpty" aria-live="polite">No visualisations matched your search.</div>
+    <div class="dashboard-analysis-links">
+      <strong>Additional analysis:</strong>
+      <a href="{{ url_for('project_audit', slug=project.slug) }}" class="btn btn-sm btn-secondary dashboard-analysis-link">Content Audit</a>
+      <a href="{{ url_for('project_wcag', slug=project.slug) }}" class="btn btn-sm btn-secondary dashboard-analysis-link">WCAG</a>
     </div>
   </div>
 
