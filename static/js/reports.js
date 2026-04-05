@@ -3443,12 +3443,543 @@
     });
   };
 
+  // ────────────────────────────────────────────────────────────────
+  // 21. Crawl Landscape (Scatter Plot)
+  // ────────────────────────────────────────────────────────────────
+
+  var _landscapeData = null;
+  var _landscapeSvgRoot = null;
+
+  function _drawLandscape() {
+    var container = d3.select("#viz-landscape");
+    container.selectAll("*").remove();
+    var domains = _landscapeData;
+    if (!domains || !domains.length) {
+      container.append("p").attr("class", "viz-desc")
+        .style("text-align", "center").style("padding", "60px 0")
+        .text("No domain data available.");
+      return;
+    }
+    _assignOwnerColours(domains);
+
+    var xKey = document.getElementById("landscape-x").value;
+    var yKey = document.getElementById("landscape-y").value;
+
+    var xLabel = document.getElementById("landscape-x").selectedOptions[0].text;
+    var yLabel = document.getElementById("landscape-y").selectedOptions[0].text;
+
+    var sz = vizSize("viz-landscape");
+    var margin = { top: 20, right: 30, bottom: 50, left: 65 };
+    var W = sz.w - margin.left - margin.right;
+    var H = Math.max(420, sz.h - 40) - margin.top - margin.bottom;
+
+    var svg = container.append("svg")
+      .attr("width", W + margin.left + margin.right)
+      .attr("height", H + margin.top + margin.bottom);
+    _landscapeSvgRoot = svg;
+    var g = svg.append("g").attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+    var xMax = d3.max(domains, function (d) { return +d[xKey] || 0; }) || 1;
+    var yMax = d3.max(domains, function (d) { return +d[yKey] || 0; }) || 1;
+    var x = d3.scaleLinear().domain([0, xMax * 1.08]).range([0, W]).nice();
+    var y = d3.scaleLinear().domain([0, yMax * 1.08]).range([H, 0]).nice();
+    var r = d3.scaleSqrt()
+      .domain([0, d3.max(domains, function (d) { return d.page_count; }) || 1])
+      .range([4, 36]);
+
+    g.append("g").attr("transform", "translate(0," + H + ")")
+      .call(d3.axisBottom(x).ticks(8).tickFormat(function (v) { return v >= 1000 ? (v / 1000) + "k" : v; }))
+      .call(function (ax) { ax.select(".domain").attr("stroke", "#ccc"); })
+      .selectAll("text").attr("font-size", 10).attr("fill", "#5A5246");
+
+    g.append("g")
+      .call(d3.axisLeft(y).ticks(6).tickFormat(function (v) { return v >= 1000 ? (v / 1000) + "k" : v; }))
+      .call(function (ax) { ax.select(".domain").attr("stroke", "#ccc"); })
+      .selectAll("text").attr("font-size", 10).attr("fill", "#5A5246");
+
+    g.append("text").attr("x", W / 2).attr("y", H + 38).attr("text-anchor", "middle")
+      .attr("font-size", 12).attr("font-weight", 600).attr("fill", "#5A5246").text(xLabel);
+    g.append("text").attr("transform", "rotate(-90)").attr("x", -H / 2).attr("y", -48)
+      .attr("text-anchor", "middle").attr("font-size", 12).attr("font-weight", 600).attr("fill", "#5A5246").text(yLabel);
+
+    g.selectAll(".grid-x").data(x.ticks(8)).join("line").attr("class", "grid-x")
+      .attr("x1", function (d) { return x(d); }).attr("x2", function (d) { return x(d); })
+      .attr("y1", 0).attr("y2", H).attr("stroke", "#eee").attr("stroke-width", 0.5);
+    g.selectAll(".grid-y").data(y.ticks(6)).join("line").attr("class", "grid-y")
+      .attr("x1", 0).attr("x2", W)
+      .attr("y1", function (d) { return y(d); }).attr("y2", function (d) { return y(d); })
+      .attr("stroke", "#eee").attr("stroke-width", 0.5);
+
+    var bubbles = g.selectAll(".ls-bubble")
+      .data(domains.sort(function (a, b) { return b.page_count - a.page_count; }))
+      .join("circle")
+      .attr("class", "ls-bubble")
+      .attr("cx", function (d) { return x(+d[xKey] || 0); })
+      .attr("cy", function (d) { return y(+d[yKey] || 0); })
+      .attr("r", function (d) { return r(d.page_count); })
+      .attr("fill", function (d) { return ownerColour(d.ownership); })
+      .attr("fill-opacity", 0.7)
+      .attr("stroke", function (d) { return ownerColour(d.ownership); })
+      .attr("stroke-width", 1.5)
+      .attr("cursor", "pointer");
+
+    bubbles.on("mouseover", function (evt, d) {
+      d3.select(this).attr("fill-opacity", 1).attr("stroke-width", 2.5);
+      showTip(evt, "<strong>" + shortDomain(d.domain) + "</strong>" +
+        "<br>" + xLabel + ": " + (typeof d[xKey] === "number" ? d3.format(",.1f")(d[xKey]) : d[xKey]) +
+        "<br>" + yLabel + ": " + (typeof d[yKey] === "number" ? d3.format(",.1f")(d[yKey]) : d[yKey]) +
+        "<br>Pages: " + fmt(d.page_count) +
+        "<br>Owner: " + d.ownership);
+    }).on("mouseout", function () {
+      d3.select(this).attr("fill-opacity", 0.7).attr("stroke-width", 1.5);
+      hideTip();
+    });
+
+    var topDomains = domains.slice(0, Math.min(8, domains.length));
+    g.selectAll(".ls-label")
+      .data(topDomains)
+      .join("text")
+      .attr("class", "ls-label")
+      .attr("x", function (d) { return x(+d[xKey] || 0); })
+      .attr("y", function (d) { return y(+d[yKey] || 0) - r(d.page_count) - 4; })
+      .attr("text-anchor", "middle")
+      .attr("font-size", 9)
+      .attr("font-weight", 600)
+      .attr("fill", "#1A1A1A")
+      .attr("pointer-events", "none")
+      .text(function (d) {
+        var s = shortDomain(d.domain);
+        return s.length > 20 ? s.slice(0, 18) + "\u2026" : s;
+      });
+
+    var groups = {};
+    domains.forEach(function (d) { groups[d.ownership] = ownerColour(d.ownership); });
+    buildLegend("legend-landscape", Object.keys(groups).map(function (g) {
+      return { label: g, colour: groups[g] };
+    }));
+  }
+
+  VIZ.landscape = function () {
+    fetchJSON(API.domains).then(function (domains) {
+      hideLoading("loading-landscape");
+      _landscapeData = domains;
+      _drawLandscape();
+    });
+  };
+
+
+  // ────────────────────────────────────────────────────────────────
+  // 22. Page Depth Analysis (Rewritten)
+  // ────────────────────────────────────────────────────────────────
+
+  VIZ.pagedepth = function () {
+    fetchJSON(API.page_depth).then(function (data) {
+      hideLoading("loading-pagedepth");
+      var container = d3.select("#viz-pagedepth");
+
+      var hist = data.depth_histogram || [];
+      var quality = data.depth_quality || [];
+      var domDepth = data.domain_depth || [];
+
+      if (!hist.length) {
+        container.append("p").attr("class", "viz-desc")
+          .style("text-align", "center").style("padding", "60px 0")
+          .text("No page depth data available.");
+        return;
+      }
+
+      var totalPages = d3.sum(hist, function (d) { return d.count; });
+      var maxDepth = d3.max(hist, function (d) { return d.depth; }) || 0;
+      var weightedSum = d3.sum(quality, function (d) { return d.depth * d.page_count; });
+      var avgDepth = totalPages > 0 ? (weightedSum / totalPages).toFixed(1) : 0;
+      var peakDepth = hist.reduce(function (a, b) { return b.count > a.count ? b : a; }, hist[0]);
+
+      var kpiBox = d3.select("#pagedepth-kpis");
+      kpiBox.html("");
+      var kpis = [
+        { val: fmt(totalPages), label: "Total pages" },
+        { val: maxDepth, label: "Max depth" },
+        { val: avgDepth, label: "Avg depth" },
+        { val: "Depth " + peakDepth.depth + " (" + fmt(peakDepth.count) + ")", label: "Most pages at" }
+      ];
+      kpis.forEach(function (k) {
+        kpiBox.append("div").attr("class", "stat").html(
+          '<div class="stat-value">' + k.val + '</div><div class="stat-label">' + k.label + '</div>'
+        );
+      });
+
+      var sz = vizSize("viz-pagedepth");
+      var margin = { top: 16, right: 70, bottom: 48, left: 56 };
+      var W = sz.w - margin.left - margin.right;
+      var H = Math.max(380, sz.h - 80) - margin.top - margin.bottom;
+
+      var svg = container.append("svg")
+        .attr("width", sz.w).attr("height", H + margin.top + margin.bottom)
+        .append("g").attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+      var xDomain = hist.map(function (d) { return d.depth; });
+      var x = d3.scaleBand().domain(xDomain).range([0, W]).padding(0.15);
+      var yMax = d3.max(hist, function (d) { return d.count; }) || 1;
+      var y = d3.scaleLinear().domain([0, yMax * 1.12]).range([H, 0]);
+
+      svg.selectAll(".bg-band").data(xDomain).join("rect").attr("class", "bg-band")
+        .attr("x", function (d) { return x(d); }).attr("y", 0)
+        .attr("width", x.bandwidth()).attr("height", H)
+        .attr("fill", function (d, i) { return i % 2 === 0 ? "rgba(0,0,0,.02)" : "transparent"; });
+
+      svg.append("g").attr("transform", "translate(0," + H + ")")
+        .call(d3.axisBottom(x).tickFormat(function (d) { return d; }))
+        .call(function (ax) { ax.select(".domain").attr("stroke", "#ccc"); })
+        .selectAll("text").attr("font-size", 11).attr("fill", "#5A5246");
+
+      svg.append("g").call(d3.axisLeft(y).ticks(5).tickFormat(fmt))
+        .call(function (ax) { ax.select(".domain").attr("stroke", "#ccc"); })
+        .selectAll("text").attr("font-size", 10).attr("fill", "#5A5246");
+
+      svg.append("text").attr("x", W / 2).attr("y", H + 38).attr("text-anchor", "middle")
+        .attr("font-size", 12).attr("font-weight", 600).attr("fill", "#5A5246").text("Crawl Depth Level");
+      svg.append("text").attr("transform", "rotate(-90)").attr("x", -H / 2).attr("y", -42)
+        .attr("text-anchor", "middle").attr("font-size", 12).attr("font-weight", 600).attr("fill", "#5A5246").text("Pages");
+
+      var depthColour = d3.scaleSequential(d3.interpolateGreens).domain([-1, maxDepth + 1]);
+
+      svg.selectAll(".depth-bar")
+        .data(hist)
+        .join("rect")
+        .attr("class", "depth-bar")
+        .attr("x", function (d) { return x(d.depth); })
+        .attr("y", function (d) { return y(d.count); })
+        .attr("width", x.bandwidth())
+        .attr("height", function (d) { return H - y(d.count); })
+        .attr("fill", function (d) { return depthColour(d.depth); })
+        .attr("rx", 3)
+        .on("mouseover", function (evt, d) {
+          d3.select(this).attr("stroke", "#1A1A1A").attr("stroke-width", 2);
+          var q = quality.find(function (q) { return q.depth === d.depth; });
+          var pct = totalPages > 0 ? ((d.count / totalPages) * 100).toFixed(1) : 0;
+          var tip = "<strong>Depth " + d.depth + "</strong><br>" + fmt(d.count) + " pages (" + pct + "%)";
+          if (q) {
+            tip += "<br>Avg words: " + fmt(q.avg_words) +
+              "<br>Coverage: " + q.avg_coverage + "%" +
+              "<br>Readability: " + q.avg_readability;
+          }
+          var doms = domDepth.filter(function (dd) {
+            return dd.depths.some(function (dp) { return dp.depth === d.depth && dp.count > 0; });
+          }).sort(function (a, b) {
+            var ac = a.depths.find(function (dp) { return dp.depth === d.depth; });
+            var bc = b.depths.find(function (dp) { return dp.depth === d.depth; });
+            return (bc ? bc.count : 0) - (ac ? ac.count : 0);
+          }).slice(0, 5);
+          if (doms.length) {
+            tip += "<br><span style='color:#8cc4ff;'>Top domains:</span>";
+            doms.forEach(function (dd) {
+              var c = dd.depths.find(function (dp) { return dp.depth === d.depth; });
+              tip += "<br>\u00a0\u00a0" + shortDomain(dd.domain) + ": " + (c ? c.count : 0);
+            });
+          }
+          showTip(evt, tip);
+        })
+        .on("mouseout", function () {
+          d3.select(this).attr("stroke", "none");
+          hideTip();
+        });
+
+      svg.selectAll(".bar-label")
+        .data(hist.filter(function (d) { return d.count > 0; }))
+        .join("text")
+        .attr("class", "bar-label")
+        .attr("x", function (d) { return x(d.depth) + x.bandwidth() / 2; })
+        .attr("y", function (d) { return y(d.count) - 5; })
+        .attr("text-anchor", "middle")
+        .attr("font-size", 10).attr("font-weight", 700).attr("fill", "#1A1A1A")
+        .attr("pointer-events", "none")
+        .text(function (d) { return fmt(d.count); });
+
+      function drawOverlay(metric, colour, label, unit) {
+        svg.selectAll(".depth-overlay").remove();
+        svg.selectAll(".depth-overlay-label").remove();
+        svg.selectAll(".axis-right").remove();
+        if (!quality.length) return;
+        var oMax = d3.max(quality, function (d) { return d[metric]; }) || 1;
+        var y2 = d3.scaleLinear().domain([0, oMax * 1.2]).range([H, 0]);
+        svg.append("g").attr("class", "axis-right depth-overlay")
+          .attr("transform", "translate(" + W + ",0)")
+          .call(d3.axisRight(y2).ticks(4).tickFormat(function (v) { return v + (unit || ""); }))
+          .call(function (ax) { ax.select(".domain").attr("stroke", "#ccc"); })
+          .selectAll("text").attr("font-size", 9).attr("fill", colour);
+
+        var area = d3.area()
+          .x(function (d) { return x(d.depth) + x.bandwidth() / 2; })
+          .y0(H)
+          .y1(function (d) { return y2(d[metric]); })
+          .curve(d3.curveMonotoneX);
+
+        svg.append("path").datum(quality).attr("class", "depth-overlay")
+          .attr("fill", colour).attr("fill-opacity", 0.08).attr("d", area)
+          .attr("pointer-events", "none");
+
+        var lineGen = d3.line()
+          .x(function (d) { return x(d.depth) + x.bandwidth() / 2; })
+          .y(function (d) { return y2(d[metric]); })
+          .curve(d3.curveMonotoneX);
+
+        svg.append("path").datum(quality).attr("class", "depth-overlay")
+          .attr("fill", "none").attr("stroke", colour).attr("stroke-width", 2.5)
+          .attr("stroke-dasharray", "6,3").attr("d", lineGen)
+          .attr("pointer-events", "none");
+
+        svg.selectAll(".depth-dot")
+          .data(quality).join("circle").attr("class", "depth-overlay")
+          .attr("cx", function (d) { return x(d.depth) + x.bandwidth() / 2; })
+          .attr("cy", function (d) { return y2(d[metric]); })
+          .attr("r", 5).attr("fill", "#fff").attr("stroke", colour).attr("stroke-width", 2)
+          .attr("pointer-events", "none");
+
+        svg.append("text").attr("class", "depth-overlay-label depth-overlay")
+          .attr("x", W + 10)
+          .attr("y", y2(quality[quality.length - 1][metric]) + 4)
+          .attr("font-size", 10).attr("font-weight", 600).attr("fill", colour).text(label);
+      }
+
+      var overlaySelect = document.getElementById("pagedepth-overlay");
+      var overlayMap = {
+        words: { metric: "avg_words", colour: "#C4841D", label: "Avg Words", unit: "" },
+        coverage: { metric: "avg_coverage", colour: "#1565c0", label: "Coverage", unit: "%" },
+        readability: { metric: "avg_readability", colour: "#A4243B", label: "Readability", unit: "" }
+      };
+      function applyOverlay() {
+        var sel = overlayMap[overlaySelect.value] || overlayMap.words;
+        drawOverlay(sel.metric, sel.colour, sel.label, sel.unit);
+        buildLegend("legend-pagedepth", [
+          { label: "Page count", colour: depthColour(Math.floor(maxDepth / 2)) },
+          { label: sel.label + " (dashed line)", colour: sel.colour }
+        ]);
+      }
+      applyOverlay();
+      overlaySelect.addEventListener("change", applyOverlay);
+    });
+  };
+
+
+  // ────────────────────────────────────────────────────────────────
+  // 23. Content Health Matrix (Rewritten)
+  // ────────────────────────────────────────────────────────────────
+
+  var _healthData = null;
+
+  function _drawHealth() {
+    var container = d3.select("#viz-contenthealth");
+    container.selectAll("*").remove();
+    var data = _healthData;
+    if (!data || !data.domains || !data.domains.length) {
+      container.append("p").attr("class", "viz-desc")
+        .style("text-align", "center").style("padding", "60px 0")
+        .text("No content health data available.");
+      return;
+    }
+
+    var signals = data.signals;
+    var sortMode = document.getElementById("health-sort").value;
+
+    var indices = data.domains.map(function (_, i) { return i; });
+    if (sortMode === "score") {
+      indices.sort(function (a, b) {
+        var sa = d3.mean(data.matrix[a]);
+        var sb = d3.mean(data.matrix[b]);
+        return sb - sa;
+      });
+    } else if (sortMode === "alpha") {
+      indices.sort(function (a, b) {
+        return data.domains[a].localeCompare(data.domains[b]);
+      });
+    }
+
+    var domains = indices.map(function (i) { return data.domains[i]; });
+    var matrix = indices.map(function (i) { return data.matrix[i]; });
+    var pageCounts = indices.map(function (i) { return data.page_counts[i]; });
+
+    var nDom = domains.length;
+    var nSig = signals.length;
+
+    var cellW = Math.max(58, Math.min(72, Math.floor((vizSize("viz-contenthealth").w - 260) / nSig)));
+    var cellH = 28;
+    var labelW = 190;
+    var headerH = 110;
+    var scoreColW = 50;
+    var margin = { top: 0, right: 20, bottom: 50, left: 8 };
+    var gridW = nSig * cellW;
+    var gridH = nDom * cellH;
+    var totalW = margin.left + labelW + gridW + scoreColW + margin.right;
+    var totalH = margin.top + headerH + gridH + margin.bottom;
+
+    var colour = d3.scaleSequential(d3.interpolateRdYlGn).domain([0, 100]);
+
+    var domScores = matrix.map(function (row) { return Math.round(d3.mean(row)); });
+    var sigAvgs = [];
+    for (var si = 0; si < nSig; si++) {
+      var colVals = matrix.map(function (row) { return row[si]; });
+      sigAvgs.push(Math.round(d3.mean(colVals)));
+    }
+    var overallScore = Math.round(d3.mean(domScores));
+
+    var summaryEl = document.getElementById("health-summary");
+    if (summaryEl) {
+      var lowSignals = signals.filter(function (_, i) { return sigAvgs[i] < 50; });
+      summaryEl.innerHTML = "<strong>Overall health: " + overallScore + "%</strong>";
+      if (lowSignals.length) {
+        summaryEl.innerHTML += " &mdash; <span style='color:var(--csj-error);'>Weakest signals: " +
+          lowSignals.join(", ") + "</span>";
+      }
+    }
+
+    var svg = container.append("svg").attr("width", totalW).attr("height", totalH);
+    var gOff = margin.left + labelW;
+
+    signals.forEach(function (sig, si) {
+      var cx = gOff + si * cellW + cellW / 2;
+      var cy = margin.top + headerH - 8;
+      svg.append("text")
+        .attr("x", cx).attr("y", cy)
+        .attr("text-anchor", "start")
+        .attr("transform", "rotate(-55," + cx + "," + cy + ")")
+        .attr("font-size", 11).attr("font-weight", 600).attr("fill", "#1A1A1A")
+        .text(sig);
+    });
+
+    svg.append("text").attr("x", gOff + gridW + scoreColW / 2)
+      .attr("y", margin.top + headerH - 8).attr("text-anchor", "middle")
+      .attr("font-size", 10).attr("font-weight", 700).attr("fill", "#5A5246").text("Score");
+
+    var gGrid = svg.append("g").attr("transform", "translate(" + gOff + "," + (margin.top + headerH) + ")");
+
+    domains.forEach(function (dom, di) {
+      var rowY = di * cellH;
+      var rowGroup = gGrid.append("g").attr("class", "health-row");
+
+      rowGroup.append("rect").attr("x", -labelW + margin.left).attr("y", rowY)
+        .attr("width", labelW + gridW + scoreColW - margin.left)
+        .attr("height", cellH)
+        .attr("fill", "transparent").attr("class", "health-row-bg");
+
+      svg.append("text")
+        .attr("x", margin.left + labelW - 8)
+        .attr("y", margin.top + headerH + rowY + cellH / 2 + 4)
+        .attr("text-anchor", "end").attr("font-size", 11).attr("fill", "#1A1A1A")
+        .text(function () {
+          var s = shortDomain(dom);
+          return s.length > 26 ? s.slice(0, 24) + "\u2026" : s;
+        });
+
+      signals.forEach(function (sig, si) {
+        var val = matrix[di][si];
+        var cx = si * cellW;
+
+        rowGroup.append("rect")
+          .attr("x", cx + 1).attr("y", rowY + 1)
+          .attr("width", cellW - 2).attr("height", cellH - 2)
+          .attr("rx", 3).attr("fill", colour(val))
+          .attr("stroke", "#fff").attr("stroke-width", 1.5)
+          .attr("class", "health-cell")
+          .attr("data-col", si)
+          .on("mouseover", function (evt) {
+            d3.select(this).attr("stroke", "#1A1A1A").attr("stroke-width", 2);
+            gGrid.selectAll(".health-cell[data-col='" + si + "']")
+              .attr("stroke", "#999").attr("stroke-width", 1.5);
+            d3.select(this).attr("stroke", "#1A1A1A").attr("stroke-width", 2);
+            rowGroup.select(".health-row-bg").attr("fill", "rgba(196,132,29,0.04)");
+            showTip(evt, "<strong>" + shortDomain(dom) + "</strong><br>" +
+              sig + ": <strong>" + val + "%</strong><br>" +
+              fmt(pageCounts[di]) + " pages<br>Row avg: " + domScores[di] + "%");
+          })
+          .on("mouseout", function () {
+            d3.select(this).attr("stroke", "#fff").attr("stroke-width", 1.5);
+            gGrid.selectAll(".health-cell[data-col='" + si + "']")
+              .attr("stroke", "#fff").attr("stroke-width", 1.5);
+            rowGroup.select(".health-row-bg").attr("fill", "transparent");
+            hideTip();
+          });
+
+        rowGroup.append("text")
+          .attr("x", cx + cellW / 2).attr("y", rowY + cellH / 2 + 4)
+          .attr("text-anchor", "middle").attr("font-size", 10).attr("font-weight", 700)
+          .attr("fill", val > 60 ? "#fff" : (val < 40 ? "#fff" : "#1A1A1A"))
+          .attr("pointer-events", "none")
+          .text(Math.round(val));
+      });
+
+      var score = domScores[di];
+      rowGroup.append("rect")
+        .attr("x", gridW + 4).attr("y", rowY + 2)
+        .attr("width", scoreColW - 8).attr("height", cellH - 4)
+        .attr("rx", 3).attr("fill", colour(score)).attr("fill-opacity", 0.2)
+        .attr("stroke", colour(score)).attr("stroke-width", 1.5);
+      rowGroup.append("text")
+        .attr("x", gridW + scoreColW / 2).attr("y", rowY + cellH / 2 + 4)
+        .attr("text-anchor", "middle").attr("font-size", 11).attr("font-weight", 700)
+        .attr("fill", "#1A1A1A").attr("pointer-events", "none")
+        .text(score + "%");
+    });
+
+    var avgY = nDom * cellH + 6;
+    gGrid.append("line").attr("x1", 0).attr("x2", gridW)
+      .attr("y1", avgY - 2).attr("y2", avgY - 2)
+      .attr("stroke", "#ccc").attr("stroke-width", 1);
+
+    svg.append("text")
+      .attr("x", margin.left + labelW - 8)
+      .attr("y", margin.top + headerH + avgY + cellH / 2 + 2)
+      .attr("text-anchor", "end").attr("font-size", 11).attr("font-weight", 700)
+      .attr("fill", "#5A5246").text("Average");
+
+    sigAvgs.forEach(function (avg, si) {
+      gGrid.append("rect")
+        .attr("x", si * cellW + 1).attr("y", avgY + 1)
+        .attr("width", cellW - 2).attr("height", cellH - 2)
+        .attr("rx", 3).attr("fill", colour(avg))
+        .attr("stroke", colour(avg)).attr("stroke-width", 1)
+        .attr("fill-opacity", 0.35);
+      gGrid.append("text")
+        .attr("x", si * cellW + cellW / 2).attr("y", avgY + cellH / 2 + 4)
+        .attr("text-anchor", "middle").attr("font-size", 10).attr("font-weight", 700)
+        .attr("fill", "#1A1A1A").attr("pointer-events", "none").text(avg);
+    });
+
+    gGrid.append("rect")
+      .attr("x", gridW + 4).attr("y", avgY + 2)
+      .attr("width", scoreColW - 8).attr("height", cellH - 4)
+      .attr("rx", 3).attr("fill", colour(overallScore)).attr("fill-opacity", 0.3)
+      .attr("stroke", colour(overallScore)).attr("stroke-width", 1.5);
+    gGrid.append("text")
+      .attr("x", gridW + scoreColW / 2).attr("y", avgY + cellH / 2 + 4)
+      .attr("text-anchor", "middle").attr("font-size", 11).attr("font-weight", 700)
+      .attr("fill", "#1A1A1A").text(overallScore + "%");
+
+    var legendG = svg.append("g").attr("transform", "translate(" + gOff + "," + (totalH - 20) + ")");
+    var legendW = 160, legendH = 10;
+    var defs = svg.append("defs");
+    var grad = defs.append("linearGradient").attr("id", "health-grad2");
+    grad.append("stop").attr("offset", "0%").attr("stop-color", colour(0));
+    grad.append("stop").attr("offset", "50%").attr("stop-color", colour(50));
+    grad.append("stop").attr("offset", "100%").attr("stop-color", colour(100));
+    legendG.append("rect").attr("width", legendW).attr("height", legendH).attr("rx", 2)
+      .attr("fill", "url(#health-grad2)");
+    legendG.append("text").attr("x", 0).attr("y", legendH + 12).attr("font-size", 9)
+      .attr("fill", "#5A5246").text("0% — missing");
+    legendG.append("text").attr("x", legendW).attr("y", legendH + 12)
+      .attr("text-anchor", "end").attr("font-size", 9).attr("fill", "#5A5246").text("100% — complete");
+  }
+
+  VIZ.contenthealth = function () {
+    fetchJSON(API.content_health).then(function (data) {
+      hideLoading("loading-contenthealth");
+      _healthData = data;
+      _drawHealth();
+    });
+  };
+
+
   // ── One-time control listeners ──────────────────────────────────
-  // Registered here (outside VIZ functions) so they are never duplicated,
-  // regardless of how many times the corresponding VIZ function is called.
   document.getElementById("chord-top").addEventListener("change", function () {
-    // Clear all chord cache entries so every previously-viewed top-N value
-    // is re-fetched — not just the newly-selected one.
     Object.keys(cache).forEach(function (k) {
       if (k.indexOf(API.chord) === 0) cache[k] = null;
     });
@@ -3457,9 +3988,18 @@
     VIZ.chord();
   });
 
+  document.getElementById("landscape-x").addEventListener("change", function () {
+    if (_landscapeData) _drawLandscape();
+  });
+  document.getElementById("landscape-y").addEventListener("change", function () {
+    if (_landscapeData) _drawLandscape();
+  });
+
+  document.getElementById("health-sort").addEventListener("change", function () {
+    if (_healthData) _drawHealth();
+  });
+
   // ── Initial render ──────────────────────────────────────────────
-  // The "network" tab is active by default in the HTML, so trigger
-  // its render immediately on page load.
   renderPanel("network");
 
 })();
