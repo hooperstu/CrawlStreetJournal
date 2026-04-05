@@ -117,11 +117,29 @@ def main() -> int:
             webview.start()
             return 0
         except Exception as wv_err:
-            # GUI backend not available (no GTK/QT/WebKit installed).
-            # Fall through to browser mode silently.
-            logging.getLogger(__name__).info(
-                "Native window unavailable (%s) — opening in browser", wv_err
+            # GUI backend not available — e.g. missing pythonnet/.NET on
+            # Windows, or no GTK/WebKit on Linux.  Log diagnostics so the
+            # issue is traceable, then fall through to the browser fallback.
+            _log = logging.getLogger(__name__)
+            _log.warning(
+                "Native window unavailable (%s: %s) — opening in default browser",
+                type(wv_err).__name__,
+                wv_err,
             )
+            if getattr(sys, "frozen", False):
+                try:
+                    import config as _cfg
+                    _diag = os.path.join(_cfg.DATA_DIR, "webview-error.log")
+                    import traceback
+                    with open(_diag, "w") as _f:
+                        _f.write(
+                            f"pywebview failed at "
+                            f"{time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                        )
+                        traceback.print_exc(file=_f)
+                    _log.info("Diagnostic log written to %s", _diag)
+                except Exception:
+                    pass
 
     _open_in_browser(port)
     try:
