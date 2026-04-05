@@ -283,14 +283,3 @@ def api_content_health(slug: str):
     return jsonify(data)
 
 
-@eco_bp.route("/p/<slug>/api/viz/link_flow")
-def api_link_flow(slug: str):
-    """Directional link flow (Sankey) data between top domains."""
-    run_dirs = _resolve_run_dirs(slug)
-    if not run_dirs:
-        return jsonify({"nodes": [], "links": []})
-    top_n = request.args.get("top", 20, type=int)
-    data = viz_data.aggregate_link_flow(
-        run_dirs, top_n=top_n, filters=_parse_filters(),
-    )
-    return jsonify(data)
