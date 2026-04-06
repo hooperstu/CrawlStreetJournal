@@ -649,6 +649,15 @@ def collect_start_items(
     _max_sm = cfg.MAX_SITEMAP_URLS if cfg else config.MAX_SITEMAP_URLS
     _load_robots = cfg.LOAD_SITEMAPS_FROM_ROBOTS if cfg else config.LOAD_SITEMAPS_FROM_ROBOTS
 
+    logger.info(
+        "Seed/sitemap discovery: %d seed URL(s), %d configured sitemap(s), "
+        "LOAD_SITEMAPS_FROM_ROBOTS=%s, MAX_SITEMAP_URLS=%s",
+        len(_seeds),
+        len(_sitemaps),
+        _load_robots,
+        _max_sm,
+    )
+
     items: List[Tuple[str, str]] = []
     seen: Set[str] = set()
     sitemap_meta: Dict[str, Dict[str, str]] = {}
@@ -800,17 +809,23 @@ def _preflight_robots_report(
     on_phase: Optional[Callable[[str, str], None]] = None,
 ) -> None:
     """Check robots.txt for every unique origin in the queue and log results."""
-    _respect = cfg.RESPECT_ROBOTS_TXT if cfg else config.RESPECT_ROBOTS_TXT
     origins: Dict[str, int] = {}
     for url, _ref, _depth in queue_items:
         o = _origin_of(url)
         origins[o] = origins.get(o, 0) + 1
 
     total = len(origins)
+    _respect = cfg.RESPECT_ROBOTS_TXT if cfg else config.RESPECT_ROBOTS_TXT
+    if not _respect:
+        logger.info(
+            "Pre-flight robots check skipped (RESPECT_ROBOTS_TXT is False); "
+            "%d unique origin(s) in queue",
+            total,
+        )
+        return
+
     blocked_count = 0
     for idx, (origin, url_count) in enumerate(sorted(origins.items()), 1):
-        if not _respect:
-            break
         if on_phase:
             on_phase(
                 "preflight_robots",
@@ -827,10 +842,10 @@ def _preflight_robots_report(
     if blocked_count:
         logger.warning(
             "Pre-flight: %d of %d origins blocked by robots.txt",
-            blocked_count, len(origins),
+            blocked_count, total,
         )
     else:
-        logger.info("Pre-flight: all %d origins allow crawling", len(origins))
+        logger.info("Pre-flight: all %d origins allow crawling", total)
 
 
 # ── Main crawl loop ──────────────────────────────────────────────────────
@@ -877,6 +892,7 @@ def _init_run(
         if saved_cfg:
             cfg = CrawlConfig.from_dict(saved_cfg, base=cfg)
             ctx.cfg = cfg
+        logger.info("Resuming run — loading prior outputs from %s", run_folder)
         ctx.resume_outputs(run_folder)
     elif run_folder:
         run_dir = os.path.join(ctx.output_dir, run_folder)
@@ -884,11 +900,17 @@ def _init_run(
         if saved_cfg:
             cfg = CrawlConfig.from_dict(saved_cfg, base=cfg)
             ctx.cfg = cfg
+        logger.info(
+            "Initialising new crawl outputs (run folder %s)",
+            run_folder,
+        )
         ctx.initialise_outputs(run_folder=run_folder, run_name=run_name)
     else:
+        logger.info("Initialising new crawl outputs (new run)")
         ctx.initialise_outputs(run_name=run_name)
 
     run_dir = ctx.get_active_run_dir()
+    logger.info("Active run directory: %s", run_dir)
 
     if resume and run_folder:
         visited = _ThreadSafeSet(storage.rebuild_visited_from_csvs(run_dir))
@@ -908,6 +930,10 @@ def _init_run(
             len(visited), len(pq), pages_crawled,
         )
     else:
+        logger.info(
+            "Building crawl queue from seeds and sitemaps "
+            "(this may take several minutes for large sitemap indexes)",
+        )
         _seed_queues(cfg, ctx, seed_urls, pq, queued, sitemap_meta, on_phase)
 
     return (
@@ -936,13 +962,21 @@ def _seed_queues(
             (normalise_url(u.strip()), "seed") for u in seed_urls if u.strip()
         ]
         sitemap_meta.clear()
+        logger.info(
+            "Using %d explicit seed URL(s) from the caller (no config sitemap pass)",
+            len(start_items),
+        )
     else:
         start_items, new_sitemap_meta = collect_start_items(cfg, ctx, on_phase)
         sitemap_meta.update(new_sitemap_meta)
 
     now0 = _now_iso()
+    n_asset_rows = 0
+    n_html_enqueued = 0
+    n_skipped_scope = 0
     for u, ref in start_items:
         if not is_url_allowed(u, cfg):
+            n_skipped_scope += 1
             continue
         cat = parser_module.asset_category_for_url(u)
         if cat is not None:
@@ -960,10 +994,21 @@ def _seed_queues(
                 row["head_content_type"] = ct
                 row["head_content_length"] = cl
             ctx.write_asset(row, cat)
+            n_asset_rows += 1
             continue
         if u not in queued:
             pq.push(u, ref, 0, is_seed=True)
             queued.add(u)
+            n_html_enqueued += 1
+
+    logger.info(
+        "Queue seeding finished: %d HTML URL(s) enqueued, %d asset-only row(s) "
+        "written, %d URL(s) skipped by scope rules (from %d start item(s))",
+        n_html_enqueued,
+        n_asset_rows,
+        n_skipped_scope,
+        len(start_items),
+    )
 
 
 def _process_one_url(
@@ -1289,6 +1334,16 @@ def crawl(
     if ctx is None:
         ctx = StorageContext(cfg.OUTPUT_DIR, cfg)
 
+    logger.info(
+        "Crawl setup starting — output %s, run_folder=%s, resume=%s, "
+        "max_pages=%s, concurrent_workers=%s",
+        ctx.output_dir,
+        run_folder or "(new)",
+        resume,
+        max_pages if max_pages is not None else cfg.MAX_PAGES_TO_CRAWL,
+        max(1, cfg.CONCURRENT_WORKERS),
+    )
+
     _max_pages = max_pages if max_pages is not None else cfg.MAX_PAGES_TO_CRAWL
     delay_cfg = delay if delay is not None else cfg.REQUEST_DELAY_SECONDS
     max_depth = cfg.MAX_DEPTH
@@ -1306,10 +1361,30 @@ def crawl(
     delay_cfg = cfg.REQUEST_DELAY_SECONDS if delay is None else delay
     max_depth = cfg.MAX_DEPTH
 
+    workers = max(1, cfg.CONCURRENT_WORKERS if cfg else 1)
+    logger.info(
+        "Queue ready: %d URL(s) waiting, %d worker thread(s), "
+        "request_delay=%s, max_depth=%s",
+        len(pq),
+        workers,
+        delay_cfg,
+        max_depth,
+    )
+
     all_queued = pq.to_list()
     if all_queued and not (resume and saved_state):
+        logger.info(
+            "Running robots.txt pre-flight for %d queued URL(s) "
+            "(%d unique origin(s))",
+            len(all_queued),
+            len({_origin_of(u) for u, _, _ in all_queued}),
+        )
         _preflight_robots_report(
             [(u, r, d) for u, r, d in all_queued], cfg, on_phase,
+        )
+    elif all_queued and resume and saved_state:
+        logger.info(
+            "Skipping robots pre-flight (resumed run — queue restored from state)",
         )
 
     if resume and run_folder and saved_state and saved_state.get("started_at"):
@@ -1328,6 +1403,7 @@ def crawl(
         queue=_combined_queue(),
         started_at=started_at,
     )
+    logger.info("Saved crawl state (status=running); beginning fetches")
 
     interrupted = False
     last_state_save = pages_crawled
@@ -1341,10 +1417,14 @@ def crawl(
             logger.info("Loaded %d content hashes from previous run for change detection", len(prev_hashes))
 
     queue_total = len(pq)
-    if on_phase and queue_total:
-        on_phase("crawling", f"Starting crawl \u2014 {queue_total:,} URLs queued")
-
-    workers = max(1, cfg.CONCURRENT_WORKERS if cfg else 1)
+    if queue_total:
+        if on_phase:
+            on_phase("crawling", f"Starting crawl \u2014 {queue_total:,} URLs queued")
+    else:
+        logger.warning(
+            "No URLs in the crawl queue — check seeds, sitemaps, and scope filters "
+            "(ALLOWED_DOMAINS, URL_INCLUDE_PATTERNS, URL_EXCLUDE_PATTERNS)",
+        )
 
     try:
         if workers <= 1:
