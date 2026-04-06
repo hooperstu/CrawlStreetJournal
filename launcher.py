@@ -79,7 +79,7 @@ def main() -> int:
     )
 
     import storage as storage_module
-    from gui import app
+    from gui import run_server
 
     storage_module.migrate_legacy_data()
 
@@ -97,9 +97,10 @@ def main() -> int:
     print(f"The Crawl Street Journal: {url}")
 
     # Start Flask in a daemon thread — the main thread drives the UI.
+    # ``run_server`` uses Werkzeug so /api/quit can call ``server.shutdown()``.
     flask_thread = threading.Thread(
-        target=app.run,
-        kwargs={"host": HOST, "port": port, "debug": False, "threaded": True},
+        target=run_server,
+        kwargs={"host": HOST, "port": port, "threaded": True},
         daemon=True,
     )
     flask_thread.start()
