@@ -1244,25 +1244,52 @@ def _extract_schema_specific(
     return result
 
 
-def _compute_extraction_coverage(page_row: Dict[str, Any]) -> str:
-    """Return the percentage of non-empty content fields in the row."""
-    _SKIP = {
-        "requested_url", "final_url", "domain", "http_status",
-        "content_type", "referrer_url", "depth", "discovered_at",
-        "http_last_modified", "etag", "sitemap_lastmod",
-        "referrer_sitemap_url",
-    }
+# Fields excluded from *both* coverage metrics (identifiers, transport, queue).
+_EXTRACTION_COVERAGE_SKIP_KEYS = frozenset({
+    "requested_url", "final_url", "domain", "http_status",
+    "content_type", "referrer_url", "depth", "discovered_at",
+    "http_last_modified", "etag", "sitemap_lastmod",
+    "referrer_sitemap_url",
+})
+
+# Sparse JSON-LD slots (Product, JobPosting, etc.) — omitted from *core* coverage
+# so the percentage reflects typical SEO / trust inventory, not e-commerce-only columns.
+_EXTRACTION_COVERAGE_OPTIONAL_SCHEMA_KEYS = frozenset({
+    "schema_price", "schema_currency", "schema_availability", "schema_rating",
+    "schema_review_count", "schema_event_date", "schema_event_location",
+    "schema_job_title", "schema_job_location", "schema_recipe_time",
+})
+
+
+def _pct_filled(keys_values: List[Tuple[str, Any]]) -> str:
     total = 0
     filled = 0
-    for key, val in page_row.items():
-        if key in _SKIP:
-            continue
+    for _key, val in keys_values:
         total += 1
         if val not in (None, "", 0, "0"):
             filled += 1
     if total == 0:
         return ""
     return str(round(filled / total * 100, 1))
+
+
+def _compute_extraction_coverage_full(page_row: Dict[str, Any]) -> str:
+    """Percentage of non-empty extractable columns (full row, all schema slots)."""
+    items = [
+        (k, v) for k, v in page_row.items()
+        if k not in _EXTRACTION_COVERAGE_SKIP_KEYS
+    ]
+    return _pct_filled(items)
+
+
+def _compute_extraction_coverage_core(page_row: Dict[str, Any]) -> str:
+    """Same as full, but excluding sparse schema.org-specific columns."""
+    items = [
+        (k, v) for k, v in page_row.items()
+        if k not in _EXTRACTION_COVERAGE_SKIP_KEYS
+        and k not in _EXTRACTION_COVERAGE_OPTIONAL_SCHEMA_KEYS
+    ]
+    return _pct_filled(items)
 
 
 def _assess_wcag_static(soup: BeautifulSoup, lang: str, title: str) -> dict:
@@ -1526,7 +1553,8 @@ def build_page_inventory_row(
         phase4=phase4,
     )
 
-    page_row["extraction_coverage_pct"] = _compute_extraction_coverage(page_row)
+    page_row["extraction_coverage_pct"] = _compute_extraction_coverage_full(page_row)
+    page_row["extraction_coverage_core_pct"] = _compute_extraction_coverage_core(page_row)
 
     tag_rows = [
         {

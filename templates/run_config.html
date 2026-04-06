@@ -193,6 +193,21 @@
       </div>
     </div>
 
+    <div class="form-grid" style="margin-top:12px;">
+      <div class="form-group">
+        <label class="form-label">HTTP max redirects</label>
+        <input type="number" name="http_max_redirects" value="{{ cfg.get('HTTP_MAX_REDIRECTS', 30) }}" min="1" max="1000">
+        <p class="field-explain">Stop after this many redirects (default matches Requests).</p>
+      </div>
+      <div class="form-group">
+        <div class="checkbox-row">
+          <input type="checkbox" name="http_verify_ssl" value="1" {% if cfg.get("HTTP_VERIFY_SSL", True) %}checked{% endif %}>
+          <label class="form-label" style="margin-bottom:0;">Verify TLS certificates</label>
+        </div>
+        <p class="field-explain">Turn off only for broken HTTPS (insecure).</p>
+      </div>
+    </div>
+
     <div class="form-grid">
       <div class="form-group">
         <label class="form-label">State save interval (pages)</label>
@@ -295,6 +310,10 @@
       <div class="checkbox-row">
         <input type="checkbox" name="check_outbound" value="1" {% if cfg.get("CHECK_OUTBOUND_LINKS", False) %}checked{% endif %}>
         <label class="form-label" style="margin-bottom:0;">Check outbound links for broken targets (slow at scale)</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" name="link_check_get_fallback" value="1" {% if cfg.get("LINK_CHECK_GET_FALLBACK", False) %}checked{% endif %}>
+        <label class="form-label" style="margin-bottom:0;">Outbound checks: GET fallback when HEAD fails or returns 403 / 405 / 501</label>
       </div>
       <div class="form-grid" style="margin-top:8px;">
         <div class="form-group">

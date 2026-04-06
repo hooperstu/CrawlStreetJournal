@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import xml.etree.ElementTree as ET
 from collections import deque
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin
 
 import requests
@@ -29,16 +29,23 @@ def _fetch_xml(
     url: str,
     user_agent: str = "",
     timeout: int = 0,
+    verify: Optional[bool] = None,
+    max_redirects: Optional[int] = None,
 ) -> str:
     ua = user_agent or config.USER_AGENT
     to = timeout or config.REQUEST_TIMEOUT_SECONDS
-    headers = {"User-Agent": ua}
-    resp = requests.get(
-        url,
-        headers=headers,
-        timeout=to,
-        allow_redirects=True,
-    )
+    v = config.HTTP_VERIFY_SSL if verify is None else verify
+    mr = config.HTTP_MAX_REDIRECTS if max_redirects is None else max_redirects
+    try:
+        mr = int(mr)
+    except (TypeError, ValueError):
+        mr = 30
+    mr = max(1, min(mr, 1000))
+    with requests.Session() as sess:
+        sess.verify = v
+        sess.max_redirects = mr
+        sess.headers.update({"User-Agent": ua})
+        resp = sess.get(url, timeout=to, allow_redirects=True)
     resp.raise_for_status()
     return resp.text
 
@@ -92,6 +99,9 @@ def collect_urls_from_sitemap(
     start_url: str,
     max_urls: int,
     visited_maps: Set[str] | None = None,
+    *,
+    http_verify: Optional[bool] = None,
+    http_max_redirects: Optional[int] = None,
 ) -> List[Tuple[str, str]]:
     """
     Recursively expand sitemap indexes up to *max_urls* page locations.
@@ -111,7 +121,11 @@ def collect_urls_from_sitemap(
             continue
         visited_maps.add(sm_url)
         try:
-            xml_text = _fetch_xml(sm_url)
+            xml_text = _fetch_xml(
+                sm_url,
+                verify=http_verify,
+                max_redirects=http_max_redirects,
+            )
         except Exception as e:
             logger.warning("Could not fetch sitemap %s: %s", sm_url, e)
             continue

@@ -151,6 +151,21 @@
     </div>
   </div>
 
+  <div class="form-grid" style="margin-top:12px;">
+    <div class="form-group">
+      <label class="form-label">HTTP max redirects</label>
+      <input type="number" name="http_max_redirects" value="{{ cfg.get('HTTP_MAX_REDIRECTS', 30) }}" min="1" max="1000">
+      <p class="field-explain">Stop after this many redirects (helps with broken chains; default matches Requests).</p>
+    </div>
+    <div class="form-group">
+      <div class="checkbox-row">
+        <input type="checkbox" name="http_verify_ssl" value="1" {% if cfg.get("HTTP_VERIFY_SSL", True) %}checked{% endif %}>
+        <label class="form-label" style="margin-bottom:0;">Verify TLS certificates</label>
+      </div>
+      <p class="field-explain">Turn off only for auditing hosts with broken HTTPS (insecure).</p>
+    </div>
+  </div>
+
   <div class="checkbox-row" style="margin-top:8px;">
     <input type="checkbox" name="respect_robots_txt" value="1" {% if cfg.get("RESPECT_ROBOTS_TXT", True) %}checked{% endif %}>
     <label class="form-label" style="margin-bottom:0;">Respect robots.txt rules</label>
@@ -240,6 +255,10 @@
     <div class="checkbox-row">
       <input type="checkbox" name="check_outbound" value="1" {% if cfg.get("CHECK_OUTBOUND_LINKS", False) %}checked{% endif %}>
       <label class="form-label" style="margin-bottom:0;">Check outbound links for broken targets (slow at scale)</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" name="link_check_get_fallback" value="1" {% if cfg.get("LINK_CHECK_GET_FALLBACK", False) %}checked{% endif %}>
+      <label class="form-label" style="margin-bottom:0;">Outbound checks: GET fallback when HEAD fails or returns 403 / 405 / 501</label>
     </div>
     <div class="checkbox-row">
       <input type="checkbox" name="render_javascript" value="1" {% if cfg.get("RENDER_JAVASCRIPT", False) %}checked{% endif %}>
