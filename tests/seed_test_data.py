@@ -96,6 +96,7 @@ def _make_page(
         "schema_job_location": schema_job_location,
         "schema_recipe_time": schema_recipe_time,
         "extraction_coverage_pct": "55.0",
+        "extraction_coverage_core_pct": "62.0",
         "referrer_url": "seed",
         "depth": str(depth),
         "discovered_at": "2025-03-15 10:00:00",
@@ -218,6 +219,7 @@ def seed():
         "http_status": "404",
         "word_count": "0",
         "extraction_coverage_pct": "5.0",
+        "extraction_coverage_core_pct": "8.0",
     })
 
     # Write pages CSV

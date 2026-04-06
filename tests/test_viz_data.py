@@ -93,6 +93,7 @@ SAMPLE_PAGES = [
         "breadcrumb_schema": "Home",
         "canonical_url": "https://example.com/",
         "extraction_coverage_pct": "55.0",
+        "extraction_coverage_core_pct": "60.0",
         "date_published": "2025-01-15",
         "date_modified": "2025-03-01",
         "schema_price": "",
@@ -146,6 +147,7 @@ SAMPLE_PAGES = [
         "breadcrumb_schema": "Home > Blog",
         "canonical_url": "https://example.com/blog",
         "extraction_coverage_pct": "42.0",
+        "extraction_coverage_core_pct": "48.0",
         "date_published": "2025-02-10",
         "date_modified": "",
         "schema_price": "",
@@ -199,6 +201,7 @@ SAMPLE_PAGES = [
         "breadcrumb_schema": "",
         "canonical_url": "https://shop.example.com/products/widget",
         "extraction_coverage_pct": "60.0",
+        "extraction_coverage_core_pct": "65.0",
         "date_published": "",
         "date_modified": "",
         "schema_price": "29.99",
@@ -299,6 +302,7 @@ def test_aggregate_domains_phase4_fields(tmp_path):
     assert ex["has_hreflang_pct"] == 50.0
     assert ex["has_feed_pct"] == 50.0
     assert ex["avg_extraction_coverage"] > 0
+    assert ex["avg_extraction_coverage_core"] > 0
 
 
 def test_aggregate_domains_with_filter(tmp_path):
@@ -394,6 +398,8 @@ def test_aggregate_page_depth_basic(tmp_path):
     q0 = next(q for q in result["depth_quality"] if q["depth"] == 0)
     assert q0["avg_words"] > 0
     assert q0["page_count"] == 2
+    assert "avg_coverage_core" in q0
+    assert q0["avg_coverage_core"] >= q0["avg_coverage"]
 
 
 def test_aggregate_page_depth_domain_breakdown(tmp_path):

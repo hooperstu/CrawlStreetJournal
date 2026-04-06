@@ -331,6 +331,8 @@ def _domain_accumulator_defaults(
         "schema_types": Counter(),
         "extraction_coverage_sum": 0.0,
         "extraction_coverage_n": 0,
+        "extraction_coverage_core_sum": 0.0,
+        "extraction_coverage_core_n": 0,
     }
 
 
@@ -444,6 +446,10 @@ def _accumulate_page_row(d: Dict[str, Any], r: Dict[str, str]) -> None:
     if cov > 0:
         d["extraction_coverage_sum"] += cov
         d["extraction_coverage_n"] += 1
+    cov_core = _safe_float(r.get("extraction_coverage_core_pct", ""))
+    if cov_core > 0:
+        d["extraction_coverage_core_sum"] += cov_core
+        d["extraction_coverage_core_n"] += 1
 
 
 def _domain_row_to_json(
@@ -512,6 +518,9 @@ def _domain_row_to_json(
         "robots_noindex_pct": round(d["robots_noindex_count"] / pc * 100, 1) if pc else 0,
         "schema_types": dict(d["schema_types"].most_common(20)),
         "avg_extraction_coverage": round(d["extraction_coverage_sum"] / d["extraction_coverage_n"], 1) if d["extraction_coverage_n"] else 0,
+        "avg_extraction_coverage_core": round(
+            d["extraction_coverage_core_sum"] / d["extraction_coverage_core_n"], 1,
+        ) if d["extraction_coverage_core_n"] else 0,
     }
 
 
@@ -1466,7 +1475,7 @@ def aggregate_page_depth(
         Dict with keys:
         - ``depth_histogram``: list of ``{depth, count}`` for each depth level.
         - ``depth_quality``: list of ``{depth, avg_words, avg_coverage,
-          avg_readability, page_count}`` for scatter / line overlay.
+          avg_coverage_core, avg_readability, page_count}`` for scatter / line overlay.
         - ``domain_depth``: top 30 domains with ``{domain, depths}`` where
           ``depths`` is a list of ``{depth, count}``.
     """
@@ -1479,6 +1488,7 @@ def aggregate_page_depth(
     depth_counts: Counter = Counter()
     depth_words: Dict[int, List[int]] = defaultdict(list)
     depth_coverage: Dict[int, List[float]] = defaultdict(list)
+    depth_coverage_core: Dict[int, List[float]] = defaultdict(list)
     depth_readability: Dict[int, List[float]] = defaultdict(list)
     domain_depth: Dict[str, Counter] = defaultdict(Counter)
 
@@ -1489,6 +1499,9 @@ def aggregate_page_depth(
         cov = _safe_float(r.get("extraction_coverage_pct", "0"))
         if cov > 0:
             depth_coverage[d].append(cov)
+        cov_c = _safe_float(r.get("extraction_coverage_core_pct", "0"))
+        if cov_c > 0:
+            depth_coverage_core[d].append(cov_c)
         rk = _safe_float(r.get("readability_fk_grade", ""))
         if rk > 0:
             depth_readability[d].append(rk)
@@ -1506,11 +1519,13 @@ def aggregate_page_depth(
     for d in range(0, max_depth + 1):
         words = depth_words.get(d, [])
         covs = depth_coverage.get(d, [])
+        covs_c = depth_coverage_core.get(d, [])
         reads = depth_readability.get(d, [])
         depth_quality.append({
             "depth": d,
             "avg_words": round(sum(words) / len(words)) if words else 0,
             "avg_coverage": round(sum(covs) / len(covs), 1) if covs else 0,
+            "avg_coverage_core": round(sum(covs_c) / len(covs_c), 1) if covs_c else 0,
             "avg_readability": round(sum(reads) / len(reads), 1) if reads else 0,
             "page_count": depth_counts.get(d, 0),
         })
