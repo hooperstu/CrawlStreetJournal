@@ -90,6 +90,14 @@ REQUEST_DELAY_SECONDS = (3, 5)
 REQUEST_TIMEOUT_SECONDS = 20
 MAX_RETRIES = 3
 
+# HTTP client behaviour (requests / urllib3).
+# Max redirects per request (default was 30 in Requests). Increase only when
+# a site has an unusually long but finite redirect chain.
+HTTP_MAX_REDIRECTS = 30
+# Verify TLS certificates. Set False only for trusted auditing of hosts with
+# broken chains (vulnerable to MITM — use with care).
+HTTP_VERIFY_SSL = True
+
 # Number of concurrent fetch workers. 1 = sequential (safest / most polite).
 # Higher values fetch multiple pages in parallel across different domains.
 # Per-domain rate limiting is still enforced regardless of worker count.
@@ -145,6 +153,9 @@ CHECK_OUTBOUND_LINKS = False
 LINK_CHECKS_CSV = "link_checks.csv"
 MAX_LINK_CHECKS_PER_PAGE = 50
 LINK_CHECK_DELAY_SECONDS = 0.5
+# If HEAD fails or returns 403/405/501, try a small ranged GET to obtain a
+# status (many sites block HEAD). Slightly heavier than HEAD-only.
+LINK_CHECK_GET_FALLBACK = False
 
 # ── JAVASCRIPT RENDERING (optional) ──────────────────────────────────
 # When True, the crawler fetches pages via a headless Chromium browser
@@ -275,6 +286,8 @@ class CrawlConfig:
     REQUEST_DELAY_SECONDS: Union[float, Tuple[float, float]] = (3, 5)
     REQUEST_TIMEOUT_SECONDS: int = 20
     MAX_RETRIES: int = 3
+    HTTP_MAX_REDIRECTS: int = 30
+    HTTP_VERIFY_SSL: bool = True
     CONCURRENT_WORKERS: int = 1
     STATE_SAVE_INTERVAL: int = 10
     CONTENT_DEDUP: bool = True
@@ -289,6 +302,7 @@ class CrawlConfig:
     CHECK_OUTBOUND_LINKS: bool = False
     MAX_LINK_CHECKS_PER_PAGE: int = 50
     LINK_CHECK_DELAY_SECONDS: float = 0.5
+    LINK_CHECK_GET_FALLBACK: bool = False
     CAPTURE_READABILITY: bool = True
     RENDER_JAVASCRIPT: bool = False
     ALLOWED_DOMAINS: Union[tuple, list] = ()

@@ -198,6 +198,7 @@ def test_build_page_row_includes_new_fields():
     assert "microdata_types" in row
     assert "rdfa_types" in row
     assert "extraction_coverage_pct" in row
+    assert "extraction_coverage_core_pct" in row
 
 
 # ── Phase 4 tests ─────────────────────────────────────────────────────────
@@ -501,7 +502,11 @@ def test_extraction_coverage():
         discovered_at="2025-01-01 00:00:00",
     )
     pct = float(row["extraction_coverage_pct"])
+    pct_core = float(row["extraction_coverage_core_pct"])
     assert 0 < pct <= 100
+    assert 0 < pct_core <= 100
+    # Core omits sparse schema slots, so it is usually >= full when those slots are empty.
+    assert pct_core >= pct
 
 
 def test_build_page_row_phase4_fields():

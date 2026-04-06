@@ -271,7 +271,7 @@
    *
    * Features: zoom/pan, node-click selection with 2-hop
    * neighbourhood highlighting, detail overlay panel, and a
-   * colour-by dropdown (ownership / CMS / extraction coverage).
+   * colour-by dropdown (ownership / CMS / extraction coverage full or core).
    */
   VIZ.network = function () {
     // Fast lookup from domain string to its full summary object,
@@ -515,11 +515,15 @@
 
         var detail = domainLookup[d.id] || {};
         var stats = document.getElementById("ndo-stats");
+        var covFull = detail.avg_extraction_coverage;
+        var covCore = detail.avg_extraction_coverage_core;
         var statItems = [
           { val: fmt(d.pages), label: "Pages" },
           { val: fmt(primary.size), label: "Connections" },
           { val: detail.error_count !== undefined ? fmt(detail.error_count) : "–", label: "Errors" },
           { val: detail.avg_word_count ? fmt(detail.avg_word_count) : "–", label: "Avg words" },
+          { val: covFull !== undefined && covFull !== null ? covFull.toFixed(1) + "%" : "–", label: "Coverage (full)" },
+          { val: covCore !== undefined && covCore !== null ? covCore.toFixed(1) + "%" : "–", label: "Coverage (core)" },
           { val: detail.max_depth !== undefined ? detail.max_depth : "–", label: "Max depth" },
           { val: detail.total_assets ? fmt(detail.total_assets) : "–", label: "Assets" }
         ];
@@ -613,6 +617,7 @@
         var detail = domainLookup[d.id] || {};
         if (mode === "cms") return CMS_COLOURS[detail.cms_generator || "(undetected)"] || "#5A5246";
         if (mode === "coverage") return covScale(detail.avg_extraction_coverage || 0);
+        if (mode === "coverage_core") return covScale(detail.avg_extraction_coverage_core || 0);
         return ownerColour(d.ownership);
       }
 
@@ -624,7 +629,7 @@
           buildLegend("legend-network", Object.keys(CMS_COLOURS).map(function (k) {
             return { label: k, colour: CMS_COLOURS[k] };
           }));
-        } else if (mode === "coverage") {
+        } else if (mode === "coverage" || mode === "coverage_core") {
           buildLegend("legend-network", [
             { label: "High coverage", colour: covScale(90) },
             { label: "Medium", colour: covScale(50) },
@@ -1563,7 +1568,8 @@
             (d.top_publishers && d.top_publishers.length ? 33 : 0) +
             (d.date_count > 0 ? 34 : 0)
           ) / 100),
-          extractionCoverage: (d.avg_extraction_coverage || 0) / 100
+          extractionCoverage: (d.avg_extraction_coverage || 0) / 100,
+          extractionCoverageCore: (d.avg_extraction_coverage_core || 0) / 100
         };
       });
 
@@ -1576,7 +1582,8 @@
         { key: "freshness",      label: "Content Freshness", tip: function (d) { return d.latest_date ? "Last updated " + d.latest_date : "No date metadata"; } },
         { key: "structuredData", label: "Structured Data", tip: function (d) { return (d.has_json_ld_pct || 0).toFixed(0) + "% JSON-LD, " + (d.has_microdata_pct || 0).toFixed(0) + "% Microdata"; } },
         { key: "metadataCompleteness", label: "Metadata Depth", tip: function (d) { return (d.top_authors && d.top_authors.length ? "Has authors" : "No authors") + ", " + (d.top_publishers && d.top_publishers.length ? "has publisher" : "no publisher"); } },
-        { key: "extractionCoverage", label: "Extraction Coverage", tip: function (d) { return (d.avg_extraction_coverage || 0).toFixed(1) + "% avg fields populated"; } }
+        { key: "extractionCoverage", label: "Coverage (full)", tip: function (d) { return (d.avg_extraction_coverage || 0).toFixed(1) + "% all extractable columns"; } },
+        { key: "extractionCoverageCore", label: "Coverage (core)", tip: function (d) { return (d.avg_extraction_coverage_core || 0).toFixed(1) + "% excl. sparse schema slots"; } }
       ];
 
       // Colour by index in the eligible array so each domain keeps
@@ -1811,7 +1818,8 @@
         { key: "total_assets", label: "Assets" },
         { key: "avg_internal_links", label: "Int Links" },
         { key: "avg_external_links", label: "Ext Links" },
-        { key: "avg_extraction_coverage", label: "Coverage %" },
+        { key: "avg_extraction_coverage", label: "Cov. % (full)" },
+        { key: "avg_extraction_coverage_core", label: "Cov. % (core)" },
         { key: "has_json_ld_pct", label: "JSON-LD %" },
         { key: "has_microdata_pct", label: "Microdata %" }
       ];
@@ -3660,7 +3668,8 @@
           var tip = "<strong>Depth " + d.depth + "</strong><br>" + fmt(d.count) + " pages (" + pct + "%)";
           if (q) {
             tip += "<br>Avg words: " + fmt(q.avg_words) +
-              "<br>Coverage: " + q.avg_coverage + "%" +
+              "<br>Coverage (full): " + q.avg_coverage + "%" +
+              "<br>Coverage (core): " + (q.avg_coverage_core !== undefined ? q.avg_coverage_core : "–") + "%" +
               "<br>Readability: " + q.avg_readability;
           }
           var doms = domDepth.filter(function (dd) {
@@ -3744,7 +3753,8 @@
       var overlaySelect = document.getElementById("pagedepth-overlay");
       var overlayMap = {
         words: { metric: "avg_words", colour: "#C4841D", label: "Avg Words", unit: "" },
-        coverage: { metric: "avg_coverage", colour: "#1565c0", label: "Coverage", unit: "%" },
+        coverage: { metric: "avg_coverage", colour: "#1565c0", label: "Coverage (full)", unit: "%" },
+        coverage_core: { metric: "avg_coverage_core", colour: "#2e7d32", label: "Coverage (core)", unit: "%" },
         readability: { metric: "avg_readability", colour: "#A4243B", label: "Readability", unit: "" }
       };
       function applyOverlay() {

@@ -138,6 +138,7 @@ PAGES_FIELDS = (
     "schema_job_location",
     "schema_recipe_time",
     "extraction_coverage_pct",
+    "extraction_coverage_core_pct",
     "content_hash",
     "content_changed",
     # common
@@ -181,6 +182,7 @@ LINK_CHECK_FIELDS = (
     "to_url",
     "check_status",
     "check_final_url",
+    "check_message",
     "discovered_at",
 )
 
@@ -554,6 +556,8 @@ _SNAPSHOT_KEYS = (
     "REQUEST_DELAY_SECONDS",
     "REQUEST_TIMEOUT_SECONDS",
     "MAX_RETRIES",
+    "HTTP_MAX_REDIRECTS",
+    "HTTP_VERIFY_SSL",
     "CONCURRENT_WORKERS",
     "STATE_SAVE_INTERVAL",
     "CONTENT_DEDUP",
@@ -568,6 +572,7 @@ _SNAPSHOT_KEYS = (
     "CHECK_OUTBOUND_LINKS",
     "MAX_LINK_CHECKS_PER_PAGE",
     "LINK_CHECK_DELAY_SECONDS",
+    "LINK_CHECK_GET_FALLBACK",
     "CAPTURE_READABILITY",
     "RENDER_JAVASCRIPT",
     "ALLOWED_DOMAINS",
@@ -617,6 +622,7 @@ def apply_run_config(cfg: Dict[str, Any]) -> None:
     _INT_KEYS = {
         "MAX_PAGES_TO_CRAWL", "MAX_SITEMAP_URLS", "MAX_RETRIES",
         "STATE_SAVE_INTERVAL", "MAX_LINK_CHECKS_PER_PAGE",
+        "HTTP_MAX_REDIRECTS",
     }
     _FLOAT_KEYS = {
         "REQUEST_TIMEOUT_SECONDS", "HEAD_TIMEOUT_SECONDS",

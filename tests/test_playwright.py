@@ -296,7 +296,8 @@ class TestApiDomains:
         data = _get_json(page, _api("/api/viz/domains"))
         d = data[0]
         for key in ("domain", "ownership", "page_count", "content_kinds",
-                     "cms_generator", "avg_extraction_coverage"):
+                     "cms_generator", "avg_extraction_coverage",
+                     "avg_extraction_coverage_core"):
             assert key in d, f"Missing field: {key}"
 
     def test_domains_page_counts_match(self, page):
@@ -315,7 +316,8 @@ class TestApiDomains:
         d = data[0]
         phase4 = ["has_json_ld_pct", "has_microdata_pct", "has_rdfa_pct",
                    "has_hreflang_pct", "has_feed_pct", "schema_types",
-                   "avg_extraction_coverage", "top_authors", "top_publishers"]
+                   "avg_extraction_coverage", "avg_extraction_coverage_core",
+                   "top_authors", "top_publishers"]
         for key in phase4:
             assert key in d, f"Missing Phase 4 field: {key}"
 

@@ -81,8 +81,10 @@ The crawl engine orchestrates fetching, scope enforcement, rate limiting, and ou
 
 | Function | Purpose |
 |----------|---------|
-| `fetch_page(url, cfg)` | HTTP GET with exponential backoff retries. Returns `(body, status, final_url, content_type, response_meta, error_detail)`. Captures `Last-Modified`, `ETag`, `X-Robots-Tag`, `Server`, `X-Powered-By` headers. |
-| `head_asset(url, cfg)` | HTTP HEAD for asset metadata. Returns `(content_type, content_length)`. |
+| `fetch_page(url, cfg)` | HTTP GET via a configured `requests.Session` (see `HTTP_VERIFY_SSL`, `HTTP_MAX_REDIRECTS`) with exponential backoff retries. Returns `(body, status, final_url, content_type, response_meta, error_detail)`. Captures `Last-Modified`, `ETag`, `X-Robots-Tag`, `Server`, `X-Powered-By` headers when enabled. |
+| `head_asset(url, cfg)` | HTTP HEAD for asset metadata with the same TLS/redirect settings. Returns `(content_type, content_length)`. |
+| `_http_session(cfg)` | Builds a session: `verify` from `HTTP_VERIFY_SSL`, `max_redirects` from `HTTP_MAX_REDIRECTS` (clamped 1–1000). Logs a one-time warning if verification is disabled. |
+| `_check_outbound_links(...)` | HEAD-checks unique outbound targets (up to `MAX_LINK_CHECKS_PER_PAGE`). Writes `check_message` on failure; optional `LINK_CHECK_GET_FALLBACK` retries with a small ranged GET after HEAD errors or HTTP 403/405/501. |
 
 #### Content deduplication
 
@@ -202,7 +204,8 @@ Extracts metadata from raw HTML. Organised in extraction phases.
 | `_extract_microdata(soup)` | Top-level Microdata `itemscope` types. |
 | `_extract_rdfa_types(soup)` | RDFa `typeof` values. |
 | `_extract_schema_specific(soup)` | Domain-specific fields: Product (price, currency, availability, rating, reviews), Event (date, location), JobPosting (title, location), Recipe (time). |
-| `_compute_extraction_coverage(page_row)` | Percentage of non-empty content fields. |
+| `_compute_extraction_coverage_full(page_row)` | Percentage of non-empty extractable columns (full row, including sparse schema.org slots). |
+| `_compute_extraction_coverage_core(page_row)` | Same, but excludes optional Product/Event/Job/Recipe-specific schema columns so the figure reflects typical SEO/trust inventory. |
 
 #### Link extraction
 
@@ -436,6 +439,8 @@ All configuration is defined as module-level constants with a `CrawlConfig` data
 | `REQUEST_DELAY_SECONDS` | (3, 5) | Random delay between requests |
 | `REQUEST_TIMEOUT_SECONDS` | 20 | Per-request timeout |
 | `MAX_RETRIES` | 3 | Retries on transient errors |
+| `HTTP_MAX_REDIRECTS` | 30 | Maximum redirects per request (Requests default) |
+| `HTTP_VERIFY_SSL` | True | Verify TLS certificates (`False` is insecure — for broken-chain audits only) |
 | `CONCURRENT_WORKERS` | 1 | Parallel fetch workers |
 | `STATE_SAVE_INTERVAL` | 10 | Persist `_state.json` every N pages |
 
@@ -449,6 +454,7 @@ All configuration is defined as module-level constants with a `CrawlConfig` data
 | `RESPECT_ROBOTS_TXT` | True | Obey robots.txt |
 | `CAPTURE_READABILITY` | True | Flesch-Kincaid grade level |
 | `CHECK_OUTBOUND_LINKS` | False | HEAD-check outbound targets |
+| `LINK_CHECK_GET_FALLBACK` | False | After failed HEAD or 403/405/501, try a small ranged GET for status |
 | `WRITE_EDGES_CSV` | True | Write `edges.csv` link graph |
 | `WRITE_TAGS_CSV` | True | Write `tags.csv` per-tag rows |
 | `WRITE_SITEMAP_URLS_CSV` | True | Write `sitemap_urls.csv` |
