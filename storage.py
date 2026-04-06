@@ -7,6 +7,9 @@ and crawl-state persistence for resume.
 
 Run directory layout
 --------------------
+Project directory may also contain ``_discovered_sitemaps.json`` (cached
+seed/sitemap discovery when ``SITEMAP_DISCOVERY_MODE`` is ``reuse``).
+
 Each crawl run lives in a timestamped subfolder under the project's
 ``runs/`` directory::
 
@@ -572,6 +575,7 @@ _SNAPSHOT_KEYS = (
     "SEED_URLS",
     "SITEMAP_URLS",
     "LOAD_SITEMAPS_FROM_ROBOTS",
+    "SITEMAP_DISCOVERY_MODE",
     "RESPECT_ROBOTS_TXT",
     "MAX_SITEMAP_URLS",
     "MAX_PAGES_TO_CRAWL",
@@ -690,6 +694,50 @@ def get_project_dir(slug: str) -> str:
 
 def get_project_runs_dir(slug: str) -> str:
     return os.path.join(config.PROJECTS_DIR, slug, "runs")
+
+
+_DISCOVERED_SITEMAPS_NAME = "_discovered_sitemaps.json"
+
+
+def discovered_sitemaps_cache_path(slug: str) -> str:
+    """Path to cached seed/sitemap discovery for *reuse* mode."""
+    return os.path.join(get_project_dir(slug), _DISCOVERED_SITEMAPS_NAME)
+
+
+def load_discovered_sitemaps_cache(slug: str) -> Optional[Dict[str, Any]]:
+    """Load cached ``(items, sitemap_meta)`` fingerprint bundle, or ``None``."""
+    path = discovered_sitemaps_cache_path(slug)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning("Could not read sitemap discovery cache %s: %s", path, e)
+        return None
+
+
+def save_discovered_sitemaps_cache(
+    slug: str,
+    fingerprint: str,
+    items: List[tuple],
+    sitemap_meta: Dict[str, Dict[str, str]],
+) -> None:
+    """Persist discovery results for :func:`scraper.collect_start_items` reuse mode."""
+    path = discovered_sitemaps_cache_path(slug)
+    base = os.path.dirname(path)
+    os.makedirs(base, exist_ok=True)
+    payload = {
+        "fingerprint": fingerprint,
+        "items": [list(t) for t in items],
+        "sitemap_meta": sitemap_meta,
+    }
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        logger.info("Wrote sitemap discovery cache: %s (%d URLs)", path, len(items))
+    except Exception as e:
+        logger.warning("Could not write sitemap discovery cache %s: %s", path, e)
 
 
 def create_project(name: str, description: str = "") -> str:
