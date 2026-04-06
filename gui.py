@@ -35,14 +35,14 @@ Project pages::
     GET  /p/<slug>/defaults                       View project defaults.
     POST /p/<slug>/defaults                       Save project defaults.
     GET  /p/<slug>/runs                           List runs.
-    POST /p/<slug>/runs/create                    Create a new run.
+    POST /p/<slug>/runs/create                    Create a new run (optional continue_from).
 
 Run pages::
 
     GET  /p/<slug>/runs/<run>/config              View run config.
     POST /p/<slug>/runs/<run>/config              Save run config.
     GET  /p/<slug>/runs/<run>/monitor             Live crawl monitor.
-    POST /p/<slug>/runs/<run>/start               Start / auto-resume crawl.
+    POST /p/<slug>/runs/<run>/start               Start / auto-resume crawl (optional continue_from).
     POST /p/<slug>/runs/<run>/resume              Explicitly resume crawl.
     POST /p/<slug>/runs/<run>/stop                Signal crawl to stop.
     GET  /p/<slug>/runs/<run>/results             Results dashboard.
@@ -286,6 +286,7 @@ def _run_crawl(
     run_folder: Optional[str] = None,
     run_name: Optional[str] = None,
     resume: bool = False,
+    continue_from_run: Optional[str] = None,
 ) -> None:
     """Execute a crawl inside a worker thread.
 
@@ -351,6 +352,26 @@ def _run_crawl(
             run_folder or "(new)",
             resume,
         )
+        visited_seed = None
+        if run_folder and not resume and continue_from_run:
+            prior_dir = os.path.join(
+                storage_module.get_project_runs_dir(project_slug),
+                continue_from_run,
+            )
+            if os.path.isdir(prior_dir):
+                visited_seed = scraper.visited_keys_from_prior_run(prior_dir)
+                logging.info(
+                    "Continue-from: %d URL(s) from run %s will be skipped if re-queued",
+                    len(visited_seed),
+                    continue_from_run,
+                )
+                if on_phase and visited_seed:
+                    on_phase(
+                        "crawling",
+                        "Continuing from prior run — %s URLs treated as already crawled"
+                        % f"{len(visited_seed):,}",
+                    )
+
         pages, assets = scraper.crawl(
             on_progress=on_progress,
             on_phase=on_phase,
@@ -359,6 +380,7 @@ def _run_crawl(
             run_name=run_name,
             run_folder=run_folder,
             resume=resume,
+            visited_seed=visited_seed,
             cfg=slot.cfg,
             ctx=slot.ctx,
         )
@@ -383,6 +405,7 @@ def _start_crawl_thread(
     run_folder: Optional[str] = None,
     run_name: Optional[str] = None,
     resume: bool = False,
+    continue_from_run: Optional[str] = None,
 ) -> bool:
     """Spin up a daemon thread to crawl *project_slug*.
 
@@ -396,6 +419,9 @@ def _start_crawl_thread(
         run_folder: Name of an existing ``run_*`` directory, or ``None``.
         run_name: Human-friendly label stored alongside the run.
         resume: If ``True``, resume from the last checkpoint.
+        continue_from_run: When starting a **new** crawl (``resume`` is ``False``),
+            optional prior ``run_*`` folder name; URLs already in that run's CSVs
+            are not fetched again if re-seeded.
 
     Returns:
         ``True`` if the crawl was started, ``False`` if one was already active.
@@ -414,6 +440,18 @@ def _start_crawl_thread(
             # Overlay the run's saved settings onto the baseline; any keys
             # absent from the saved dict fall back to the module defaults.
             cfg = CrawlConfig.from_dict(saved, base=cfg)
+    if continue_from_run and not resume and run_folder:
+        prior_dir = os.path.join(runs_dir, continue_from_run)
+        cur_dir = os.path.join(runs_dir, run_folder)
+        if (
+            os.path.isdir(prior_dir)
+            and os.path.isdir(cur_dir)
+            and os.path.realpath(prior_dir) != os.path.realpath(cur_dir)
+        ):
+            prior_saved = storage_module.load_run_config(prior_dir)
+            if prior_saved:
+                cfg = CrawlConfig.from_dict(prior_saved, base=cfg)
+                storage_module.save_run_config(cur_dir, cfg.to_dict())
     # Force output into the project-specific runs directory regardless of
     # what the module-level OUTPUT_DIR says.
     cfg.OUTPUT_DIR = runs_dir
@@ -444,7 +482,12 @@ def _start_crawl_thread(
     t = threading.Thread(
         target=_run_crawl,
         args=(slot, project_slug),
-        kwargs=dict(run_folder=run_folder, run_name=run_name, resume=resume),
+        kwargs=dict(
+            run_folder=run_folder,
+            run_name=run_name,
+            resume=resume,
+            continue_from_run=continue_from_run,
+        ),
         daemon=True,
     )
     slot.thread = t
@@ -458,6 +501,49 @@ def _start_crawl_thread(
 
     t.start()
     return True
+
+
+def _resolve_continue_from(slug: str, run_name: str, form_value: str) -> Optional[str]:
+    """Validate *continue_from* form value: must name another ``run_*`` folder in this project."""
+    v = (form_value or "").strip()
+    if not v or v == run_name:
+        return None
+    if not v.startswith("run_"):
+        return None
+    base = _runs_dir(slug)
+    if v not in os.listdir(base):
+        return None
+    full = os.path.join(base, v)
+    if not os.path.isdir(full):
+        return None
+    return v
+
+
+def _resolve_continue_from_create(slug: str, form_value: str) -> Optional[str]:
+    """Like :func:`_resolve_continue_from` but the new run folder does not exist yet."""
+    v = (form_value or "").strip()
+    if not v:
+        return None
+    if not v.startswith("run_"):
+        return None
+    base = _runs_dir(slug)
+    if v not in os.listdir(base):
+        return None
+    full = os.path.join(base, v)
+    if not os.path.isdir(full):
+        return None
+    return v
+
+
+def _read_continue_from_marker(run_dir: str) -> str:
+    p = os.path.join(run_dir, ".continue_from")
+    if not os.path.isfile(p):
+        return ""
+    try:
+        with open(p, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
 
 
 # ── CSV / metrics helpers ────────────────────────────────────────────────
@@ -1097,12 +1183,17 @@ def create_run_route(slug: str):
 
     Form fields:
         run_name: Optional human-friendly label for the new run.
+        continue_from: Optional ``run_*`` folder — copy config and skip URLs
+            already crawled in that run when you first start the new run.
     """
     defaults = storage_module.load_project_defaults(slug) or storage_module.snapshot_config()
     cfg = config.CrawlConfig.from_dict(defaults)
     ctx = storage_module.StorageContext(_runs_dir(slug), cfg)
     name = request.form.get("run_name", "").strip() or None
-    folder = ctx.create_run(name)
+    continue_from = _resolve_continue_from_create(
+        slug, request.form.get("continue_from", "")
+    )
+    folder = ctx.create_run(name, continue_from_folder=continue_from)
     return redirect(url_for("run_config", slug=slug, run_name=folder))
 
 
@@ -1123,11 +1214,25 @@ def run_config(slug: str, run_name: str):
     cfg = storage_module.load_run_config(run_dir) or storage_module.snapshot_config()
     friendly = storage_module._read_run_name(run_dir) or ""
     run_st = storage_module.get_run_status(run_dir)
+    continue_from_marker = _read_continue_from_marker(run_dir)
+    other_runs: List[Dict[str, str]] = []
+    base = _runs_dir(slug)
+    if os.path.isdir(base):
+        for n in sorted(os.listdir(base), reverse=True):
+            if not n.startswith("run_") or n == run_name:
+                continue
+            full = os.path.join(base, n)
+            if not os.path.isdir(full):
+                continue
+            fn = storage_module._read_run_name(full) or ""
+            other_runs.append({"name": n, "label": fn or n})
     return render_template(
         "run_config.html",
         project=project, run_name=run_name,
         friendly_name=friendly, cfg=cfg, run_status=run_st,
         status=_project_status(slug),
+        continue_from_marker=continue_from_marker,
+        other_runs=other_runs,
     )
 
 
@@ -1226,7 +1331,21 @@ def start_run_route(slug: str, run_name: str):
     run_dir = _run_dir(slug, run_name)
     rs = storage_module.get_run_status(run_dir)
     resume = rs == "interrupted"
-    _start_crawl_thread(slug, run_folder=run_name, resume=resume)
+    continue_from = None
+    if not resume:
+        raw_cf = request.form.get("continue_from", "").strip()
+        if raw_cf:
+            continue_from = _resolve_continue_from(slug, run_name, raw_cf)
+        elif _read_continue_from_marker(run_dir):
+            continue_from = _resolve_continue_from(
+                slug, run_name, _read_continue_from_marker(run_dir)
+            )
+    _start_crawl_thread(
+        slug,
+        run_folder=run_name,
+        resume=resume,
+        continue_from_run=continue_from,
+    )
     return redirect(url_for("run_monitor", slug=slug, run_name=run_name))
 
 
