@@ -57,6 +57,9 @@ SSE streams (consumed by the front-end JavaScript)::
     GET  /api/progress/<slug>                     Crawl progress events.
     GET  /api/logs                                Global log tail.
 
+``/api/progress`` JSON includes ``concurrent_workers``, ``active_worker_urls``
+(one slot per parallel worker), and ``draining_workers`` when applicable.
+
 Desktop / loopback only::
 
     POST /api/quit                                Graceful shutdown (stop crawls, exit app).
@@ -150,6 +153,9 @@ _EMPTY_STATUS: Dict[str, Any] = {
     "project_slug": "",
     "phase": "",
     "phase_detail": "",
+    "concurrent_workers": 1,
+    "active_worker_urls": [],
+    "draining_workers": 0,
 }
 
 
@@ -202,10 +208,22 @@ _shutdown_lock = threading.Lock()
 def _signal_all_crawls_stop() -> None:
     """Ask every active crawl to stop cooperatively (same as the per-run Stop button)."""
     with _crawls_lock:
-        slots = list(_active_crawls.values())
-    for slot in slots:
+        items = list(_active_crawls.items())
+    for slug, slot in items:
         slot.stop_event.set()
         slot.status["stopping"] = True
+        urls = slot.status.get("active_worker_urls") or []
+        busy = [u for u in urls if u]
+        logging.info(
+            "Quit: signalling crawl to stop (project=%s, run=%s, %d worker URL(s) still active)",
+            slug,
+            slot.status.get("run_folder") or "",
+            len(busy),
+        )
+        if busy:
+            for i, u in enumerate(urls):
+                if u:
+                    logging.info("  Worker %d: %s", i + 1, u)
 
 
 def run_server(host: str, port: int, threaded: bool = True) -> None:
@@ -321,6 +339,11 @@ def _run_crawl(
         label = phase.replace("_", " ")
         logging.info("[crawl:%s] %s", label, detail)
 
+    def on_worker_urls(urls: List[str]) -> None:
+        """Parallel/sequential worker slot → URL currently being fetched (\"\" = idle)."""
+        slot.status["active_worker_urls"] = list(urls)
+        slot.status["draining_workers"] = len([u for u in urls if u])
+
     try:
         logging.info(
             "Crawl thread started (project=%s, run=%s, resume=%s)",
@@ -331,6 +354,7 @@ def _run_crawl(
         pages, assets = scraper.crawl(
             on_progress=on_progress,
             on_phase=on_phase,
+            on_worker_urls=on_worker_urls,
             should_stop=lambda: slot.stop_event.is_set(),
             run_name=run_name,
             run_folder=run_folder,
@@ -395,11 +419,15 @@ def _start_crawl_thread(
     cfg.OUTPUT_DIR = runs_dir
     ctx = StorageContext(runs_dir, cfg)
 
+    _workers_n = max(1, cfg.CONCURRENT_WORKERS)
     status: Dict[str, Any] = dict(
         _EMPTY_STATUS,
         running=True,
         run_folder=run_folder or "",
         project_slug=project_slug,
+        concurrent_workers=_workers_n,
+        active_worker_urls=[""] * _workers_n,
+        draining_workers=0,
     )
 
     stop_event = threading.Event()
@@ -1230,6 +1258,17 @@ def stop_run_route(slug: str, run_name: str):
             return redirect(url_for("run_monitor", slug=slug, run_name=run_name))
         slot.stop_event.set()
         slot.status["stopping"] = True
+        urls = slot.status.get("active_worker_urls") or []
+        busy = [u for u in urls if u]
+        logging.info(
+            "Stop crawl requested (project=%s, run=%s, %d worker URL(s) still active)",
+            slug,
+            run_name,
+            len(busy),
+        )
+        for i, u in enumerate(urls):
+            if u:
+                logging.info("  Worker %d: %s", i + 1, u)
     return redirect(url_for("run_monitor", slug=slug, run_name=run_name))
 
 
