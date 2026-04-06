@@ -34,6 +34,7 @@ Key entry points:
 from __future__ import annotations
 
 import hashlib
+import json
 import heapq
 import logging
 import os
@@ -621,6 +622,25 @@ def head_asset(url: str, cfg: Optional[CrawlConfig] = None) -> Tuple[str, str]:
 
 # ── Sitemap helpers ───────────────────────────────────────────────────────
 
+
+def _discovery_fingerprint(cfg: Optional[CrawlConfig]) -> str:
+    """Stable hash of settings that affect seed/sitemap discovery (for reuse cache)."""
+    _seeds = cfg.SEED_URLS if cfg else config.SEED_URLS
+    _sitemaps = cfg.SITEMAP_URLS if cfg else config.SITEMAP_URLS
+    _load = cfg.LOAD_SITEMAPS_FROM_ROBOTS if cfg else config.LOAD_SITEMAPS_FROM_ROBOTS
+    _max = cfg.MAX_SITEMAP_URLS if cfg else config.MAX_SITEMAP_URLS
+    blob = json.dumps(
+        {
+            "seeds": sorted(_seeds),
+            "sitemaps": sorted(_sitemaps),
+            "load_robots": _load,
+            "max_sitemap_urls": _max,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
 def _sitemaps_from_robots(
     origin: str, cfg: Optional[CrawlConfig] = None,
 ) -> List[str]:
@@ -645,6 +665,7 @@ def collect_start_items(
     cfg: Optional[CrawlConfig] = None,
     ctx: Optional[StorageContext] = None,
     on_phase: Optional[Callable[[str, str], None]] = None,
+    project_slug: Optional[str] = None,
 ) -> Tuple[List[Tuple[str, str]], Dict[str, Dict[str, str]]]:
     """
     Return ``(items, sitemap_meta)`` where *items* is a de-duplicated list
@@ -655,15 +676,43 @@ def collect_start_items(
     _sitemaps = cfg.SITEMAP_URLS if cfg else config.SITEMAP_URLS
     _max_sm = cfg.MAX_SITEMAP_URLS if cfg else config.MAX_SITEMAP_URLS
     _load_robots = cfg.LOAD_SITEMAPS_FROM_ROBOTS if cfg else config.LOAD_SITEMAPS_FROM_ROBOTS
+    _mode = (cfg.SITEMAP_DISCOVERY_MODE if cfg else config.SITEMAP_DISCOVERY_MODE) or "refresh"
+    _mode = str(_mode).strip().lower()
+    if _mode not in ("refresh", "reuse"):
+        _mode = "refresh"
 
     logger.info(
         "Seed/sitemap discovery: %d seed URL(s), %d configured sitemap(s), "
-        "LOAD_SITEMAPS_FROM_ROBOTS=%s, MAX_SITEMAP_URLS=%s",
+        "LOAD_SITEMAPS_FROM_ROBOTS=%s, MAX_SITEMAP_URLS=%s, SITEMAP_DISCOVERY_MODE=%s",
         len(_seeds),
         len(_sitemaps),
         _load_robots,
         _max_sm,
+        _mode,
     )
+
+    if project_slug and _mode == "reuse":
+        fp = _discovery_fingerprint(cfg)
+        cached = storage.load_discovered_sitemaps_cache(project_slug)
+        if cached and cached.get("fingerprint") == fp:
+            raw_items = cached.get("items") or []
+            meta = cached.get("sitemap_meta") or {}
+            items = [
+                (str(a[0]), str(a[1]))
+                for a in raw_items
+                if isinstance(a, (list, tuple)) and len(a) >= 2
+            ]
+            logger.info(
+                "Reusing cached sitemap discovery (%d URLs, project=%s)",
+                len(items),
+                project_slug,
+            )
+            if on_phase:
+                on_phase(
+                    "discovering_sitemaps",
+                    f"Reusing cached discovery — {len(items):,} URLs (no robots/sitemap fetch)",
+                )
+            return items, meta
 
     items: List[Tuple[str, str]] = []
     seen: Set[str] = set()
@@ -752,6 +801,10 @@ def collect_start_items(
             + (f", {sitemap_url_count:,} sitemap URLs indexed"
                if sitemap_url_count else ""),
         )
+
+    if project_slug:
+        fp = _discovery_fingerprint(cfg)
+        storage.save_discovered_sitemaps_cache(project_slug, fp, items, sitemap_meta)
 
     return items, sitemap_meta
 
@@ -870,6 +923,7 @@ def _init_run(
     max_depth: Optional[int],
     on_phase: Optional[Callable] = None,
     visited_seed: Optional[Set[str]] = None,
+    project_slug: Optional[str] = None,
 ) -> Tuple[
     str,                                       # run_dir
     _PriorityQueue,                            # pq
@@ -957,7 +1011,10 @@ def _init_run(
             "Building crawl queue from seeds and sitemaps "
             "(this may take several minutes for large sitemap indexes)",
         )
-        _seed_queues(cfg, ctx, seed_urls, pq, queued, sitemap_meta, on_phase)
+        _seed_queues(
+            cfg, ctx, seed_urls, pq, queued, sitemap_meta, on_phase,
+            project_slug=project_slug,
+        )
 
     return (
         run_dir, pq, queued, visited,
@@ -973,6 +1030,7 @@ def _seed_queues(
     queued: Set[str],
     sitemap_meta: Dict[str, Dict[str, str]],
     on_phase: Optional[Callable] = None,
+    project_slug: Optional[str] = None,
 ) -> None:
     """Populate the priority queue from seed URLs or sitemap discovery.
 
@@ -990,7 +1048,9 @@ def _seed_queues(
             len(start_items),
         )
     else:
-        start_items, new_sitemap_meta = collect_start_items(cfg, ctx, on_phase)
+        start_items, new_sitemap_meta = collect_start_items(
+            cfg, ctx, on_phase, project_slug=project_slug,
+        )
         sitemap_meta.update(new_sitemap_meta)
 
     now0 = _now_iso()
@@ -1346,6 +1406,7 @@ def crawl(
     run_folder: Optional[str] = None,
     resume: bool = False,
     visited_seed: Optional[Set[str]] = None,
+    project_slug: Optional[str] = None,
     cfg: Optional[CrawlConfig] = None,
     ctx: Optional[StorageContext] = None,
 ) -> Tuple[int, int]:
@@ -1365,6 +1426,8 @@ def crawl(
         resume: If ``True``, rebuild visited set and queue from prior state.
         visited_seed: Normalised URLs already crawled in another run; merged into
             ``visited`` when ``resume`` is ``False`` so those URLs are skipped.
+        project_slug: When set, enables ``SITEMAP_DISCOVERY_MODE=reuse`` cache under
+            the project directory.
         cfg: Isolated ``CrawlConfig`` — required for thread-safe concurrent
             crawls.  Falls back to module-level globals when ``None``.
         ctx: Isolated ``StorageContext`` — paired with *cfg* for concurrency.
@@ -1399,6 +1462,7 @@ def crawl(
         cfg, ctx, seed_urls, run_name, run_folder, resume,
         _max_pages, delay_cfg, max_depth, on_phase=on_phase,
         visited_seed=visited_seed,
+        project_slug=project_slug,
     )
 
     # Update per-request delay from possibly-reloaded cfg

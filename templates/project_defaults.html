@@ -81,6 +81,13 @@
         {% if cfg.get('LOAD_SITEMAPS_FROM_ROBOTS') %}checked{% endif %}>
       <label for="cb-robots">Also discover sitemaps from each seed's robots.txt</label>
     </div>
+    <div class="form-group">
+      <label class="form-label">Sitemap / robots discovery</label>
+      <select name="sitemap_discovery_mode" style="max-width:420px;padding:8px 10px;font-size:14px;">
+        <option value="refresh" {% if cfg.get('SITEMAP_DISCOVERY_MODE', 'refresh') != 'reuse' %}selected{% endif %}>Refresh each run</option>
+        <option value="reuse" {% if cfg.get('SITEMAP_DISCOVERY_MODE', 'refresh') == 'reuse' %}selected{% endif %}>Reuse cached discovery</option>
+      </select>
+    </div>
     <div class="checkbox-row">
       <input type="checkbox" name="respect_robots_txt" id="cb-respect-robots"
         {% if cfg.get('RESPECT_ROBOTS_TXT') %}checked{% endif %}>
