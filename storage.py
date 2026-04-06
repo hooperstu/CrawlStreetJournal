@@ -349,7 +349,11 @@ class StorageContext:
 
     # -- run lifecycle ----------------------------------------------------
 
-    def create_run(self, run_name: Optional[str] = None) -> str:
+    def create_run(
+        self,
+        run_name: Optional[str] = None,
+        continue_from_folder: Optional[str] = None,
+    ) -> str:
         os.makedirs(self.output_dir, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S_%f")
         folder_name = f"run_{stamp}"
@@ -357,7 +361,26 @@ class StorageContext:
         os.makedirs(run_dir, exist_ok=False)
         if run_name:
             _write_run_name(run_dir, run_name)
-        save_run_config(run_dir, self.cfg.to_dict())
+
+        cfg_dict: Optional[Dict[str, Any]] = None
+        if continue_from_folder and continue_from_folder.startswith("run_"):
+            prior_path = os.path.join(self.output_dir, continue_from_folder)
+            if (
+                os.path.isdir(prior_path)
+                and os.path.realpath(prior_path) != os.path.realpath(run_dir)
+            ):
+                cfg_dict = load_run_config(prior_path)
+                marker = os.path.join(run_dir, ".continue_from")
+                try:
+                    with open(marker, "w", encoding="utf-8") as cf:
+                        cf.write(continue_from_folder.strip())
+                except OSError:
+                    pass
+
+        if cfg_dict:
+            save_run_config(run_dir, cfg_dict)
+        else:
+            save_run_config(run_dir, self.cfg.to_dict())
         save_crawl_state(
             run_dir, status="new", pages_crawled=0,
             assets_from_pages=0, queue=[],
@@ -1061,8 +1084,16 @@ def rebuild_sitemap_meta_from_csv(run_dir: str) -> Dict[str, Dict[str, str]]:
 
 # ── Run-directory lifecycle ──────────────────────────────────────────────
 
-def create_run(run_name: Optional[str] = None) -> str:
-    """Create a new run folder with a config snapshot. Returns the folder name."""
+def create_run(
+    run_name: Optional[str] = None,
+    continue_from_folder: Optional[str] = None,
+) -> str:
+    """Create a new run folder with a config snapshot. Returns the folder name.
+
+    If *continue_from_folder* names another ``run_*`` directory under the same
+    ``OUTPUT_DIR``, copy that run's ``_config.json`` into the new folder so
+    seeds and scope match the prior crawl (for continuing without duplicate fetches).
+    """
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S_%f")
     folder_name = f"run_{stamp}"
@@ -1072,7 +1103,25 @@ def create_run(run_name: Optional[str] = None) -> str:
     if run_name:
         _write_run_name(run_dir, run_name)
 
-    save_run_config(run_dir, snapshot_config())
+    prior_cfg: Optional[Dict[str, Any]] = None
+    if continue_from_folder and continue_from_folder.startswith("run_"):
+        prior_path = os.path.join(config.OUTPUT_DIR, continue_from_folder)
+        if (
+            os.path.isdir(prior_path)
+            and os.path.realpath(prior_path) != os.path.realpath(run_dir)
+        ):
+            prior_cfg = load_run_config(prior_path)
+            marker = os.path.join(run_dir, ".continue_from")
+            try:
+                with open(marker, "w", encoding="utf-8") as cf:
+                    cf.write(continue_from_folder.strip())
+            except OSError:
+                pass
+
+    if prior_cfg:
+        save_run_config(run_dir, prior_cfg)
+    else:
+        save_run_config(run_dir, snapshot_config())
     save_crawl_state(
         run_dir,
         status="new",

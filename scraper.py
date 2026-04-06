@@ -861,6 +861,7 @@ def _init_run(
     delay_cfg: Any,
     max_depth: Optional[int],
     on_phase: Optional[Callable] = None,
+    visited_seed: Optional[Set[str]] = None,
 ) -> Tuple[
     str,                                       # run_dir
     _PriorityQueue,                            # pq
@@ -873,6 +874,10 @@ def _init_run(
     CrawlConfig,                               # possibly updated cfg
 ]:
     """Initialise (or resume) a crawl run directory and seed / restore the queues.
+
+    *visited_seed* (normalised URLs from a prior run) is merged into *visited*
+    when starting a **new** run so the same seeds/sitemap pass does not
+    re-fetch pages already inventoried elsewhere.
 
     Returns a tuple of all mutable crawl-state components.
     """
@@ -909,6 +914,18 @@ def _init_run(
 
     run_dir = ctx.get_active_run_dir()
     logger.info("Active run directory: %s", run_dir)
+
+    if not resume and visited_seed:
+        n_seed = 0
+        for u in visited_seed:
+            if u:
+                visited.add(u)
+                n_seed += 1
+        logger.info(
+            "Continuing from prior run: %d URL(s) marked as already crawled "
+            "(will not be fetched again if re-queued)",
+            n_seed,
+        )
 
     if resume and run_folder:
         visited = _ThreadSafeSet(storage.rebuild_visited_from_csvs(run_dir))
@@ -1271,6 +1288,20 @@ def _persist_state_if_needed(
     return last_state_save
 
 
+def visited_keys_from_prior_run(run_dir: str) -> Set[str]:
+    """Normalised URL keys from *run_dir* CSVs for continuing without duplicate fetches.
+
+    Used when starting a **new** run after a completed or stopped run: URLs already
+    present in ``pages.csv`` / ``crawl_errors.csv`` are treated as visited so they
+    are not fetched again if the same seeds/sitemap re-queue them.
+    """
+    out: Set[str] = set()
+    for u in storage.rebuild_visited_from_csvs(run_dir):
+        if u:
+            out.add(normalise_url(u))
+    return out
+
+
 def _finalise_run(
     run_dir: str,
     interrupted: bool,
@@ -1306,6 +1337,7 @@ def crawl(
     run_name: Optional[str] = None,
     run_folder: Optional[str] = None,
     resume: bool = False,
+    visited_seed: Optional[Set[str]] = None,
     cfg: Optional[CrawlConfig] = None,
     ctx: Optional[StorageContext] = None,
 ) -> Tuple[int, int]:
@@ -1323,6 +1355,8 @@ def crawl(
         run_name: Human-friendly label written to the run folder.
         run_folder: Existing folder name to use (or resume into).
         resume: If ``True``, rebuild visited set and queue from prior state.
+        visited_seed: Normalised URLs already crawled in another run; merged into
+            ``visited`` when ``resume`` is ``False`` so those URLs are skipped.
         cfg: Isolated ``CrawlConfig`` — required for thread-safe concurrent
             crawls.  Falls back to module-level globals when ``None``.
         ctx: Isolated ``StorageContext`` — paired with *cfg* for concurrency.
@@ -1356,6 +1390,7 @@ def crawl(
     ) = _init_run(
         cfg, ctx, seed_urls, run_name, run_folder, resume,
         _max_pages, delay_cfg, max_depth, on_phase=on_phase,
+        visited_seed=visited_seed,
     )
 
     # Update per-request delay from possibly-reloaded cfg
