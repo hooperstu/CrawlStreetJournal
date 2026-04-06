@@ -86,6 +86,12 @@
     {% if status.run_folder == run_name and status.phase_detail %}{{ status.phase_detail }}{% endif %}
   </div>
 
+  <div id="worker-panel" class="card" style="margin-bottom:14px;padding:14px 16px;display:none;">
+    <div style="font-weight:700;margin-bottom:8px;color:var(--csj-headline);">Fetch workers</div>
+    <p class="text-muted" style="font-size:13px;margin-bottom:10px;">Each row is one parallel connection. While stopping, the crawl waits for these to finish their current page.</p>
+    <div id="worker-rows" style="font-size:13px;line-height:1.65;"></div>
+  </div>
+
   <div id="current-url" class="text-muted mono truncate" style="margin-bottom:14px;">
     {% if status.run_folder == run_name and status.current_url %}{{ status.current_url }}{% endif %}
   </div>
@@ -159,6 +165,39 @@
   // the empty-slot 0s that the server sends once the slot is gone).
   var crawlFinished = false;
 
+  function escapeHtml(s) {
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function renderWorkers(d) {
+    var panel = document.getElementById('worker-panel');
+    var rowsEl = document.getElementById('worker-rows');
+    if (!panel || !rowsEl) return;
+    var n = d.concurrent_workers || 1;
+    var urls = d.active_worker_urls || [];
+    var show = (n > 1) || (d.stopping && (d.draining_workers > 0));
+    if (!show) {
+      panel.style.display = 'none';
+      return;
+    }
+    panel.style.display = 'block';
+    var html = '';
+    for (var i = 0; i < n; i++) {
+      var u = urls[i] || '';
+      html += '<div style="margin-bottom:4px;"><span style="color:var(--csj-body);font-weight:600;">Worker ' + (i + 1) + ':</span> ';
+      html += u
+        ? '<span class="mono" style="word-break:break-all;">' + escapeHtml(u) + '</span>'
+        : '<span style="color:#78716C;">— idle —</span>';
+      html += '</div>';
+    }
+    if (d.stopping && d.draining_workers > 0) {
+      html += '<div style="margin-top:10px;padding:8px 10px;background:#fff3cd;border-radius:var(--radius);border:1px solid #D4B87C;color:#5C4A1E;font-weight:600;">Stopping: waiting for ' + d.draining_workers + ' active worker(s) to finish…</div>';
+    }
+    rowsEl.innerHTML = html;
+  }
+
   function update(d) {
     if (d.run_folder !== runFolder && d.running) return;
 
@@ -173,6 +212,7 @@
       curUrl.textContent   = d.current_url || '';
       finished.textContent = d.finished_message || '';
       if (d.finished_message) crawlFinished = true;
+      renderWorkers(d);
     }
 
     if (d.running && d.stopping && d.run_folder === runFolder) {
@@ -234,8 +274,6 @@
     if (lvl === 'ERROR')   return 'log-err';
     return 'log-info';
   }
-
-  function escapeHtml(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
   function renderLogs() {
     var chosen = logFilter.value;

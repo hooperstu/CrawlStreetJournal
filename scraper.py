@@ -38,7 +38,6 @@ import heapq
 import logging
 import os
 import random
-import re
 import socket
 import threading
 import time
@@ -864,8 +863,7 @@ def _init_run(
     on_phase: Optional[Callable] = None,
 ) -> Tuple[
     str,                                       # run_dir
-    deque,                                     # crawl_queue
-    deque,                                     # seed_queue
+    _PriorityQueue,                            # pq
     Set[str],                                  # queued
     Set[str],                                  # visited
     Dict[str, Dict[str, str]],                 # sitemap_meta
@@ -1303,6 +1301,7 @@ def crawl(
     delay: Optional[Union[float, Tuple[float, float]]] = None,
     on_progress: Optional[Callable[[int, int, str], None]] = None,
     on_phase: Optional[Callable[[str, str], None]] = None,
+    on_worker_urls: Optional[Callable[[List[str]], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
     run_name: Optional[str] = None,
     run_folder: Optional[str] = None,
@@ -1318,6 +1317,8 @@ def crawl(
         delay: Per-request delay override (float or ``(min, max)`` tuple).
         on_progress: Callback ``(pages, assets, last_url)`` after each page.
         on_phase: Callback ``(phase_name, detail)`` for UI status updates.
+        on_worker_urls: Callback with one string per worker slot (URL being fetched,
+            or empty when idle). Used by the GUI during parallel crawls and when stopping.
         should_stop: Callable returning ``True`` to abort early (GUI stop).
         run_name: Human-friendly label written to the run folder.
         run_folder: Existing folder name to use (or resume into).
@@ -1426,22 +1427,40 @@ def crawl(
             "(ALLOWED_DOMAINS, URL_INCLUDE_PATTERNS, URL_EXCLUDE_PATTERNS)",
         )
 
+    def _emit_slots(slots: List[str]) -> None:
+        if on_worker_urls:
+            on_worker_urls(list(slots))
+
     try:
         if workers <= 1:
-            # Sequential mode — original behaviour
+            # Sequential mode — single slot reflects the URL currently being fetched.
+            worker_slots = [""]
+            _emit_slots(worker_slots)
             while pq and pages_crawled < _max_pages:
                 if should_stop and should_stop():
                     interrupted = True
+                    logger.info("Stop requested — exiting after current fetch (sequential crawl)")
+                    if on_phase:
+                        on_phase(
+                            "stopping",
+                            "Stop requested — will not start another page after the current fetch",
+                        )
                     break
                 url, referrer, depth = pq.pop()
-                page_written, new_assets, final_url = _process_one_url(
-                    url, referrer, depth,
-                    visited, queued, pq,
-                    sitemap_meta, cfg, ctx, max_depth,
-                    delay_cfg=delay_cfg,
-                    content_hashes=content_hashes if cfg.CONTENT_DEDUP else None,
-                    prev_hashes=prev_hashes if cfg.CHANGE_DETECTION else None,
-                )
+                worker_slots[0] = url
+                _emit_slots(worker_slots)
+                try:
+                    page_written, new_assets, final_url = _process_one_url(
+                        url, referrer, depth,
+                        visited, queued, pq,
+                        sitemap_meta, cfg, ctx, max_depth,
+                        delay_cfg=delay_cfg,
+                        content_hashes=content_hashes if cfg.CONTENT_DEDUP else None,
+                        prev_hashes=prev_hashes if cfg.CHANGE_DETECTION else None,
+                    )
+                finally:
+                    worker_slots[0] = ""
+                    _emit_slots(worker_slots)
                 if page_written:
                     pages_crawled += 1
                     assets_from_pages += new_assets
@@ -1455,38 +1474,85 @@ def crawl(
             # Concurrent mode — submit batches to a thread pool.
             # Per-domain rate limiting is preserved because _wait_for_domain
             # is called inside _process_one_url with a per-domain lock.
+            worker_slots = [""] * workers
+            _emit_slots(worker_slots)
+
+            def _slot_fetch(
+                slot_idx: int,
+                url: str,
+                referrer: str,
+                depth: int,
+            ) -> Tuple[bool, int, str]:
+                worker_slots[slot_idx] = url
+                _emit_slots(worker_slots)
+                try:
+                    return _process_one_url(
+                        url, referrer, depth,
+                        visited, queued, pq,
+                        sitemap_meta, cfg, ctx, max_depth,
+                        delay_cfg=delay_cfg,
+                        content_hashes=content_hashes if cfg.CONTENT_DEDUP else None,
+                        prev_hashes=prev_hashes if cfg.CHANGE_DETECTION else None,
+                    )
+                finally:
+                    worker_slots[slot_idx] = ""
+                    _emit_slots(worker_slots)
+
             with ThreadPoolExecutor(max_workers=workers) as pool:
+                stop_notice_logged = False
                 while pq and pages_crawled < _max_pages:
                     if should_stop and should_stop():
                         interrupted = True
+                        logger.info(
+                            "Stop requested — not starting new batch "
+                            "(%d URL(s) left in queue will remain for resume)",
+                            len(pq),
+                        )
+                        if on_phase:
+                            on_phase(
+                                "stopping",
+                                "Stop requested — not queueing new pages "
+                                "(%d left in queue for resume)" % len(pq),
+                            )
                         break
 
                     # Drain up to `workers` items from the queue, preferring
                     # URLs from different domains for maximum parallelism.
                     batch = []
-                    batch_domains: Set[str] = set()
                     while pq and len(batch) < workers:
                         url, referrer, depth = pq.pop()
                         batch.append((url, referrer, depth))
-                        try:
-                            batch_domains.add(urlparse(url).hostname or "")
-                        except Exception:
-                            pass
 
                     futures = {}
-                    for url, referrer, depth in batch:
-                        f = pool.submit(
-                            _process_one_url,
-                            url, referrer, depth,
-                            visited, queued, pq,
-                            sitemap_meta, cfg, ctx, max_depth,
-                            delay_cfg=delay_cfg,
-                            content_hashes=content_hashes if cfg.CONTENT_DEDUP else None,
-                            prev_hashes=prev_hashes if cfg.CHANGE_DETECTION else None,
-                        )
+                    for slot_idx, (url, referrer, depth) in enumerate(batch):
+                        f = pool.submit(_slot_fetch, slot_idx, url, referrer, depth)
                         futures[f] = url
 
                     for f in as_completed(futures):
+                        if (
+                            should_stop
+                            and should_stop()
+                            and not stop_notice_logged
+                        ):
+                            stop_notice_logged = True
+                            busy = [u for u in worker_slots if u]
+                            nbusy = len(busy)
+                            logger.info(
+                                "Stop requested — draining %d parallel worker(s) "
+                                "still fetching (finish current page each)…",
+                                nbusy,
+                            )
+                            for j, u in enumerate(worker_slots):
+                                if u:
+                                    logger.info("  Worker %d: %s", j + 1, u)
+                            if on_phase:
+                                detail = (
+                                    "Waiting for %d parallel worker(s) to finish "
+                                    "current page(s)…" % nbusy
+                                    if nbusy
+                                    else "Stop requested — finishing current batch…"
+                                )
+                                on_phase("stopping", detail)
                         try:
                             page_written, new_assets, final_url = f.result()
                         except Exception as exc:
@@ -1504,8 +1570,13 @@ def crawl(
                             )
                         if pages_crawled >= _max_pages:
                             break
+                    if should_stop and should_stop():
+                        interrupted = True
+                        break
 
     finally:
+        if on_worker_urls:
+            on_worker_urls([""] * workers)
         if content_hashes:
             try:
                 storage.save_content_hashes(run_dir, content_hashes.to_dict())
