@@ -282,8 +282,17 @@ def _run_crawl(
         m, s = divmod(int(elapsed), 60)
         h, m = divmod(m, 60)
         slot.status["elapsed"] = f"{h:02d}:{m:02d}:{s:02d}"
+        # Mirror phase updates into the global log buffer (Monitor → Logs pane).
+        label = phase.replace("_", " ")
+        logging.info("[crawl:%s] %s", label, detail)
 
     try:
+        logging.info(
+            "Crawl thread started (project=%s, run=%s, resume=%s)",
+            project_slug,
+            run_folder or "(new)",
+            resume,
+        )
         pages, assets = scraper.crawl(
             on_progress=on_progress,
             on_phase=on_phase,
