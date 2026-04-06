@@ -57,6 +57,10 @@ SSE streams (consumed by the front-end JavaScript)::
     GET  /api/progress/<slug>                     Crawl progress events.
     GET  /api/logs                                Global log tail.
 
+Desktop / loopback only::
+
+    POST /api/quit                                Graceful shutdown (stop crawls, exit app).
+
 Additional visualisation endpoints are registered via the ``eco_bp``
 blueprint from ``viz_api``.
 """
@@ -85,6 +89,7 @@ from flask import (
     send_from_directory,
     url_for,
 )
+from werkzeug.serving import make_server
 
 import config
 from config import CrawlConfig
@@ -188,6 +193,37 @@ class CrawlSlot:
 _active_crawls: Dict[str, CrawlSlot] = {}
 _crawls_lock = threading.Lock()
 
+# Set by :func:`run_server` so :func:`quit_application` can stop the Werkzeug
+# server and end the Flask thread (used by the desktop launcher).
+_shutdown_server: Optional[Any] = None
+_shutdown_lock = threading.Lock()
+
+
+def _signal_all_crawls_stop() -> None:
+    """Ask every active crawl to stop cooperatively (same as the per-run Stop button)."""
+    with _crawls_lock:
+        slots = list(_active_crawls.values())
+    for slot in slots:
+        slot.stop_event.set()
+        slot.status["stopping"] = True
+
+
+def run_server(host: str, port: int, threaded: bool = True) -> None:
+    """Run the Flask app on a Werkzeug server that supports :func:`shutdown`.
+
+    Used by ``launcher.py`` so **Quit application** can stop the server thread;
+    ``app.run`` does not expose a shutdown hook.
+    """
+    global _shutdown_server
+    server = make_server(host, port, app, threaded=threaded)
+    with _shutdown_lock:
+        _shutdown_server = server
+    try:
+        server.serve_forever()
+    finally:
+        with _shutdown_lock:
+            _shutdown_server = None
+
 
 def _project_status(slug: str) -> Dict[str, Any]:
     """Return a snapshot of the crawl status for *slug*."""
@@ -222,7 +258,6 @@ _buffer_handler.setFormatter(logging.Formatter("%(message)s"))
 logging.root.addHandler(_buffer_handler)
 logging.root.setLevel(getattr(logging, config.LOG_LEVEL, logging.INFO))
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
-
 
 
 # ── Crawl runner ──────────────────────────────────────────────────────────
@@ -1435,6 +1470,57 @@ def logs_stream():
     return Response(generate(), mimetype="text/event-stream")
 
 
+def _client_is_loopback() -> bool:
+    """True if the request comes from this machine (desktop UI is always loopback)."""
+    addr = request.remote_addr or ""
+    if addr in ("127.0.0.1", "::1"):
+        return True
+    if addr.startswith("::ffff:") and addr.rsplit("::ffff:", 1)[-1] == "127.0.0.1":
+        return True
+    return False
+
+
+def _quit_worker() -> None:
+    """Stop the Werkzeug server, then close the pywebview window (order matters)."""
+    log = logging.getLogger(__name__)
+    time.sleep(0.1)
+    with _shutdown_lock:
+        srv = _shutdown_server
+    if srv is not None:
+        try:
+            srv.shutdown()
+        except Exception:
+            log.exception("Flask server shutdown failed")
+    try:
+        import webview
+
+        if webview.windows:
+            webview.windows[0].destroy()
+    except Exception:
+        log.exception("Failed to destroy pywebview window")
+
+
+@app.route("/api/quit", methods=["POST"])
+def quit_application():
+    """Quit the whole app: cooperative crawl stop, Flask shutdown, pywebview close.
+
+    Only accepted from loopback addresses so a remote browser cannot POST quit.
+    """
+    if not _client_is_loopback():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    _signal_all_crawls_stop()
+    threading.Thread(target=_quit_worker, daemon=False).start()
+
+    return jsonify({"ok": True})
+
+
+@app.context_processor
+def _inject_quit_button() -> Dict[str, bool]:
+    """Hide Quit when the UI is not served over loopback (e.g. LAN browser)."""
+    return {"show_quit_button": _client_is_loopback()}
+
+
 # ── Main ──────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -1448,4 +1534,4 @@ if __name__ == "__main__":
     # Any run left in 'running' state after a restart was killed uncleanly; treat as interrupted.
     storage_module.recover_stale_running_states()
     print("The Crawl Street Journal: http://localhost:5001")
-    app.run(host="0.0.0.0", port=5001, debug=False, threaded=True)
+    run_server(host="0.0.0.0", port=5001, threaded=True)
