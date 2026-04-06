@@ -49,10 +49,23 @@ try:
 except ImportError:
     pass
 
+# Windows: pywebview loads Edge WebView2 via interop DLLs under ``webview/lib/``.
+# PyInstaller's hook-webview often pulls these in, but listing them explicitly
+# keeps one-folder COLLECT builds working when analysis omits the package data.
+_webview_win_binaries = []
+_webview_win_datas = []
+if sys.platform == "win32":
+    from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+
+    _webview_win_datas = collect_data_files("webview", subdir="lib") + collect_data_files(
+        "webview", subdir="js"
+    )
+    _webview_win_binaries = collect_dynamic_libs("webview")
+
 a = Analysis(
     [str(ROOT / "launcher.py")],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=_webview_win_binaries,
     datas=[
         # Flask `render_template` and `TemplateNotFound` resolution look under a
         # `templates/` tree at runtime; the frozen app has no source tree, so the
@@ -61,7 +74,9 @@ a = Analysis(
         # Same for `url_for('static', ...)` — CSS, client JS, and other assets
         # must exist on disk inside `static/` in the bundle.
         (str(ROOT / "static"), "static"),
-    ] + _tldextract_data,
+    ]
+    + _tldextract_data
+    + _webview_win_datas,
     hiddenimports=[
         # Core application modules — `gui` imports these inside route handlers
         # or conditionally, so PyInstaller's static analysis from `launcher.py`
