@@ -59,6 +59,86 @@ import utils
 
 logger = logging.getLogger(__name__)
 
+_tls_verify_warned = False
+
+
+def _http_session(cfg: Optional[CrawlConfig] = None) -> requests.Session:
+    """Build a ``requests.Session`` with per-crawl TLS and redirect limits."""
+    global _tls_verify_warned
+    sess = requests.Session()
+    verify = cfg.HTTP_VERIFY_SSL if cfg else config.HTTP_VERIFY_SSL
+    sess.verify = verify
+    max_r = cfg.HTTP_MAX_REDIRECTS if cfg else config.HTTP_MAX_REDIRECTS
+    try:
+        max_r = int(max_r)
+    except (TypeError, ValueError):
+        max_r = 30
+    # urllib3/requests enforce a positive redirect budget; cap for sanity.
+    sess.max_redirects = max(1, min(max_r, 1000))
+    if verify is False and not _tls_verify_warned:
+        logger.warning(
+            "HTTP_VERIFY_SSL is False — TLS certificate verification disabled (insecure).",
+        )
+        _tls_verify_warned = True
+    return sess
+
+
+def _drain_response_chunk(resp: requests.Response, max_bytes: int = 1024) -> None:
+    """Read at most *max_bytes* from a streaming response, then close."""
+    try:
+        for chunk in resp.iter_content(chunk_size=max_bytes):
+            break
+    finally:
+        resp.close()
+
+
+def _outbound_request_outcome(
+    sess: requests.Session,
+    target: str,
+    timeout: float,
+    get_fallback: bool,
+) -> Tuple[int, str, str]:
+    """HEAD (optional GET fallback). Returns ``(status, final_url, message)``.
+
+    *message* is empty on success; on total failure it holds a short diagnostic.
+    """
+    try:
+        resp = sess.head(target, timeout=timeout, allow_redirects=True)
+        status = resp.status_code
+        final = resp.url
+        resp.close()
+        if get_fallback and status in (403, 405, 501):
+            resp = sess.get(
+                target,
+                timeout=timeout,
+                allow_redirects=True,
+                stream=True,
+                headers={"Range": "bytes=0-0"},
+            )
+            status = resp.status_code
+            final = resp.url
+            _drain_response_chunk(resp)
+        return status, final, ""
+    except Exception as head_exc:
+        if not get_fallback:
+            return (
+                0,
+                target,
+                f"{type(head_exc).__name__}: {str(head_exc)[:400]}",
+            )
+        try:
+            resp = sess.get(
+                target, timeout=timeout, allow_redirects=True, stream=True,
+            )
+            status = resp.status_code
+            final = resp.url
+            _drain_response_chunk(resp)
+            return status, final, ""
+        except Exception as get_exc:
+            h = f"{type(head_exc).__name__}: {str(head_exc)[:200]}"
+            g = f"{type(get_exc).__name__}: {str(get_exc)[:200]}"
+            return 0, target, f"HEAD: {h}; GET: {g}"
+
 
 # ── URL priority scoring ─────────────────────────────────────────────────
 
@@ -465,51 +545,52 @@ def fetch_page(
     _timeout = cfg.REQUEST_TIMEOUT_SECONDS if cfg else config.REQUEST_TIMEOUT_SECONDS
     _capture = cfg.CAPTURE_RESPONSE_HEADERS if cfg else config.CAPTURE_RESPONSE_HEADERS
 
-    headers = {"User-Agent": _ua}
     empty_meta: Dict[str, str] = {}
     last_error = ""
 
-    for attempt in range(_retries + 1):
-        if attempt > 0:
-            backoff = min(2 ** attempt, 30)
-            time.sleep(backoff)
-        try:
-            resp = requests.get(
-                url, headers=headers, timeout=_timeout, allow_redirects=True,
-            )
-            final = resp.url
-            ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
-            status = resp.status_code
-            meta = empty_meta
-            if _capture:
-                meta = {
-                    "last_modified": (resp.headers.get("Last-Modified") or "").strip(),
-                    "etag": (resp.headers.get("ETag") or "").strip(),
-                    "x_robots_tag": (resp.headers.get("X-Robots-Tag") or "").strip(),
-                    "server": (resp.headers.get("Server") or "").strip(),
-                    "x_powered_by": (resp.headers.get("X-Powered-By") or "").strip(),
-                }
-            if status >= 400:
-                last_error = f"HTTP {status}"
-                if attempt == _retries:
-                    return None, status, final, ctype, meta, last_error
-                continue
-            return resp.text, status, final, ctype, meta, ""
-        except requests.exceptions.Timeout:
-            last_error = f"Timeout (attempt {attempt + 1}/{_retries + 1})"
-            logger.warning("Timeout fetching %s (attempt %s)", url, attempt + 1)
-        except requests.exceptions.ConnectionError as e:
-            last_error = f"ConnectionError: {str(e)[:200]}"
-            logger.warning("Connection error for %s: %s", url, last_error)
-        except requests.exceptions.RequestException as e:
-            status = getattr(e.response, "status_code", None) if hasattr(e, "response") else None
-            last_error = f"RequestException: {str(e)[:200]} (status={status})"
-            logger.warning("Request failed for %s: %s", url, last_error)
-            if status == 429:
-                time.sleep(5)
-        except Exception as e:
-            last_error = f"{type(e).__name__}: {str(e)[:200]}"
-            logger.warning("Error fetching %s: %s", url, last_error)
+    with _http_session(cfg) as sess:
+        sess.headers.update({"User-Agent": _ua})
+        for attempt in range(_retries + 1):
+            if attempt > 0:
+                backoff = min(2 ** attempt, 30)
+                time.sleep(backoff)
+            try:
+                resp = sess.get(
+                    url, timeout=_timeout, allow_redirects=True,
+                )
+                final = resp.url
+                ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
+                status = resp.status_code
+                meta = empty_meta
+                if _capture:
+                    meta = {
+                        "last_modified": (resp.headers.get("Last-Modified") or "").strip(),
+                        "etag": (resp.headers.get("ETag") or "").strip(),
+                        "x_robots_tag": (resp.headers.get("X-Robots-Tag") or "").strip(),
+                        "server": (resp.headers.get("Server") or "").strip(),
+                        "x_powered_by": (resp.headers.get("X-Powered-By") or "").strip(),
+                    }
+                if status >= 400:
+                    last_error = f"HTTP {status}"
+                    if attempt == _retries:
+                        return None, status, final, ctype, meta, last_error
+                    continue
+                return resp.text, status, final, ctype, meta, ""
+            except requests.exceptions.Timeout:
+                last_error = f"Timeout (attempt {attempt + 1}/{_retries + 1})"
+                logger.warning("Timeout fetching %s (attempt %s)", url, attempt + 1)
+            except requests.exceptions.ConnectionError as e:
+                last_error = f"ConnectionError: {str(e)[:200]}"
+                logger.warning("Connection error for %s: %s", url, last_error)
+            except requests.exceptions.RequestException as e:
+                status = getattr(e.response, "status_code", None) if hasattr(e, "response") else None
+                last_error = f"RequestException: {str(e)[:200]} (status={status})"
+                logger.warning("Request failed for %s: %s", url, last_error)
+                if status == 429:
+                    time.sleep(5)
+            except Exception as e:
+                last_error = f"{type(e).__name__}: {str(e)[:200]}"
+                logger.warning("Error fetching %s: %s", url, last_error)
 
     return None, 0, url, "", empty_meta, last_error
 
@@ -518,11 +599,12 @@ def head_asset(url: str, cfg: Optional[CrawlConfig] = None) -> Tuple[str, str]:
     """Return (content_type, content_length) from HEAD, or empty strings."""
     _ua = cfg.USER_AGENT if cfg else config.USER_AGENT
     _timeout = cfg.HEAD_TIMEOUT_SECONDS if cfg else config.HEAD_TIMEOUT_SECONDS
-    headers = {"User-Agent": _ua}
     try:
-        resp = requests.head(
-            url, headers=headers, timeout=_timeout, allow_redirects=True,
-        )
+        with _http_session(cfg) as sess:
+            sess.headers.update({"User-Agent": _ua})
+            resp = sess.head(
+                url, timeout=_timeout, allow_redirects=True,
+            )
         ct = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
         cl = (resp.headers.get("Content-Length") or "").strip()
         return ct, cl
@@ -539,10 +621,12 @@ def _sitemaps_from_robots(
     _ua = cfg.USER_AGENT if cfg else config.USER_AGENT
     _timeout = cfg.REQUEST_TIMEOUT_SECONDS if cfg else config.REQUEST_TIMEOUT_SECONDS
     try:
-        r = requests.get(
-            origin.rstrip("/") + "/robots.txt",
-            headers={"User-Agent": _ua}, timeout=_timeout,
-        )
+        with _http_session(cfg) as sess:
+            sess.headers.update({"User-Agent": _ua})
+            r = sess.get(
+                origin.rstrip("/") + "/robots.txt",
+                timeout=_timeout,
+            )
         r.raise_for_status()
     except Exception as e:
         logger.debug("robots.txt fetch failed for %s: %s", origin, e)
@@ -589,7 +673,10 @@ def collect_start_items(
         _notify(f"Parsing sitemap: {sm_url}")
         try:
             entries = sitemap_module.collect_urls_from_sitemap(
-                sm_url, max_urls=_max_sm,
+                sm_url,
+                max_urls=_max_sm,
+                http_verify=cfg.HTTP_VERIFY_SSL if cfg else config.HTTP_VERIFY_SSL,
+                http_max_redirects=cfg.HTTP_MAX_REDIRECTS if cfg else config.HTTP_MAX_REDIRECTS,
             )
         except Exception as e:
             logger.warning("Sitemap crawl failed for %s: %s", sm_url, e)
@@ -666,37 +753,36 @@ def _check_outbound_links(
     _timeout = cfg.HEAD_TIMEOUT_SECONDS if cfg else config.HEAD_TIMEOUT_SECONDS
     _max_checks = cfg.MAX_LINK_CHECKS_PER_PAGE if cfg else config.MAX_LINK_CHECKS_PER_PAGE
     _delay = cfg.LINK_CHECK_DELAY_SECONDS if cfg else config.LINK_CHECK_DELAY_SECONDS
+    _get_fb = cfg.LINK_CHECK_GET_FALLBACK if cfg else config.LINK_CHECK_GET_FALLBACK
 
     seen: Set[str] = set()
     checked = 0
-    for row in edge_rows:
-        target = row["to_url"]
-        if target in seen:
-            continue
-        seen.add(target)
-        if checked >= _max_checks:
-            break
-        try:
-            resp = requests.head(
-                target, headers={"User-Agent": _ua},
-                timeout=_timeout, allow_redirects=True,
+    with _http_session(cfg) as sess:
+        sess.headers.update({"User-Agent": _ua})
+        for row in edge_rows:
+            target = row["to_url"]
+            if target in seen:
+                continue
+            seen.add(target)
+            if checked >= _max_checks:
+                break
+            check_status, check_final, check_message = _outbound_request_outcome(
+                sess, target, float(_timeout), _get_fb,
             )
-            check_status = resp.status_code
-            check_final = resp.url
-        except Exception:
-            check_status = 0
-            check_final = target
-        lc_row = {
-            "from_url": row["from_url"], "to_url": target,
-            "check_status": check_status, "check_final_url": check_final,
-            "discovered_at": discovered_at,
-        }
-        if ctx:
-            ctx.write_link_check(lc_row)
-        else:
-            storage.write_link_check(lc_row)
-        checked += 1
-        time.sleep(_delay)
+            lc_row = {
+                "from_url": row["from_url"],
+                "to_url": target,
+                "check_status": check_status,
+                "check_final_url": check_final,
+                "check_message": check_message,
+                "discovered_at": discovered_at,
+            }
+            if ctx:
+                ctx.write_link_check(lc_row)
+            else:
+                storage.write_link_check(lc_row)
+            checked += 1
+            time.sleep(_delay)
 
 
 def _resolve_delay(value: Union[float, Tuple[float, float]]) -> float:
