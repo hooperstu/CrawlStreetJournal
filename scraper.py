@@ -41,7 +41,7 @@ import random
 import socket
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 from urllib.robotparser import RobotFileParser
@@ -203,6 +203,14 @@ class _PriorityQueue:
         with self._lock:
             _, _, url, referrer, depth = heapq.heappop(self._heap)
             return url, referrer, depth
+
+    def try_pop(self) -> Optional[Tuple[str, str, int]]:
+        """Pop the next URL or return ``None`` if the queue is empty (non-blocking)."""
+        with self._lock:
+            if not self._heap:
+                return None
+            _, _, url, referrer, depth = heapq.heappop(self._heap)
+            return (url, referrer, depth)
 
     def __len__(self):
         with self._lock:
@@ -1506,108 +1514,131 @@ def crawl(
                         assets_from_pages, _combined_queue, started_at,
                     )
         else:
-            # Concurrent mode — submit batches to a thread pool.
-            # Per-domain rate limiting is preserved because _wait_for_domain
-            # is called inside _process_one_url with a per-domain lock.
+            # Concurrent mode — shared priority queue with independent workers.
+            # Each worker pops the next URL as soon as it is free (no batch barrier),
+            # so a slow page on one origin does not idle other workers. Per-domain
+            # rate limiting remains inside _process_one_url.
             worker_slots = [""] * workers
             _emit_slots(worker_slots)
 
-            def _slot_fetch(
-                slot_idx: int,
-                url: str,
-                referrer: str,
-                depth: int,
-            ) -> Tuple[bool, int, str]:
-                worker_slots[slot_idx] = url
-                _emit_slots(worker_slots)
-                try:
-                    return _process_one_url(
-                        url, referrer, depth,
-                        visited, queued, pq,
-                        sitemap_meta, cfg, ctx, max_depth,
-                        delay_cfg=delay_cfg,
-                        content_hashes=content_hashes if cfg.CONTENT_DEDUP else None,
-                        prev_hashes=prev_hashes if cfg.CHANGE_DETECTION else None,
+            pages_lock = threading.Lock()
+            in_flight_lock = threading.Lock()
+            in_flight = 0
+            stop_accepting = threading.Event()
+            stop_main_logged = threading.Event()
+            drain_logged = threading.Event()
+
+            def _log_stop_main() -> None:
+                nonlocal interrupted
+                if stop_main_logged.is_set():
+                    return
+                stop_main_logged.set()
+                interrupted = True
+                logger.info(
+                    "Stop requested — no new URLs will start "
+                    "(%d URL(s) left in queue for resume)",
+                    len(pq),
+                )
+                if on_phase:
+                    on_phase(
+                        "stopping",
+                        "Stop requested — not starting new pages "
+                        "(%d left in queue for resume)" % len(pq),
                     )
-                finally:
-                    worker_slots[slot_idx] = ""
-                    _emit_slots(worker_slots)
 
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                stop_notice_logged = False
-                while pq and pages_crawled < _max_pages:
+            def _log_stop_drain() -> None:
+                if drain_logged.is_set():
+                    return
+                drain_logged.set()
+                busy = [u for u in worker_slots if u]
+                nbusy = len(busy)
+                logger.info(
+                    "Stop requested — draining %d parallel worker(s) "
+                    "still fetching (finish current page each)…",
+                    nbusy,
+                )
+                for j, u in enumerate(worker_slots):
+                    if u:
+                        logger.info("  Worker %d: %s", j + 1, u)
+                if on_phase:
+                    detail = (
+                        "Waiting for %d parallel worker(s) to finish "
+                        "current page(s)…" % nbusy
+                        if nbusy
+                        else "Stop requested — finishing in-flight fetches…"
+                    )
+                    on_phase("stopping", detail)
+
+            def _worker_loop(slot_idx: int) -> None:
+                nonlocal pages_crawled, assets_from_pages, last_state_save, in_flight
+                while True:
+                    with pages_lock:
+                        at_cap = pages_crawled >= _max_pages
+                        if at_cap:
+                            stop_accepting.set()
+                    if at_cap:
+                        return
+
                     if should_stop and should_stop():
-                        interrupted = True
-                        logger.info(
-                            "Stop requested — not starting new batch "
-                            "(%d URL(s) left in queue will remain for resume)",
-                            len(pq),
+                        if not stop_accepting.is_set():
+                            stop_accepting.set()
+                            _log_stop_main()
+                        _log_stop_drain()
+
+                    item = pq.try_pop() if not stop_accepting.is_set() else None
+
+                    if item is None:
+                        with in_flight_lock:
+                            idle = in_flight == 0
+                        qempty = len(pq) == 0
+                        if idle and qempty:
+                            return
+                        if stop_accepting.is_set() and idle:
+                            return
+                        time.sleep(0.01)
+                        continue
+
+                    url, referrer, depth = item
+                    worker_slots[slot_idx] = url
+                    _emit_slots(worker_slots)
+                    with in_flight_lock:
+                        in_flight += 1
+                    try:
+                        page_written, new_assets, final_url = _process_one_url(
+                            url, referrer, depth,
+                            visited, queued, pq,
+                            sitemap_meta, cfg, ctx, max_depth,
+                            delay_cfg=delay_cfg,
+                            content_hashes=content_hashes if cfg.CONTENT_DEDUP else None,
+                            prev_hashes=prev_hashes if cfg.CHANGE_DETECTION else None,
                         )
-                        if on_phase:
-                            on_phase(
-                                "stopping",
-                                "Stop requested — not queueing new pages "
-                                "(%d left in queue for resume)" % len(pq),
-                            )
-                        break
+                    except Exception as exc:
+                        logger.warning("Worker error for %s: %s", url, exc)
+                        page_written, new_assets, final_url = False, 0, url
+                    finally:
+                        with in_flight_lock:
+                            in_flight -= 1
+                        worker_slots[slot_idx] = ""
+                        _emit_slots(worker_slots)
 
-                    # Drain up to `workers` items from the queue, preferring
-                    # URLs from different domains for maximum parallelism.
-                    batch = []
-                    while pq and len(batch) < workers:
-                        url, referrer, depth = pq.pop()
-                        batch.append((url, referrer, depth))
-
-                    futures = {}
-                    for slot_idx, (url, referrer, depth) in enumerate(batch):
-                        f = pool.submit(_slot_fetch, slot_idx, url, referrer, depth)
-                        futures[f] = url
-
-                    for f in as_completed(futures):
-                        if (
-                            should_stop
-                            and should_stop()
-                            and not stop_notice_logged
-                        ):
-                            stop_notice_logged = True
-                            busy = [u for u in worker_slots if u]
-                            nbusy = len(busy)
-                            logger.info(
-                                "Stop requested — draining %d parallel worker(s) "
-                                "still fetching (finish current page each)…",
-                                nbusy,
-                            )
-                            for j, u in enumerate(worker_slots):
-                                if u:
-                                    logger.info("  Worker %d: %s", j + 1, u)
-                            if on_phase:
-                                detail = (
-                                    "Waiting for %d parallel worker(s) to finish "
-                                    "current page(s)…" % nbusy
-                                    if nbusy
-                                    else "Stop requested — finishing current batch…"
-                                )
-                                on_phase("stopping", detail)
-                        try:
-                            page_written, new_assets, final_url = f.result()
-                        except Exception as exc:
-                            logger.warning("Worker error for %s: %s", futures[f], exc)
-                            continue
-                        if page_written:
+                    if page_written:
+                        with pages_lock:
                             pages_crawled += 1
                             assets_from_pages += new_assets
-                            if on_progress:
-                                on_progress(pages_crawled, assets_from_pages, final_url)
                             last_state_save = _persist_state_if_needed(
                                 run_dir, pages_crawled, last_state_save,
                                 state_interval, assets_from_pages,
                                 _combined_queue, started_at,
                             )
-                        if pages_crawled >= _max_pages:
-                            break
-                    if should_stop and should_stop():
-                        interrupted = True
-                        break
+                            if pages_crawled >= _max_pages:
+                                stop_accepting.set()
+                        if on_progress:
+                            on_progress(pages_crawled, assets_from_pages, final_url)
+
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [pool.submit(_worker_loop, i) for i in range(workers)]
+                for fut in futures:
+                    fut.result()
 
     finally:
         if on_worker_urls:
