@@ -381,6 +381,7 @@ def _run_crawl(
             run_folder=run_folder,
             resume=resume,
             visited_seed=visited_seed,
+            project_slug=project_slug,
             cfg=slot.cfg,
             ctx=slot.ctx,
         )
@@ -926,10 +927,15 @@ def _build_config_dict_from_form(form) -> Dict[str, Any]:
             parts = line.split("=", 1)
             ownership_rules.append([parts[0].strip(), parts[1].strip()])
 
+    _disc_mode = (form.get("sitemap_discovery_mode") or "refresh").strip().lower()
+    if _disc_mode not in ("refresh", "reuse"):
+        _disc_mode = "refresh"
+
     return {
         "SEED_URLS": seed_urls,
         "SITEMAP_URLS": sitemap_urls,
         "LOAD_SITEMAPS_FROM_ROBOTS": "load_sitemaps_from_robots" in form,
+        "SITEMAP_DISCOVERY_MODE": _disc_mode,
         "RESPECT_ROBOTS_TXT": "respect_robots_txt" in form,
         "MAX_SITEMAP_URLS": _int_form(form, "max_sitemap_urls", 1_000_000),
         "MAX_PAGES_TO_CRAWL": _int_form(form, "max_pages", 1_000_000),

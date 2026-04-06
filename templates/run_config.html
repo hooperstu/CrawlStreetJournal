@@ -279,6 +279,14 @@
         <label class="form-label" style="margin-bottom:0;">Auto-discover sitemaps from robots.txt</label>
       </div>
       <div class="form-group" style="margin-top:8px;">
+        <label class="form-label">Sitemap / robots discovery</label>
+        <p class="field-explain"><strong>Refresh</strong> — fetch robots and parse sitemaps every run. <strong>Reuse cached</strong> — skip that when seeds and sitemap settings match the last discovery for this project (stored in <code>_discovered_sitemaps.json</code>).</p>
+        <select name="sitemap_discovery_mode" style="max-width:420px;padding:8px 10px;font-size:14px;">
+          <option value="refresh" {% if cfg.get('SITEMAP_DISCOVERY_MODE', 'refresh') != 'reuse' %}selected{% endif %}>Refresh — fetch robots &amp; sitemaps each run</option>
+          <option value="reuse" {% if cfg.get('SITEMAP_DISCOVERY_MODE', 'refresh') == 'reuse' %}selected{% endif %}>Reuse cached discovery</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin-top:8px;">
         <label class="form-label">Max sitemap URLs</label>
         <input type="number" name="max_sitemap_urls" value="{{ cfg.get('MAX_SITEMAP_URLS', 1000000) }}" min="1" style="max-width:200px;">
       </div>

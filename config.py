@@ -259,6 +259,12 @@ TRAINING_KEYWORDS = (
 # Python log-level name: DEBUG, INFO, WARNING, ERROR, CRITICAL.
 LOG_LEVEL = "INFO"
 
+# ── SITEMAP / SEED DISCOVERY ───────────────────────────────────────────
+# ``refresh`` — always fetch robots.txt and parse sitemaps at run start.
+# ``reuse`` — use ``projects/<slug>/_discovered_sitemaps.json`` when seeds
+# and sitemap settings match (same fingerprint); skips network discovery.
+SITEMAP_DISCOVERY_MODE = "refresh"
+
 # ── IDENTITY ──────────────────────────────────────────────────────────
 USER_AGENT = (
     "CSJ/1.0 "
@@ -279,6 +285,7 @@ class CrawlConfig:
     SEED_URLS: list = field(default_factory=list)
     SITEMAP_URLS: list = field(default_factory=list)
     LOAD_SITEMAPS_FROM_ROBOTS: bool = True
+    SITEMAP_DISCOVERY_MODE: str = "refresh"
     RESPECT_ROBOTS_TXT: bool = True
     MAX_SITEMAP_URLS: int = 1_000_000
     MAX_PAGES_TO_CRAWL: int = 1_000_000
