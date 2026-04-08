@@ -5,7 +5,7 @@
          POST /projects/import  (import_project_route)
   Context:
     projects  (list of dicts) — each dict contains: name, slug, description,
-        run_count, total_pages, latest_run_status.
+        run_count, total_pages, latest_run_status, latest_run_folder (internal).
   When the list is empty an explanatory placeholder is shown instead of the
   project grid. The import form accepts a .zip archive exported from another
   CSJ instance.
