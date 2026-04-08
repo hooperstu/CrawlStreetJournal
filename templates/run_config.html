@@ -72,14 +72,19 @@
   <div class="gap-8" style="flex-wrap:wrap;">
     {% if run_status == 'new' %}
     <form method="post" action="{{ url_for('start_run_route', slug=project.slug, run_name=run_name) }}" class="inline-flex" style="gap:10px;align-items:flex-end;flex-wrap:wrap;">
-      {% if other_runs and other_runs|length > 0 %}
+      {% if show_continue_from %}
       <div>
         <label class="form-label" style="font-size:12px;margin-bottom:2px;">Continue without re-crawling prior URLs</label>
         <select name="continue_from" style="padding:8px 10px;font-size:14px;min-width:220px;max-width:min(100%, 420px);">
           <option value="">— None (or use “created from” below)</option>
+          {% if other_runs and other_runs|length > 0 %}
+          <option value="{{ continue_all_value }}" {% if continue_from_marker == continue_all_value %}selected{% endif %}>All prior runs (cumulative)</option>
           {% for r in other_runs %}
           <option value="{{ r.name }}" {% if continue_from_marker == r.name %}selected{% endif %}>{{ r.label }}</option>
           {% endfor %}
+          {% else %}
+          <option value="{{ continue_all_value }}" {% if continue_from_marker == continue_all_value %}selected{% endif %}>All prior runs (cumulative)</option>
+          {% endif %}
         </select>
       </div>
       {% endif %}
@@ -102,7 +107,11 @@
 
 {% if continue_from_marker %}
 <div class="settings-note" style="margin-bottom:16px;">
+  {% if continue_from_marker == continue_all_value %}
+  <strong>Created from all prior runs (cumulative).</strong> Config was copied from the newest run. On first start, URLs already in <em>any</em> other run’s CSVs are skipped so they are not fetched again.
+  {% else %}
   <strong>Created from prior run</strong> {{ continue_from_marker }}. Config was copied from that run. On first start, URLs already in that run’s CSVs are skipped so they are not fetched again.
+  {% endif %}
 </div>
 {% endif %}
 

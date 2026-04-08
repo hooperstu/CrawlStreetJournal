@@ -62,6 +62,25 @@ logger = logging.getLogger(__name__)
 # Set by ``initialise_outputs()``; concurrent crawls use StorageContext instead.
 _active_run_dir: Optional[str] = None
 
+# Written to ``.continue_from`` and accepted from forms: merge visited URLs from
+# every other ``run_*`` folder in the project (not a real directory name).
+CONTINUE_FROM_ALL_PRIOR_RUNS = "__csj_all_prior_runs__"
+
+
+def _sorted_run_folder_names(
+    output_dir: str, exclude: Optional[str] = None
+) -> List[str]:
+    """``run_*`` directory names under *output_dir*, newest timestamp first."""
+    if not os.path.isdir(output_dir):
+        return []
+    names = sorted(
+        (n for n in os.listdir(output_dir) if n.startswith("run_")),
+        reverse=True,
+    )
+    if exclude:
+        names = [n for n in names if n != exclude]
+    return names
+
 # ── CSV field definitions ─────────────────────────────────────────────────
 
 PAGES_FIELDS = (
@@ -366,7 +385,18 @@ class StorageContext:
             _write_run_name(run_dir, run_name)
 
         cfg_dict: Optional[Dict[str, Any]] = None
-        if continue_from_folder and continue_from_folder.startswith("run_"):
+        if continue_from_folder == CONTINUE_FROM_ALL_PRIOR_RUNS:
+            existing = _sorted_run_folder_names(self.output_dir, exclude=folder_name)
+            if existing:
+                prior_path = os.path.join(self.output_dir, existing[0])
+                cfg_dict = load_run_config(prior_path)
+            marker = os.path.join(run_dir, ".continue_from")
+            try:
+                with open(marker, "w", encoding="utf-8") as cf:
+                    cf.write(CONTINUE_FROM_ALL_PRIOR_RUNS)
+            except OSError:
+                pass
+        elif continue_from_folder and continue_from_folder.startswith("run_"):
             prior_path = os.path.join(self.output_dir, continue_from_folder)
             if (
                 os.path.isdir(prior_path)
@@ -785,6 +815,7 @@ def list_projects() -> List[Dict[str, Any]]:
         run_count = 0
         total_pages = 0
         latest_status = ""
+        latest_folder = ""
         if os.path.isdir(runs_dir):
             run_folders = sorted(
                 [
@@ -798,7 +829,8 @@ def list_projects() -> List[Dict[str, Any]]:
             for rf in run_folders:
                 total_pages += _count_pages_in(os.path.join(runs_dir, rf))
             if run_folders:
-                latest_status = get_run_status(os.path.join(runs_dir, run_folders[0]))
+                latest_folder = run_folders[0]
+                latest_status = get_run_status(os.path.join(runs_dir, latest_folder))
         projects.append({
             "slug": name,
             "name": meta.get("name", name),
@@ -807,6 +839,7 @@ def list_projects() -> List[Dict[str, Any]]:
             "run_count": run_count,
             "total_pages": total_pages,
             "latest_run_status": latest_status,
+            "latest_run_folder": latest_folder,
         })
     projects.sort(key=lambda p: p["created_at"], reverse=True)
     return projects
@@ -1141,6 +1174,9 @@ def create_run(
     If *continue_from_folder* names another ``run_*`` directory under the same
     ``OUTPUT_DIR``, copy that run's ``_config.json`` into the new folder so
     seeds and scope match the prior crawl (for continuing without duplicate fetches).
+    If it equals ``CONTINUE_FROM_ALL_PRIOR_RUNS``, write that marker and copy
+    config from the newest existing ``run_*`` (if any); visited URLs from all
+    other runs are merged when the crawl starts.
     """
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S_%f")
@@ -1152,7 +1188,18 @@ def create_run(
         _write_run_name(run_dir, run_name)
 
     prior_cfg: Optional[Dict[str, Any]] = None
-    if continue_from_folder and continue_from_folder.startswith("run_"):
+    if continue_from_folder == CONTINUE_FROM_ALL_PRIOR_RUNS:
+        existing = _sorted_run_folder_names(config.OUTPUT_DIR, exclude=folder_name)
+        if existing:
+            prior_path = os.path.join(config.OUTPUT_DIR, existing[0])
+            prior_cfg = load_run_config(prior_path)
+        marker = os.path.join(run_dir, ".continue_from")
+        try:
+            with open(marker, "w", encoding="utf-8") as cf:
+                cf.write(CONTINUE_FROM_ALL_PRIOR_RUNS)
+        except OSError:
+            pass
+    elif continue_from_folder and continue_from_folder.startswith("run_"):
         prior_path = os.path.join(config.OUTPUT_DIR, continue_from_folder)
         if (
             os.path.isdir(prior_path)

@@ -199,6 +199,25 @@ class CrawlSlot:
 _active_crawls: Dict[str, CrawlSlot] = {}
 _crawls_lock = threading.Lock()
 
+_stale_recovery_lock = threading.Lock()
+_stale_recovery_done = False
+
+
+def ensure_stale_run_states_recovered() -> None:
+    """Rewrite on-disk ``running`` run states to ``interrupted`` once per process.
+
+    Invoked from every HTTP server entry point (``run_server``, ``app.run`` via
+    :mod:`csjapp`, etc.) so desktop launchers and alternate starters match
+    ``python gui.py`` behaviour.
+    """
+    global _stale_recovery_done
+    with _stale_recovery_lock:
+        if _stale_recovery_done:
+            return
+        storage_module.recover_stale_running_states()
+        _stale_recovery_done = True
+
+
 # Set by :func:`run_server` so :func:`quit_application` can stop the Werkzeug
 # server and end the Flask thread (used by the desktop launcher).
 _shutdown_server: Optional[Any] = None
@@ -232,6 +251,7 @@ def run_server(host: str, port: int, threaded: bool = True) -> None:
     Used by ``launcher.py`` so **Quit application** can stop the server thread;
     ``app.run`` does not expose a shutdown hook.
     """
+    ensure_stale_run_states_recovered()
     global _shutdown_server
     server = make_server(host, port, app, threaded=threaded)
     with _shutdown_lock:
@@ -250,6 +270,25 @@ def _project_status(slug: str) -> Dict[str, Any]:
         if slot:
             return dict(slot.status)
     return dict(_EMPTY_STATUS, project_slug=slug)
+
+
+def _effective_run_status(slug: str, run_name: str, disk_status: str) -> str:
+    """Map on-disk status for UI and start/resume when the crawl thread is gone.
+
+    If ``_state.json`` still says *running* after an unclean exit but no live
+    crawl owns this run folder, treat as *interrupted* so the monitor and
+    runs list show **Resume** instead of a misleading **Idle** / **Running**.
+    """
+    if disk_status != "running":
+        return disk_status
+    with _crawls_lock:
+        slot = _active_crawls.get(slug)
+        live_same = (
+            slot
+            and slot.status.get("running")
+            and slot.status.get("run_folder") == run_name
+        )
+    return "running" if live_same else "interrupted"
 
 
 # ── In-memory log buffer ─────────────────────────────────────────────────
@@ -354,23 +393,36 @@ def _run_crawl(
         )
         visited_seed = None
         if run_folder and not resume and continue_from_run:
-            prior_dir = os.path.join(
-                storage_module.get_project_runs_dir(project_slug),
-                continue_from_run,
-            )
-            if os.path.isdir(prior_dir):
-                visited_seed = scraper.visited_keys_from_prior_run(prior_dir)
+            runs_root = storage_module.get_project_runs_dir(project_slug)
+            if continue_from_run == storage_module.CONTINUE_FROM_ALL_PRIOR_RUNS:
+                visited_seed = scraper.visited_keys_from_all_prior_runs(
+                    runs_root, exclude_run=run_folder
+                )
                 logging.info(
-                    "Continue-from: %d URL(s) from run %s will be skipped if re-queued",
+                    "Continue-from (all prior runs): %d URL(s) will be skipped if re-queued",
                     len(visited_seed),
-                    continue_from_run,
                 )
                 if on_phase and visited_seed:
                     on_phase(
                         "crawling",
-                        "Continuing from prior run — %s URLs treated as already crawled"
+                        "Continuing from all prior runs — %s URLs treated as already crawled"
                         % f"{len(visited_seed):,}",
                     )
+            else:
+                prior_dir = os.path.join(runs_root, continue_from_run)
+                if os.path.isdir(prior_dir):
+                    visited_seed = scraper.visited_keys_from_prior_run(prior_dir)
+                    logging.info(
+                        "Continue-from: %d URL(s) from run %s will be skipped if re-queued",
+                        len(visited_seed),
+                        continue_from_run,
+                    )
+                    if on_phase and visited_seed:
+                        on_phase(
+                            "crawling",
+                            "Continuing from prior run — %s URLs treated as already crawled"
+                            % f"{len(visited_seed):,}",
+                        )
 
         pages, assets = scraper.crawl(
             on_progress=on_progress,
@@ -421,8 +473,9 @@ def _start_crawl_thread(
         run_name: Human-friendly label stored alongside the run.
         resume: If ``True``, resume from the last checkpoint.
         continue_from_run: When starting a **new** crawl (``resume`` is ``False``),
-            optional prior ``run_*`` folder name; URLs already in that run's CSVs
-            are not fetched again if re-seeded.
+            optional prior ``run_*`` folder name, or
+            ``storage.CONTINUE_FROM_ALL_PRIOR_RUNS`` to skip URLs from every other
+            run in the project.
 
     Returns:
         ``True`` if the crawl was started, ``False`` if one was already active.
@@ -441,7 +494,12 @@ def _start_crawl_thread(
             # Overlay the run's saved settings onto the baseline; any keys
             # absent from the saved dict fall back to the module defaults.
             cfg = CrawlConfig.from_dict(saved, base=cfg)
-    if continue_from_run and not resume and run_folder:
+    if (
+        continue_from_run
+        and continue_from_run != storage_module.CONTINUE_FROM_ALL_PRIOR_RUNS
+        and not resume
+        and run_folder
+    ):
         prior_dir = os.path.join(runs_dir, continue_from_run)
         cur_dir = os.path.join(runs_dir, run_folder)
         if (
@@ -509,6 +567,8 @@ def _resolve_continue_from(slug: str, run_name: str, form_value: str) -> Optiona
     v = (form_value or "").strip()
     if not v or v == run_name:
         return None
+    if v == storage_module.CONTINUE_FROM_ALL_PRIOR_RUNS:
+        return v
     if not v.startswith("run_"):
         return None
     base = _runs_dir(slug)
@@ -525,6 +585,8 @@ def _resolve_continue_from_create(slug: str, form_value: str) -> Optional[str]:
     v = (form_value or "").strip()
     if not v:
         return None
+    if v == storage_module.CONTINUE_FROM_ALL_PRIOR_RUNS:
+        return v
     if not v.startswith("run_"):
         return None
     base = _runs_dir(slug)
@@ -980,6 +1042,11 @@ def _build_config_dict_from_form(form) -> Dict[str, Any]:
 def projects_list():
     """``GET /`` — Render the top-level project listing page."""
     projects = storage_module.list_projects()
+    for p in projects:
+        lf = (p.get("latest_run_folder") or "").strip()
+        ls = p.get("latest_run_status") or ""
+        if lf and ls:
+            p["latest_run_status"] = _effective_run_status(p["slug"], lf, ls)
     return render_template("projects.html", projects=projects)
 
 
@@ -1174,8 +1241,23 @@ def project_runs(slug: str):
     project["slug"] = slug
     ctx = storage_module.StorageContext(_runs_dir(slug), config.CrawlConfig.from_module())
     run_list = ctx.list_run_dirs()
+    for r in run_list:
+        if r.get("name") == "_legacy":
+            continue
+        r["status"] = _effective_run_status(
+            slug, r["name"], str(r.get("status") or "new")
+        )
+    cumulative_continue_available = any(
+        r.get("name") != "_legacy" and int(r.get("page_count") or 0) > 0
+        for r in run_list
+    )
     return render_template(
-        "runs.html", project=project, runs=run_list, status=_project_status(slug),
+        "runs.html",
+        project=project,
+        runs=run_list,
+        status=_project_status(slug),
+        continue_all_value=storage_module.CONTINUE_FROM_ALL_PRIOR_RUNS,
+        cumulative_continue_available=cumulative_continue_available,
     )
 
 
@@ -1189,8 +1271,9 @@ def create_run_route(slug: str):
 
     Form fields:
         run_name: Optional human-friendly label for the new run.
-        continue_from: Optional ``run_*`` folder — copy config and skip URLs
-            already crawled in that run when you first start the new run.
+        continue_from: Optional ``run_*`` folder, or cumulative sentinel
+            (``storage.CONTINUE_FROM_ALL_PRIOR_RUNS``) — copy config and skip URLs
+            from that run or from all other runs on first start.
     """
     defaults = storage_module.load_project_defaults(slug) or storage_module.snapshot_config()
     cfg = config.CrawlConfig.from_dict(defaults)
@@ -1219,7 +1302,9 @@ def run_config(slug: str, run_name: str):
         return "Run not found", 404
     cfg = storage_module.load_run_config(run_dir) or storage_module.snapshot_config()
     friendly = storage_module._read_run_name(run_dir) or ""
-    run_st = storage_module.get_run_status(run_dir)
+    run_st = _effective_run_status(
+        slug, run_name, storage_module.get_run_status(run_dir)
+    )
     continue_from_marker = _read_continue_from_marker(run_dir)
     other_runs: List[Dict[str, str]] = []
     base = _runs_dir(slug)
@@ -1232,6 +1317,9 @@ def run_config(slug: str, run_name: str):
                 continue
             fn = storage_module._read_run_name(full) or ""
             other_runs.append({"name": n, "label": fn or n})
+    show_continue_from = bool(other_runs) or (
+        continue_from_marker == storage_module.CONTINUE_FROM_ALL_PRIOR_RUNS
+    )
     return render_template(
         "run_config.html",
         project=project, run_name=run_name,
@@ -1239,6 +1327,8 @@ def run_config(slug: str, run_name: str):
         status=_project_status(slug),
         continue_from_marker=continue_from_marker,
         other_runs=other_runs,
+        continue_all_value=storage_module.CONTINUE_FROM_ALL_PRIOR_RUNS,
+        show_continue_from=show_continue_from,
     )
 
 
@@ -1279,7 +1369,9 @@ def run_monitor(slug: str, run_name: str):
     run_dir = _run_dir(slug, run_name)
     if not os.path.isdir(run_dir):
         return "Run not found", 404
-    run_status = storage_module.get_run_status(run_dir)
+    run_status = _effective_run_status(
+        slug, run_name, storage_module.get_run_status(run_dir)
+    )
     friendly = storage_module._read_run_name(run_dir) or ""
     # For completed/interrupted runs where no active slot exists, read the
     # true page and asset counts from the on-disk CSVs and compute elapsed
@@ -1327,15 +1419,18 @@ def run_monitor(slug: str, run_name: str):
 def start_run_route(slug: str, run_name: str):
     """``POST /p/<slug>/runs/<run_name>/start`` — Start (or auto-resume) a crawl.
 
-    If the run's on-disk status is ``"interrupted"`` the crawl resumes
-    from its last checkpoint rather than starting from scratch.  Silently
-    redirects to the monitor if a crawl is already running for this project.
+    If the run's on-disk status is ``"interrupted"`` (or stale ``"running"``
+    with no live crawl) the crawl resumes from its last checkpoint rather than
+    starting from scratch.  Silently redirects to the monitor if a crawl is
+    already running for this project.
     """
     with _crawls_lock:
         if slug in _active_crawls:
             return redirect(url_for("run_monitor", slug=slug, run_name=run_name))
     run_dir = _run_dir(slug, run_name)
-    rs = storage_module.get_run_status(run_dir)
+    rs = _effective_run_status(
+        slug, run_name, storage_module.get_run_status(run_dir)
+    )
     resume = rs == "interrupted"
     continue_from = None
     if not resume:
@@ -1695,7 +1790,5 @@ if __name__ == "__main__":
     )
     # Move any flat-file data from pre-project-era layouts into the new structure.
     storage_module.migrate_legacy_data()
-    # Any run left in 'running' state after a restart was killed uncleanly; treat as interrupted.
-    storage_module.recover_stale_running_states()
     print("The Crawl Street Journal: http://localhost:5001")
     run_server(host="0.0.0.0", port=5001, threaded=True)
