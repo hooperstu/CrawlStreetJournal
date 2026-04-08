@@ -5,7 +5,8 @@
     project        (dict)  — active project metadata.
     run_name       (str)   — filesystem run folder name.
     friendly_name  (str)   — optional human-readable label.
-    run_status     (str)   — "new" | "interrupted" | "completed".
+    run_status     (str)   — disk status normalised for UI: stale "running"
+                             without a live crawl is shown as "interrupted".
     status         (dict)  — live crawl state from _project_status():
         .running, .stopping, .run_folder, .pages, .assets, .elapsed,
         .phase_detail, .current_url, .finished_message.
