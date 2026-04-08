@@ -108,6 +108,9 @@ def main() -> int:
     if _WEBVIEW_AVAILABLE:
         _wait_for_server(port)
         try:
+            # WKWebView / WebView2 do not save attachment responses unless this is set
+            # (CSV and ZIP downloads from the Results page would otherwise appear to do nothing).
+            webview.settings["ALLOW_DOWNLOADS"] = True
             webview.create_window(
                 "The Crawl Street Journal",
                 url,
