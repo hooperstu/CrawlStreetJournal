@@ -237,8 +237,8 @@ if sys.platform == "darwin":
         bundle_identifier="io.csj.crawlstreetjournal",
         info_plist={
             "CFBundleDisplayName": "The Crawl Street Journal",
-            "CFBundleShortVersionString": "3.3.2",
-            "CFBundleVersion": "3.3.2",
+            "CFBundleShortVersionString": "3.3.3",
+            "CFBundleVersion": "3.3.3",
             "NSHighResolutionCapable": True,
             "LSBackgroundOnly": False,
             # The app makes HTTP requests to crawl target sites and serves
