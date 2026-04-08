@@ -1370,6 +1370,29 @@ def visited_keys_from_prior_run(run_dir: str) -> Set[str]:
     return out
 
 
+def visited_keys_from_all_prior_runs(
+    runs_dir: str, exclude_run: Optional[str] = None
+) -> Set[str]:
+    """Union of normalised URL keys from every ``run_*`` under *runs_dir*.
+
+    *exclude_run* is typically the active run folder so its (empty) CSVs are
+    not used. Used for cumulative “continue from all prior runs” behaviour.
+    """
+    out: Set[str] = set()
+    if not os.path.isdir(runs_dir):
+        return out
+    for name in sorted(os.listdir(runs_dir)):
+        if not name.startswith("run_"):
+            continue
+        if exclude_run and name == exclude_run:
+            continue
+        sub = os.path.join(runs_dir, name)
+        if not os.path.isdir(sub):
+            continue
+        out |= visited_keys_from_prior_run(sub)
+    return out
+
+
 def _finalise_run(
     run_dir: str,
     interrupted: bool,

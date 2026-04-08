@@ -114,9 +114,10 @@ def main() -> int:
 
     # Now that the project root is on sys.path we can import the app.
     import storage as storage_module  # noqa: E402
-    from gui import app  # noqa: E402
+    from gui import app, ensure_stale_run_states_recovered  # noqa: E402
 
     storage_module.migrate_legacy_data()
+    ensure_stale_run_states_recovered()
 
     port = _find_free_port()
     url = f"http://{HOST}:{port}"

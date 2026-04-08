@@ -40,10 +40,13 @@
       <input type="text" name="run_name" placeholder="e.g. Weekly full crawl" style="padding:6px 10px;font-size:14px;width:280px;">
     </div>
     <div>
-      <label class="form-label" style="font-size:12px;margin-bottom:2px;">Continue from prior run</label>
-      <p class="form-hint" style="margin-bottom:4px;max-width:360px;">Optional. Copies that run’s crawl config and skips URLs already in its CSVs when you start—no duplicate page fetches for the same URLs.</p>
+      <label class="form-label" style="font-size:12px;margin-bottom:2px;">Continue from prior run(s)</label>
+      <p class="form-hint" style="margin-bottom:4px;max-width:360px;">Optional. Copy one run’s crawl config and/or skip URLs already recorded in CSVs when you start—no duplicate page fetches for the same URLs. <strong>All prior runs</strong> merges every existing run’s URLs.</p>
       <select name="continue_from" style="padding:6px 10px;font-size:14px;min-width:260px;max-width:100%;">
         <option value="">— New crawl only (no prior run)</option>
+        {% if cumulative_continue_available %}
+        <option value="{{ continue_all_value }}">All prior runs (cumulative)</option>
+        {% endif %}
         {% for r in runs %}
         {% if r.name != '_legacy' and r.page_count|int > 0 %}
         <option value="{{ r.name }}">{{ r.label }} ({{ r.name }}) — {{ "{:,}".format(r.page_count|int) }} pages</option>
