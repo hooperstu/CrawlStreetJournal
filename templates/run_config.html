@@ -148,15 +148,15 @@
         Starting URLs
         <span id="seed-count" style="font-weight:400;color:var(--csj-accent);margin-left:6px;"></span>
       </label>
-      <p class="field-explain">Paste one URL per line. These are the pages the crawler visits first, then follows links from.</p>
+      <p class="field-explain">One URL per line. The crawler queues these first, then follows links from them.</p>
       <textarea name="seed_urls" rows="6" id="seed-urls" placeholder="https://www.example.com&#10;https://blog.example.com&#10;https://shop.example.com" style="font-family:monospace;font-size:13px;">{{ cfg.get("SEED_URLS", []) | join('\n') }}</textarea>
     </div>
 
     <div class="form-group" style="margin-top:16px;">
       <label class="form-label">Allowed domains</label>
       <p class="field-explain">
-        The crawler will only visit pages on these domains (and their subdomains). For example, <code>nhs.uk</code> allows <code>www.nhs.uk</code>, <code>digital.nhs.uk</code>, etc.
-        If left empty, domains are extracted automatically from your starting URLs.
+        Each line is matched as a substring against the hostname (case-insensitive). For example, <code>nhs.uk</code> matches <code>www.nhs.uk</code> and <code>digital.nhs.uk</code>.
+        Leave empty to derive allowed hostnames from your starting URLs at crawl time.
       </p>
       <div style="display:flex;gap:8px;align-items:flex-start;">
         <textarea name="allowed_domains" rows="4" id="allowed-domains" placeholder="example.com&#10;blog.example.com" style="font-family:monospace;font-size:13px;flex:1;">{{ cfg.get("ALLOWED_DOMAINS", []) | join('\n') }}</textarea>
@@ -191,7 +191,7 @@
 
     <div class="form-group" style="margin-top:4px;">
       <label class="form-label">Delay between requests</label>
-      <p class="field-explain" style="margin-bottom:6px;">A random pause between each page fetch. Keep ≥ 1 second to be polite to servers.</p>
+      <p class="field-explain" style="margin-bottom:6px;">Random delay between page fetches (inclusive range). Higher values reduce load on servers; very low values may be impolite or trigger rate limiting.</p>
       {% set delay = cfg.get("REQUEST_DELAY_SECONDS", [3, 5]) %}
       <div style="display:flex;gap:8px;align-items:center;max-width:360px;">
         <div style="flex:1;">
@@ -210,7 +210,7 @@
       <div class="form-group">
         <label class="form-label">Request timeout (seconds)</label>
         <input type="number" name="request_timeout" value="{{ cfg.get('REQUEST_TIMEOUT_SECONDS', 20) }}" min="1">
-        <p class="field-explain">Give up on a page if the server does not respond within this time.</p>
+        <p class="field-explain">Abandon a page if the server does not respond within this time.</p>
       </div>
       <div class="form-group">
         <label class="form-label">Max retries per page</label>
@@ -223,14 +223,14 @@
       <div class="form-group">
         <label class="form-label">HTTP max redirects</label>
         <input type="number" name="http_max_redirects" value="{{ cfg.get('HTTP_MAX_REDIRECTS', 30) }}" min="1" max="1000">
-        <p class="field-explain">Stop after this many redirects (default matches Requests).</p>
+        <p class="field-explain">Maximum redirects to follow in a chain (typical default is 30).</p>
       </div>
       <div class="form-group">
         <div class="checkbox-row">
           <input type="checkbox" name="http_verify_ssl" value="1" {% if cfg.get("HTTP_VERIFY_SSL", True) %}checked{% endif %}>
           <label class="form-label" style="margin-bottom:0;">Verify TLS certificates</label>
         </div>
-        <p class="field-explain">Turn off only for broken HTTPS (insecure).</p>
+        <p class="field-explain">Disable only when auditing hosts with broken certificates (traffic is then vulnerable to interception).</p>
       </div>
     </div>
 
@@ -289,7 +289,7 @@
       </div>
       <div class="form-group" style="margin-top:8px;">
         <label class="form-label">Sitemap / robots discovery</label>
-        <p class="field-explain"><strong>Refresh</strong> — fetch robots and parse sitemaps every run. <strong>Reuse cached</strong> — skip that when seeds and sitemap settings match the last discovery for this project (stored in <code>_discovered_sitemaps.json</code>).</p>
+        <p class="field-explain"><strong>Refresh</strong> — fetch robots.txt and sitemaps each run. <strong>Reuse cached</strong> — use the last discovery when seeds and sitemap settings match (see <code>_discovered_sitemaps.json</code> in the project folder).</p>
         <select name="sitemap_discovery_mode" style="max-width:420px;padding:8px 10px;font-size:14px;">
           <option value="refresh" {% if cfg.get('SITEMAP_DISCOVERY_MODE', 'refresh') != 'reuse' %}selected{% endif %}>Refresh — fetch robots &amp; sitemaps each run</option>
           <option value="reuse" {% if cfg.get('SITEMAP_DISCOVERY_MODE', 'refresh') == 'reuse' %}selected{% endif %}>Reuse cached discovery</option>
@@ -331,7 +331,7 @@
       </div>
       <div class="form-group" style="margin-top:8px;">
         <label class="form-label">Keyword log terms</label>
-        <p class="field-explain">One phrase per line. Case-insensitive substring match against visible page text (not HTML markup). Join with pages.csv fields for charts and pivots.</p>
+        <p class="field-explain">One phrase per line. Case-insensitive substring match on visible text (script and style content excluded). Log rows appear when this output is enabled and a phrase matches.</p>
         <textarea name="keyword_log_terms" rows="4" placeholder="NHS&#10;mental health&#10;…" style="font-family:monospace;font-size:13px;">{{ cfg.get("KEYWORD_LOG_TERMS", []) | join('\n') }}</textarea>
       </div>
       <div class="checkbox-row">
@@ -405,7 +405,7 @@
       </div>
       <div class="form-group">
         <label class="form-label">Domain ownership rules <span style="font-weight:400;color:var(--csj-body);">(for reports)</span></label>
-        <p class="field-explain">Group domains into categories for dashboard visualisations. One rule per line: <code>domain = Label</code>. First match wins.</p>
+        <p class="field-explain">Group domains for the project Dashboard charts. One rule per line: <code>domain = Label</code>. First match wins.</p>
         <textarea name="domain_ownership_rules" rows="4" placeholder="nhs.uk = NHS&#10;gov.uk = Government&#10;co.uk = Commercial" style="font-family:monospace;font-size:13px;">{% for rule in cfg.get("DOMAIN_OWNERSHIP_RULES", []) %}{% if rule is iterable and rule|length >= 2 %}{{ rule[0] }} = {{ rule[1] }}
 {% endif %}{% endfor %}</textarea>
       </div>

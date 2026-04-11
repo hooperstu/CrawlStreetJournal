@@ -31,9 +31,9 @@ Projects::
 
 Project pages::
 
-    GET  /p/<slug>                                Overview dashboard.
-    GET  /p/<slug>/defaults                       View project defaults.
-    POST /p/<slug>/defaults                       Save project defaults.
+    GET  /p/<slug>                                Dashboard (reports).
+    GET  /p/<slug>/defaults                       Redirects to Settings (project defaults).
+    POST /p/<slug>/defaults                       Save project defaults (same form as Settings).
     GET  /p/<slug>/runs                           List runs.
     POST /p/<slug>/runs/create                    Create a new run (optional continue_from).
 

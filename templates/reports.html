@@ -1,5 +1,5 @@
 {#
-  reports.html — D3-powered reports visualisation dashboard (project level).
+  reports.html — D3-powered Dashboard (project-level charts).
   Route: GET /p/<slug>/reports  (reports.reports_dashboard)
   Context: project (dict), runs (list of run metadata dicts),
            preselected_runs (comma-separated run names or "").
@@ -12,7 +12,7 @@
 
   CSS mapping (inline <style> blocks):
     .viz-tab / .viz-panel  — tab switching; JS toggles .active class.
-    .viz-container         — card wrapper for each visualisation.
+    .viz-container         — card wrapper for each chart.
     .viz-tooltip           — shared floating tooltip, positioned by reports.js.
     .network-detail-overlay— slide-in side panel for domain node details (network graph).
     .filter-bar / .filter-chip — global filter controls wired up in reports.js.
@@ -783,7 +783,7 @@
       <span class="active-viz-pill">Active: <strong id="activeVizLabel">Network Graph</strong></span>
     </div>
     <div class="dashboard-options-toolbar">
-      <input type="search" id="viz-tab-search" placeholder="Find a visualisation (for example: SEO, radar, publishers)">
+      <input type="search" id="viz-tab-search" placeholder="Find a chart (for example: SEO, radar, publishers)">
     </div>
     <div class="viz-tab-groups" id="vizTabs">
       <div class="viz-tab-group vtg-governance">
@@ -849,7 +849,7 @@
         </div>
       </div>
     </div>
-    <div class="viz-tab-empty" id="vizTabSearchEmpty" aria-live="polite">No visualisations matched your search.</div>
+    <div class="viz-tab-empty" id="vizTabSearchEmpty" aria-live="polite">No charts matched your search.</div>
     <div class="dashboard-analysis-links">
       <strong>Additional analysis:</strong>
       <a href="{{ url_for('project_audit', slug=project.slug) }}" class="btn btn-sm btn-secondary dashboard-analysis-link">Content Audit</a>
