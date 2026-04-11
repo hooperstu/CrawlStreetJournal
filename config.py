@@ -259,6 +259,20 @@ TRAINING_KEYWORDS = (
 # Python log-level name: DEBUG, INFO, WARNING, ERROR, CRITICAL.
 LOG_LEVEL = "INFO"
 
+# ── WEB GUI (Flask) ───────────────────────────────────────────────────
+# Bind address for ``python gui.py``. Default is loopback only so the service
+# is not reachable from other machines unless you override it (e.g. Docker).
+# Override with environment variable ``CSJ_GUI_BIND`` (e.g. ``0.0.0.0``).
+GUI_BIND_ADDRESS = "127.0.0.1"
+# When ``True``, trust ``X-Forwarded-*`` headers from one reverse proxy hop
+# (nginx, Caddy, Traefik). Set via ``CSJ_GUI_TRUST_PROXY=1`` when the app
+# sits behind a TLS-terminating proxy so ``request.remote_addr`` and scheme
+# are correct. Leave ``False`` if clients connect directly to Flask.
+GUI_TRUST_PROXY_HEADERS = False
+# When ``True``, session cookies are only sent over HTTPS. Enable when the
+# app is served exclusively over HTTPS (e.g. behind a TLS reverse proxy).
+GUI_SESSION_COOKIE_SECURE = False
+
 # ── SITEMAP / SEED DISCOVERY ───────────────────────────────────────────
 # ``refresh`` — always fetch robots.txt and parse sitemaps at run start.
 # ``reuse`` — use ``projects/<slug>/_discovered_sitemaps.json`` when seeds

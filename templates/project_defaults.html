@@ -24,6 +24,7 @@
 </p>
 
 <form method="post" action="{{ url_for('save_project_defaults_route', slug=project.slug) }}" id="config-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
 
   <div class="card">
     <div class="card-title">1. Target Sites</div>

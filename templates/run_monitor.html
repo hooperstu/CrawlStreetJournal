@@ -111,14 +111,17 @@
   <div class="gap-8">
     {% if run_status == 'new' %}
     <form method="post" action="{{ url_for('start_run_route', slug=project.slug, run_name=run_name) }}" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
       <button class="btn btn-primary" id="btn-start" {% if status.running %}disabled title="A crawl is already running in this project"{% endif %}>Start Crawl</button>
     </form>
     {% elif run_status == 'interrupted' %}
     <form method="post" action="{{ url_for('resume_run_route', slug=project.slug, run_name=run_name) }}" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
       <button class="btn btn-primary" id="btn-start" {% if status.running %}disabled title="A crawl is already running in this project"{% endif %}>Resume Crawl</button>
     </form>
     {% endif %}
     <form method="post" action="{{ url_for('stop_run_route', slug=project.slug, run_name=run_name) }}" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
       <button class="btn btn-danger" id="btn-stop" {% if not status.running or status.stopping or status.run_folder != run_name %}disabled{% endif %}>Stop Crawl</button>
     </form>
     <a href="{{ url_for('run_results', slug=project.slug, run_name=run_name) }}" class="btn btn-secondary btn-sm">View Results</a>

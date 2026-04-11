@@ -103,6 +103,8 @@ a = Analysis(
         # metadata and lazy imports; PyInstaller often omits pieces that
         # surface as errors on first request rather than at startup.
         "flask",
+        "flask_wtf",
+        "flask_wtf.csrf",
         "jinja2",
         "markupsafe",
         "werkzeug",

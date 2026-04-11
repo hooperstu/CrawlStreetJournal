@@ -51,6 +51,7 @@
     <input type="text" id="delete-input" autocomplete="off" spellcheck="false"
            style="width:100%; padding:6px 8px; margin-bottom:10px; border:1px solid #ccc; border-radius:4px; font-family:monospace;">
     <form method="post" action="{{ url_for('delete_project_route', slug=project.slug) }}" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
       <button type="submit" class="btn btn-sm btn-danger" id="delete-execute" disabled>Confirm Delete</button>
     </form>
     <button type="button" class="btn btn-sm" id="delete-cancel" style="margin-left:6px;">Cancel</button>
