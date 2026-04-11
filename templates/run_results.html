@@ -123,7 +123,7 @@
 {% if groups.metadata %}
 <div class="result-group">
   <div class="result-group-title">Metadata</div>
-  <div class="result-group-desc">Per-page tags and other structured metadata extracted during the crawl.</div>
+  <div class="result-group-desc">Tags, keyword hits, phone numbers, and similar extracts (alongside core page metadata in pages.csv).</div>
   <div class="card mb-0">{{ file_table(groups.metadata, project.slug, run_name) }}</div>
 </div>
 {% endif %}
@@ -139,10 +139,10 @@
 {% if m.has_data %}
 <div class="card" style="margin-top:20px;">
   <p style="font-size:14px;color:var(--csj-body);margin:0;">
-    For visualisations, content analysis, and accessibility findings across all runs, see the
+    Project-wide charts and checks:
     <a href="{{ url_for('reports.reports_dashboard', slug=project.slug) }}">Dashboard</a>,
-    <a href="{{ url_for('project_audit', slug=project.slug) }}">Audit</a>, and
-    <a href="{{ url_for('project_wcag', slug=project.slug) }}">WCAG</a> pages.
+    <a href="{{ url_for('project_audit', slug=project.slug) }}">Content Audit</a>,
+    <a href="{{ url_for('project_wcag', slug=project.slug) }}">WCAG</a>.
   </p>
 </div>
 {% endif %}

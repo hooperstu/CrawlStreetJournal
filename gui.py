@@ -31,9 +31,9 @@ Projects::
 
 Project pages::
 
-    GET  /p/<slug>                                Overview dashboard.
-    GET  /p/<slug>/defaults                       View project defaults.
-    POST /p/<slug>/defaults                       Save project defaults.
+    GET  /p/<slug>                                Dashboard (reports).
+    GET  /p/<slug>/defaults                       Redirects to Settings (project defaults).
+    POST /p/<slug>/defaults                       Save project defaults (same form as Settings).
     GET  /p/<slug>/runs                           List runs.
     POST /p/<slug>/runs/create                    Create a new run (optional continue_from).
 
@@ -686,6 +686,8 @@ def _grouped_output_csvs(run_dir: str) -> Dict[str, List[Dict[str, Any]]]:
             groups["sitemaps"].append(f)
         elif name == "tags.csv":
             groups["metadata"].append(f)
+        elif name == "keyword_log.csv":
+            groups["metadata"].append(f)
         elif name == "crawl_errors.csv":
             groups["errors"].append(f)
         else:
@@ -992,6 +994,11 @@ def _build_config_dict_from_form(form) -> Dict[str, Any]:
         for p in form.get("url_include_patterns", "").strip().splitlines()
         if p.strip()
     ]
+    keyword_log_terms = [
+        t.strip()
+        for t in form.get("keyword_log_terms", "").strip().splitlines()
+        if t.strip()
+    ]
 
     # Domain ownership rules: "domain_suffix = label" per line
     ownership_rules = []
@@ -1027,6 +1034,8 @@ def _build_config_dict_from_form(form) -> Dict[str, Any]:
         "CAPTURE_RESPONSE_HEADERS": "capture_headers" in form,
         "WRITE_SITEMAP_URLS_CSV": "write_sitemap_urls" in form,
         "WRITE_NAV_LINKS_CSV": "write_nav_links" in form,
+        "WRITE_KEYWORD_LOG_CSV": "write_keyword_log" in form,
+        "KEYWORD_LOG_TERMS": keyword_log_terms,
         "CHECK_OUTBOUND_LINKS": "check_outbound" in form,
         "MAX_LINK_CHECKS_PER_PAGE": _int_form(form, "max_link_checks", 50),
         "LINK_CHECK_DELAY_SECONDS": _float_form(form, "link_check_delay", 0.5),
