@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse, urljoin
 
 import requests
+from requests.structures import CaseInsensitiveDict
 from bs4 import BeautifulSoup
 
 import config
@@ -283,15 +284,41 @@ def _append_csv_row(path: str, fieldnames: tuple, row: Dict[str, Any]) -> None:
 
 
 def _fetch_raw(url: str) -> Tuple[Optional[requests.Response], str]:
-    """GET with retries. Returns (response, error_message)."""
+    """GET with retries, outbound validation, and size cap. Returns (response, error_message)."""
+    from outbound_http import request_get_streaming, validate_outbound_url
+
+    if getattr(config, "BLOCK_PRIVATE_OUTBOUND", True):
+        verr = validate_outbound_url(url)
+        if verr:
+            return None, f"blocked: {verr}"
     headers = {"User-Agent": config.USER_AGENT}
+    cap = getattr(config, "MAX_RESPONSE_BYTES", 16 * 1024 * 1024)
+    mr = getattr(config, "HTTP_MAX_REDIRECTS", 30)
     for attempt in range(2):
         try:
-            resp = requests.get(
-                url, headers=headers, timeout=TIMEOUT_SECONDS,
-                allow_redirects=True,
-            )
-            return resp, ""
+            with requests.Session() as sess:
+                sess.verify = config.HTTP_VERIFY_SSL
+                sess.headers.update(headers)
+                raw, status, final, _ct, err, rh = request_get_streaming(
+                    sess,
+                    url,
+                    timeout=float(TIMEOUT_SECONDS),
+                    max_redirects=int(mr),
+                    max_body_bytes=int(cap),
+                    block_private=bool(getattr(config, "BLOCK_PRIVATE_OUTBOUND", True)),
+                )
+            if err:
+                return None, err
+            if status >= 400:
+                return None, f"HTTP {status}"
+            r = requests.Response()
+            r.status_code = status
+            r._content = raw or b""
+            r.url = final
+            r.headers = CaseInsensitiveDict()
+            for hk, hv in rh.items():
+                r.headers[hk] = hv
+            return r, ""
         except requests.exceptions.Timeout:
             if attempt == 1:
                 return None, "timeout"
