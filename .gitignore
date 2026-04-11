@@ -15,6 +15,9 @@ crawl_background.pid
 # Flask session signing key (generated locally on first run; must not be committed)
 secret_key
 
+# Optional GUI login password hash (created when using CSJ_GUI_PASSWORD)
+gui_password.hash
+
 # PyInstaller build artefacts
 build/
 dist/

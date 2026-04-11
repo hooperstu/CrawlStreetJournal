@@ -35,6 +35,7 @@
     Each run inherits your project defaults and keeps its own config and data.
   </p>
   <form method="post" action="{{ url_for('create_run_route', slug=project.slug) }}" class="inline-flex" style="gap:12px;align-items:flex-end;flex-wrap:wrap;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
     <div>
       <label class="form-label" style="font-size:12px;margin-bottom:2px;">Run name</label>
       <input type="text" name="run_name" placeholder="e.g. Weekly full crawl" style="padding:6px 10px;font-size:14px;width:280px;">
@@ -120,15 +121,18 @@
 
               {% if r.status == 'new' %}
               <form method="post" action="{{ url_for('start_run_route', slug=project.slug, run_name=r.name) }}" style="display:inline;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
                 <button type="submit" class="btn btn-sm btn-primary" {% if status.running %}disabled title="A crawl is already running in this project"{% endif %}>Start</button>
               </form>
               {% elif r.status == 'interrupted' %}
               <form method="post" action="{{ url_for('resume_run_route', slug=project.slug, run_name=r.name) }}" style="display:inline;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
                 <button type="submit" class="btn btn-sm btn-primary" {% if status.running %}disabled title="A crawl is already running in this project"{% endif %}>Resume</button>
               </form>
               {% endif %}
 
               <form method="post" action="{{ url_for('delete_run_route', slug=project.slug, run_name=r.name) }}" style="display:inline;" onsubmit="return confirm('Delete this run and all its data?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
                 <button type="submit" class="btn btn-sm btn-danger">Delete</button>
               </form>
             </div>

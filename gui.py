@@ -5,9 +5,12 @@ The Crawl Street Journal — Web GUI
 Flask application providing a browser interface for managing projects,
 configuring crawls, running them, and reviewing results.
 
-    python gui.py          # http://localhost:5001
+    python gui.py          # http://localhost:5001 (bind: ``127.0.0.1`` by default)
 
-Serves on port **5001** (not the Flask default 5000) with ``threaded=True``
+Serves on port **5001** (override with ``CSJ_GUI_PORT``) with ``threaded=True``.
+Behind a reverse proxy, set ``CSJ_GUI_TRUST_PROXY=1`` and ``CSJ_GUI_SESSION_COOKIE_SECURE=1``.
+Optional password: ``CSJ_GUI_PASSWORD`` (or ``gui_password.hash`` in ``DATA_DIR``).
+All mutating form POSTs require a CSRF token (Flask-WTF); ``POST /api/quit`` is exempt.
 so that SSE long-poll streams do not block other requests.
 
 Threading model
@@ -75,6 +78,8 @@ import itertools
 import json
 import logging
 import os
+import secrets
+import sys
 import threading
 import time
 import zipfile
@@ -90,9 +95,13 @@ from flask import (
     render_template,
     request,
     send_from_directory,
+    session,
     url_for,
 )
+from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.serving import make_server
+from flask_wtf.csrf import CSRFProtect
 
 import config
 from config import CrawlConfig
@@ -107,6 +116,49 @@ app = Flask(
     static_url_path="/static",
 )
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+app.config["WTF_CSRF_CHECK_DEFAULT"] = True
+app.config["WTF_CSRF_TIME_LIMIT"] = None
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_str(name: str, default: str) -> str:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip()
+
+
+def _gui_bind_address() -> str:
+    return _env_str("CSJ_GUI_BIND", getattr(config, "GUI_BIND_ADDRESS", "127.0.0.1"))
+
+
+def _gui_trust_proxy() -> bool:
+    return _env_bool(
+        "CSJ_GUI_TRUST_PROXY",
+        bool(getattr(config, "GUI_TRUST_PROXY_HEADERS", False)),
+    )
+
+
+def _gui_session_cookie_secure() -> bool:
+    return _env_bool(
+        "CSJ_GUI_SESSION_COOKIE_SECURE",
+        bool(getattr(config, "GUI_SESSION_COOKIE_SECURE", False)),
+    )
+
+
+def _apply_proxy_middleware() -> None:
+    if _gui_trust_proxy():
+        # One reverse-proxy hop (nginx, Caddy, Traefik): fix Host, scheme, client IP.
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
+
+
+_apply_proxy_middleware()
 
 
 def _load_secret_key() -> bytes:
@@ -133,6 +185,92 @@ def _load_secret_key() -> bytes:
 
 
 app.secret_key = _load_secret_key()
+
+csrf = CSRFProtect(app)
+
+_GUI_PASSWORD_HASH_PATH = os.path.join(config.DATA_DIR, "gui_password.hash")
+
+
+def _load_gui_password_hash() -> Optional[str]:
+    try:
+        if not os.path.isfile(_GUI_PASSWORD_HASH_PATH):
+            return None
+        with open(_GUI_PASSWORD_HASH_PATH, "r", encoding="utf-8") as f:
+            line = f.read().strip()
+        return line or None
+    except OSError:
+        return None
+
+
+def _gui_password_required() -> bool:
+    if os.environ.get("CSJ_GUI_PASSWORD"):
+        return True
+    return _load_gui_password_hash() is not None
+
+
+def _verify_gui_password(plain: str) -> bool:
+    env_pw = os.environ.get("CSJ_GUI_PASSWORD", "").strip()
+    if env_pw:
+        return secrets.compare_digest(plain, env_pw)
+    h = _load_gui_password_hash()
+    if not h:
+        return True
+    return check_password_hash(h, plain)
+
+
+def _set_session_cookie_flags() -> None:
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["SESSION_COOKIE_SECURE"] = _gui_session_cookie_secure()
+
+
+_set_session_cookie_flags()
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    """Browser login when ``CSJ_GUI_PASSWORD`` or ``gui_password.hash`` is set."""
+    if not _gui_password_required():
+        return redirect(url_for("projects_list"))
+    error = None
+    if request.method == "POST":
+        pw = request.form.get("password", "")
+        if _verify_gui_password(pw):
+            session["gui_auth"] = True
+            session.permanent = True
+            nxt = request.args.get("next") or url_for("projects_list")
+            if not nxt.startswith("/") or nxt.startswith("//"):
+                nxt = url_for("projects_list")
+            return redirect(nxt)
+        error = "Invalid password."
+    return render_template("login.html", error=error)
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.pop("gui_auth", None)
+    return redirect(url_for("login"))
+
+
+@app.before_request
+def _require_gui_auth():
+    if app.config.get("TESTING"):
+        return None
+    if not _gui_password_required():
+        return None
+    path = request.path or ""
+    if path.startswith("/static/"):
+        return None
+    if path in ("/login", "/logout"):
+        return None
+    if path == "/api/quit":
+        return None
+    if session.get("gui_auth"):
+        return None
+    if request.accept_mimetypes.best_match(["application/json", "html"]) == "application/json":
+        return jsonify({"error": "unauthorised"}), 401
+    return redirect(url_for("login", next=request.path))
+
 
 from viz_api import eco_bp  # noqa: E402
 # Visualisation endpoints (reports charts, etc.) live in viz_api.py.
@@ -1759,6 +1897,7 @@ def _quit_worker() -> None:
         log.exception("Failed to destroy pywebview window")
 
 
+@csrf.exempt
 @app.route("/api/quit", methods=["POST"])
 def quit_application():
     """Quit the whole app: cooperative crawl stop, Flask shutdown, pywebview close.
@@ -1777,7 +1916,8 @@ def quit_application():
 @app.context_processor
 def _inject_quit_button() -> Dict[str, bool]:
     """Hide Quit when the UI is not served over loopback (e.g. LAN browser)."""
-    return {"show_quit_button": _client_is_loopback()}
+    show_logout = bool(_gui_password_required() and session.get("gui_auth"))
+    return {"show_quit_button": _client_is_loopback(), "show_logout_button": show_logout}
 
 
 # ── Main ──────────────────────────────────────────────────────────────────
@@ -1790,5 +1930,14 @@ if __name__ == "__main__":
     )
     # Move any flat-file data from pre-project-era layouts into the new structure.
     storage_module.migrate_legacy_data()
-    print("The Crawl Street Journal: http://localhost:5001")
-    run_server(host="0.0.0.0", port=5001, threaded=True)
+    bind = _gui_bind_address()
+    port = int(os.environ.get("CSJ_GUI_PORT", "5001"))
+    host_hint = "localhost" if bind in ("127.0.0.1", "::1") else bind
+    print(f"The Crawl Street Journal: http://{host_hint}:{port}")
+    if bind == "0.0.0.0":
+        print(
+            "Listening on all interfaces (0.0.0.0). Use a firewall, set CSJ_GUI_PASSWORD, "
+            "and prefer HTTPS via a reverse proxy.",
+            file=sys.stderr,
+        )
+    run_server(host=bind, port=port, threaded=True)
