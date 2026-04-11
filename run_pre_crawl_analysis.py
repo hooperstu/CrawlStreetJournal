@@ -580,7 +580,7 @@ def _sample_pages(
 
         now = _now_iso()
         try:
-            page_row, _ = parser_module.build_page_inventory_row(
+            page_row, _, _ = parser_module.build_page_inventory_row(
                 html,
                 requested_url=url,
                 final_url=final_url,

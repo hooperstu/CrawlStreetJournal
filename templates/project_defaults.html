@@ -164,6 +164,16 @@
         <label for="cb-nav">nav_links.csv — links inside &lt;nav&gt; elements</label>
       </div>
       <div class="checkbox-row">
+        <input type="checkbox" name="write_keyword_log" id="cb-kwlog" {% if cfg.get('WRITE_KEYWORD_LOG_CSV') %}checked{% endif %}>
+        <label for="cb-kwlog">keyword_log.csv — pages where listed terms appear in visible text</label>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Keyword log terms</label>
+        <div class="form-hint">One phrase per line. Case-insensitive match against visible text. Empty list still allows enabling the file (no rows until terms are set).</div>
+        <textarea name="keyword_log_terms" rows="4" placeholder="NHS&#10;…">{% for t in cfg.get('KEYWORD_LOG_TERMS', []) %}{{ t }}
+{% endfor %}</textarea>
+      </div>
+      <div class="checkbox-row">
         <input type="checkbox" name="check_outbound" id="cb-outbound" {% if cfg.get('CHECK_OUTBOUND_LINKS') %}checked{% endif %}>
         <label for="cb-outbound">link_checks.csv — HEAD-check outbound links (slow)</label>
       </div>

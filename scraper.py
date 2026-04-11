@@ -534,6 +534,7 @@ def _wait_for_domain(
     hostname: str,
     delay_cfg: Union[float, Tuple[float, float]],
     url: str = "",
+    cfg: Optional[CrawlConfig] = None,
 ) -> None:
     """Sleep to respect per-domain rate limiting and Crawl-delay directives."""
     delay = _per_domain_delay(hostname, delay_cfg)
@@ -1155,6 +1156,45 @@ def _seed_queues(
     )
 
 
+def _keyword_log_rows(
+    page_row: Dict[str, Any],
+    keyword_hits: List[Tuple[str, int]],
+) -> List[Dict[str, Any]]:
+    """Build ``keyword_log.csv`` row dicts from a pages.csv row and hit list."""
+    rows: List[Dict[str, Any]] = []
+    for kw, cnt in keyword_hits:
+        rows.append({
+            "keyword": kw,
+            "match_count": cnt,
+            "requested_url": page_row.get("requested_url", ""),
+            "final_url": page_row.get("final_url", ""),
+            "domain": page_row.get("domain", ""),
+            "http_status": page_row.get("http_status", ""),
+            "content_type": page_row.get("content_type", ""),
+            "title": page_row.get("title", ""),
+            "meta_description": page_row.get("meta_description", ""),
+            "lang": page_row.get("lang", ""),
+            "canonical_url": page_row.get("canonical_url", ""),
+            "url_content_hint": page_row.get("url_content_hint", ""),
+            "content_kind_guess": page_row.get("content_kind_guess", ""),
+            "author": page_row.get("author", ""),
+            "publisher": page_row.get("publisher", ""),
+            "json_ld_types": page_row.get("json_ld_types", ""),
+            "og_type": page_row.get("og_type", ""),
+            "tags_all": page_row.get("tags_all", ""),
+            "word_count": page_row.get("word_count", ""),
+            "date_published": page_row.get("date_published", ""),
+            "date_modified": page_row.get("date_modified", ""),
+            "cms_generator": page_row.get("cms_generator", ""),
+            "breadcrumb_schema": page_row.get("breadcrumb_schema", ""),
+            "training_related_flag": page_row.get("training_related_flag", ""),
+            "referrer_url": page_row.get("referrer_url", ""),
+            "depth": page_row.get("depth", ""),
+            "discovered_at": page_row.get("discovered_at", ""),
+        })
+    return rows
+
+
 def _process_one_url(
     url: str,
     referrer: str,
@@ -1194,7 +1234,7 @@ def _process_one_url(
 
     hostname = (urlparse(url).hostname or "").lower()
     _effective_delay = delay_cfg if delay_cfg is not None else cfg.REQUEST_DELAY_SECONDS
-    _wait_for_domain(hostname, _effective_delay, url=url)
+    _wait_for_domain(hostname, _effective_delay, url=url, cfg=cfg)
 
     _render_js = cfg.RENDER_JAVASCRIPT
 
@@ -1298,7 +1338,7 @@ def _process_one_url(
     new_assets = 0
 
     try:
-        page_row, tag_rows = parser_module.build_page_inventory_row(
+        page_row, tag_rows, keyword_hits = parser_module.build_page_inventory_row(
             html,
             requested_url=url,
             final_url=final_url,
@@ -1317,6 +1357,9 @@ def _process_one_url(
         ctx.write_page(page_row)
         for tr in tag_rows:
             ctx.write_tag_row(tr)
+        if cfg.WRITE_KEYWORD_LOG_CSV and keyword_hits:
+            for kl in _keyword_log_rows(page_row, keyword_hits):
+                ctx.write_keyword_log_row(kl)
         if cfg.WRITE_NAV_LINKS_CSV:
             try:
                 from bs4 import BeautifulSoup as _BS
