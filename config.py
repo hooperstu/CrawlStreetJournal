@@ -98,6 +98,19 @@ HTTP_MAX_REDIRECTS = 30
 # broken chains (vulnerable to MITM — use with care).
 HTTP_VERIFY_SSL = True
 
+# Outbound hardening (SSRF-style blocking and response caps).
+# When True, refuse to fetch URLs whose host resolves to non–globally routable
+# addresses (loopback, RFC 1918, link-local, cloud metadata, etc.).
+BLOCK_PRIVATE_OUTBOUND = True
+# Maximum bytes read for a single HTML page response (streaming cap).
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+# robots.txt and small discovery fetches.
+MAX_ROBOTS_TXT_BYTES = 2 * 1024 * 1024
+# Sitemap XML documents can be large; cap separately.
+MAX_SITEMAP_RESPONSE_BYTES = 32 * 1024 * 1024
+# Ranged GET fallback for outbound link checks.
+MAX_LINK_CHECK_RESPONSE_BYTES = 65_536
+
 # Number of concurrent fetch workers. 1 = sequential (safest / most polite).
 # Higher values fetch multiple pages in parallel across different domains.
 # Per-domain rate limiting is still enforced regardless of worker count.
@@ -301,6 +314,11 @@ class CrawlConfig:
     MAX_RETRIES: int = 3
     HTTP_MAX_REDIRECTS: int = 30
     HTTP_VERIFY_SSL: bool = True
+    BLOCK_PRIVATE_OUTBOUND: bool = True
+    MAX_RESPONSE_BYTES: int = 16 * 1024 * 1024
+    MAX_ROBOTS_TXT_BYTES: int = 2 * 1024 * 1024
+    MAX_SITEMAP_RESPONSE_BYTES: int = 32 * 1024 * 1024
+    MAX_LINK_CHECK_RESPONSE_BYTES: int = 65_536
     CONCURRENT_WORKERS: int = 1
     STATE_SAVE_INTERVAL: int = 10
     CONTENT_DEDUP: bool = True

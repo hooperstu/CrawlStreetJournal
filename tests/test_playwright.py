@@ -1,10 +1,11 @@
 """
 Comprehensive Playwright scenario tests for The Crawl Street Journal.
 
-Pre-requisites:
-  - Flask app running on http://localhost:5001
-  - Test data seeded via: python tests/seed_test_data.py
-  - Run with: python -m pytest tests/test_playwright.py -v --timeout=30
+Pre-requisites (automated):
+  - ``tests/conftest.py`` starts ``gui.py`` on http://127.0.0.1:5001 for the
+    session (unless a server is already listening) and runs ``seed_test_data.py``.
+  - Set ``CSJ_E2E_NO_SERVER=1`` if you start ``gui.py`` manually on the same port.
+  - Run: ``python -m pytest tests/test_playwright.py -v``
 
 Tests are organised by feature area:
   1. Homepage & project management
@@ -39,14 +40,17 @@ from playwright.sync_api import sync_playwright, Page, Browser
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-BASE = "http://localhost:5001"
+# Use 127.0.0.1 so Playwright matches Flask's default bind (localhost can resolve to ::1).
+BASE = "http://127.0.0.1:5001"
 SLUG = "bugbot-test"
+# Submit the homepage "Create New Project" form — not the topbar Quit button (also type=submit).
+_CREATE_PROJECT_FORM = 'form[action$="/projects/create"]'
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="session")
-def browser():
+def browser(csj_e2e_flask_server):
     pw = sync_playwright().start()
     b = pw.chromium.launch(headless=True)
     yield b
@@ -102,14 +106,14 @@ class TestHomepage:
     def test_create_project(self, page):
         page.goto(BASE)
         page.fill("input[name='name']", "Playwright Temp Project")
-        page.click("button[type='submit']")
+        page.locator(_CREATE_PROJECT_FORM).locator("button[type='submit']").click()
         page.wait_for_url(re.compile(r"/p/"))
         assert "/p/" in page.url
 
     def test_delete_project(self, page):
         page.goto(BASE)
         page.fill("input[name='name']", "Delete Me Project")
-        page.click("button[type='submit']")
+        page.locator(_CREATE_PROJECT_FORM).locator("button[type='submit']").click()
         page.wait_for_url(re.compile(r"/p/"))
         slug = page.url.split("/p/")[1].split("/")[0]
         page.goto(BASE)
@@ -121,14 +125,14 @@ class TestHomepage:
     def test_create_project_empty_name_still_works(self, page):
         page.goto(BASE)
         page.fill("input[name='name']", "   ")
-        page.click("button[type='submit']")
+        page.locator(_CREATE_PROJECT_FORM).locator("button[type='submit']").click()
         # Should either redirect or stay on homepage with error
         assert page.url.startswith(BASE)
 
     def test_create_project_special_characters(self, page):
         page.goto(BASE)
         page.fill("input[name='name']", "Test <script>alert(1)</script>")
-        page.click("button[type='submit']")
+        page.locator(_CREATE_PROJECT_FORM).locator("button[type='submit']").click()
         page.wait_for_url(re.compile(r"/p/"))
         content = page.content()
         assert "<script>alert(1)</script>" not in content
@@ -153,8 +157,7 @@ class TestProjectOverview:
 
     def test_project_defaults_save(self, page):
         page.goto(f"{BASE}/p/{SLUG}/defaults")
-        form = page.locator("form").first
-        form.locator("button[type='submit']").click()
+        page.locator("#config-form").locator("button[type='submit']").click()
         page.wait_for_load_state("networkidle")
         assert page.url.startswith(BASE)
 
@@ -174,7 +177,7 @@ class TestRunLifecycle:
 
     def test_create_run(self, page):
         page.goto(f"{BASE}/p/{SLUG}/runs")
-        page.locator("form").first.locator("button[type='submit']").click()
+        page.locator('form[action*="/runs/create"]').locator("button[type='submit']").click()
         page.wait_for_load_state("networkidle")
         assert "config" in page.url or "runs" in page.url
 
@@ -184,7 +187,7 @@ class TestRunLifecycle:
 
     def test_run_config_save(self, page, run_name):
         page.goto(f"{BASE}/p/{SLUG}/runs/{run_name}/config")
-        page.locator("form").first.locator("button[type='submit']").click()
+        page.locator("#config-form").locator("button[type='submit']").click()
         page.wait_for_load_state("networkidle")
 
     def test_run_monitor_page_loads(self, page, run_name):
@@ -806,7 +809,7 @@ class TestSecurity:
     def test_xss_in_project_name(self, page):
         page.goto(BASE)
         page.fill("input[name='name']", '<img src=x onerror=alert(1)>')
-        page.click("button[type='submit']")
+        page.locator(_CREATE_PROJECT_FORM).locator("button[type='submit']").click()
         page.wait_for_url(re.compile(r"/p/"))
         content = page.content()
         assert '<img src=x onerror=alert(1)>' not in content  # must be entity-escaped

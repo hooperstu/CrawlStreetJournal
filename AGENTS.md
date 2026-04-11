@@ -19,7 +19,7 @@ The Crawl Street Journal (CSJ) is a single-process Python (3.9+) web crawler wit
 - **Real crawl tests:** `source .venv/bin/activate && python3 -m pytest tests/test_real_crawl.py -v` (41 tests — requires an `nhs-estate-crawl` project with crawl data).
 - **Linting:** `source .venv/bin/activate && flake8 --max-line-length=120 *.py` — no linting config is committed; the repo has minor pre-existing style warnings.
 - There is no dedicated test framework in `requirements.txt`; `pytest`, `flake8`, `playwright`, and `pytest-playwright` are installed as dev extras in the venv.
-- Playwright tests need the Flask app running (`python3 gui.py` in background) and test data seeded (`python3 tests/seed_test_data.py`).
+- Playwright tests (`tests/test_playwright.py`) auto-start ``gui.py`` via ``tests/conftest.py`` unless port 5001 is already in use; they seed data automatically. Use ``CSJ_E2E_NO_SERVER=1`` when running the GUI yourself.
 
 ### Non-obvious caveats
 
