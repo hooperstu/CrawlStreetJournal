@@ -21,10 +21,12 @@ are defined at module level so individual tests remain concise.
 
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from bs4 import BeautifulSoup
+import config
 import parser as parser_module
 from parser import _bs4_parser
 
@@ -148,6 +150,37 @@ def test_training_keywords_absent():
     assert flag == ""
 
 
+def test_keyword_hits_in_visible_text():
+    hits = parser_module.keyword_hits_in_visible_text(
+        "Hello world. HELLO there.",
+        ["hello", "missing"],
+    )
+    assert hits == [("hello", 2)]
+
+
+def test_normalise_keyword_log_terms():
+    assert parser_module.normalise_keyword_log_terms([" a ", "b", " a ", ""]) == ["a", "b"]
+
+
+def test_build_page_inventory_row_keyword_hits():
+    """When KEYWORD_LOG_TERMS is set, third tuple element lists visible-text hits."""
+    with patch.object(config, "KEYWORD_LOG_TERMS", ["content", "Section"]):
+        row, _, kw_hits = parser_module.build_page_inventory_row(
+            SAMPLE_HTML,
+            requested_url="https://www.example.com/test",
+            final_url="https://www.example.com/test",
+            http_status=200,
+            content_type="text/html",
+            referrer_url="seed",
+            depth=0,
+            discovered_at="2025-01-01 00:00:00",
+        )
+    by_kw = {k: c for k, c in kw_hits}
+    assert "content" in by_kw
+    assert by_kw["content"] >= 1
+    assert "Section" in by_kw
+
+
 def test_count_nav_links():
     count = parser_module._count_nav_links(_soup())
     assert count == 3
@@ -166,7 +199,7 @@ def test_extract_nav_links():
 def test_build_page_row_includes_new_fields():
     """Integration: build_page_inventory_row populates all Phase 2 columns
     including response_meta and sitemap_meta pass-through."""
-    row, tags = parser_module.build_page_inventory_row(
+    row, tags, kw_hits = parser_module.build_page_inventory_row(
         SAMPLE_HTML,
         requested_url="https://www.example.com/test",
         final_url="https://www.example.com/test",
@@ -199,6 +232,7 @@ def test_build_page_row_includes_new_fields():
     assert "rdfa_types" in row
     assert "extraction_coverage_pct" in row
     assert "extraction_coverage_core_pct" in row
+    assert kw_hits == []
 
 
 # ── Phase 4 tests ─────────────────────────────────────────────────────────
@@ -491,7 +525,7 @@ def test_guess_content_kind_event():
 
 def test_extraction_coverage():
     """Coverage percentage must be >0 (fields are populated) and <=100."""
-    row, _ = parser_module.build_page_inventory_row(
+    row, _, _ = parser_module.build_page_inventory_row(
         PHASE4_HTML,
         requested_url="https://example.com/page",
         final_url="https://example.com/page",
@@ -512,7 +546,7 @@ def test_extraction_coverage():
 def test_build_page_row_phase4_fields():
     """Integration: build_page_inventory_row propagates all Phase 4 columns
     and merges both meta-tag and HTTP-header robots directives."""
-    row, _ = parser_module.build_page_inventory_row(
+    row, _, _ = parser_module.build_page_inventory_row(
         PHASE4_HTML,
         requested_url="https://example.com/page",
         final_url="https://example.com/page",

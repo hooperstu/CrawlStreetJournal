@@ -30,10 +30,7 @@
 
 <div class="card">
   <div class="card-title">Create New Run</div>
-  <p class="form-hint" style="margin-bottom:12px;">
-    Create a run, configure its seeds and settings, then start it when ready.
-    Each run inherits your project defaults and keeps its own config and data.
-  </p>
+  <p class="form-hint" style="margin-bottom:12px;">New runs start from your project defaults; each run stores its own config and CSV outputs.</p>
   <form method="post" action="{{ url_for('create_run_route', slug=project.slug) }}" class="inline-flex" style="gap:12px;align-items:flex-end;flex-wrap:wrap;">
     <div>
       <label class="form-label" style="font-size:12px;margin-bottom:2px;">Run name</label>
@@ -41,7 +38,8 @@
     </div>
     <div>
       <label class="form-label" style="font-size:12px;margin-bottom:2px;">Continue from prior run(s)</label>
-      <p class="form-hint" style="margin-bottom:4px;max-width:360px;">Optional. Copy one run’s crawl config and/or skip URLs already recorded in CSVs when you start—no duplicate page fetches for the same URLs. <strong>All prior runs</strong> merges every existing run’s URLs.</p>
+      <p class="form-hint" style="margin-bottom:4px;max-width:420px;">Optional. Reuse another run’s settings and treat URLs already listed in that run’s CSVs as visited so they are not fetched again.</p>
+      <p class="form-hint" style="margin-bottom:6px;max-width:420px;"><strong>All prior runs (cumulative)</strong> — merge visited URLs from every existing run in this project.</p>
       <select name="continue_from" style="padding:6px 10px;font-size:14px;min-width:260px;max-width:100%;">
         <option value="">— New crawl only (no prior run)</option>
         {% if cumulative_continue_available %}
