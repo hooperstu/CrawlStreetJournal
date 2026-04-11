@@ -1,3 +1,6 @@
+# Editor / IDE local workspace files (not for version control)
+*.code-workspace
+
 .venv/
 venv/
 __pycache__/
