@@ -63,7 +63,6 @@
 </div>
 
 <form method="post" action="{{ url_for('save_project_defaults_route', slug=project.slug) }}" id="config-form">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
 
 <!-- ════════════════════════════════════════════════════════════════ -->
 <!-- SECTION 1: WHAT TO CRAWL (always visible, the primary task)    -->
@@ -328,7 +327,6 @@
   <div style="display:flex;align-items:center;gap:8px;">
     <input type="text" id="delete-confirm-input" placeholder="Type '{{ project.slug }}' to confirm" style="max-width:300px;">
     <form method="post" action="{{ url_for('delete_project_route', slug=project.slug) }}" style="margin:0;">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
       <button type="submit" class="btn btn-danger btn-sm" id="delete-confirm-btn" disabled>Delete</button>
     </form>
   </div>

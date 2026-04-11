@@ -72,7 +72,6 @@
   <div class="gap-8" style="flex-wrap:wrap;">
     {% if run_status == 'new' %}
     <form method="post" action="{{ url_for('start_run_route', slug=project.slug, run_name=run_name) }}" class="inline-flex" style="gap:10px;align-items:flex-end;flex-wrap:wrap;">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
       {% if show_continue_from %}
       <div>
         <label class="form-label" style="font-size:12px;margin-bottom:2px;">Continue without re-crawling prior URLs</label>
@@ -93,7 +92,6 @@
     </form>
     {% elif run_status == 'interrupted' %}
     <form method="post" action="{{ url_for('resume_run_route', slug=project.slug, run_name=run_name) }}" style="display:inline;">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
       <button type="submit" class="btn btn-primary" {% if status.running %}disabled title="A crawl is already running in this project"{% endif %}>Resume This Run</button>
     </form>
     {% endif %}
@@ -133,7 +131,6 @@
 </div>
 
 <form method="post" action="{{ url_for('save_run_config_route', slug=project.slug, run_name=run_name) }}" id="config-form">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
   <div class="card">
     <div class="card-title">Run details</div>
     <div class="form-group" style="max-width:420px;">

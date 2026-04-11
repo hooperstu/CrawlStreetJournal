@@ -80,14 +80,6 @@ def _get_json(page: Page, url: str):
     return resp.json()
 
 
-def _csrf_token_from_page(page: Page) -> str:
-    """Read Flask-WTF ``csrf_token`` from the current page (first match)."""
-    html = page.content()
-    m = re.search(r'name="csrf_token"\s+value="([^"]+)"', html)
-    assert m, "csrf_token hidden field not found on page"
-    return m.group(1)
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # 1. HOMEPAGE & PROJECT MANAGEMENT
 # ═══════════════════════════════════════════════════════════════════════════
@@ -204,11 +196,9 @@ class TestRunLifecycle:
         assert "pages.csv" in page.content() or "results" in page.content().lower()
 
     def test_run_rename(self, page, run_name):
-        page.goto(f"{BASE}/p/{SLUG}/runs/{run_name}/config")
-        token = _csrf_token_from_page(page)
         resp = page.request.post(
             f"{BASE}/p/{SLUG}/runs/{run_name}/rename",
-            form={"friendly_name": "Renamed Run", "csrf_token": token},
+            form={"friendly_name": "Renamed Run"},
         )
         assert resp.status in (200, 302)
 

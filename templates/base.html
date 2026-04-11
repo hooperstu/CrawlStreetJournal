@@ -470,16 +470,9 @@
     <span style="font-size:15px;color:var(--csj-body);font-weight:500;letter-spacing:-.2px;">/ {{ project.name }}</span>
     {% endif %}
     <div class="topbar-actions">
-      {% if show_logout_button is defined and show_logout_button %}
-      <form method="post" action="{{ url_for('logout') }}" style="margin:0;display:inline;">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-        <button type="submit" class="btn btn-secondary btn-sm">Sign out</button>
-      </form>
-      {% endif %}
       {% if show_quit_button is defined and show_quit_button %}
       <span class="quit-hint">Stops crawls and closes the app (desktop window or tab).</span>
       <form method="post" action="{{ url_for('quit_application') }}" style="margin:0;">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
         <button type="submit" class="btn btn-secondary btn-sm">Quit application</button>
       </form>
       {% endif %}

@@ -53,7 +53,6 @@
 <div class="card">
   <div class="card-title">Create New Project</div>
   <form method="post" action="{{ url_for('create_project_route') }}">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
     <div class="form-group" style="max-width:400px;">
       <label class="form-label">Project name</label>
       <input type="text" name="name" required placeholder="e.g. Main Website Audit">
@@ -69,7 +68,6 @@
 <div class="card">
   <div class="card-title">Import Project</div>
   <form method="post" action="{{ url_for('import_project_route') }}" enctype="multipart/form-data">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
     <div class="form-group" style="max-width:400px;">
       <label class="form-label">Project archive (.zip)</label>
       <input type="file" name="zipfile" accept=".zip" required>
