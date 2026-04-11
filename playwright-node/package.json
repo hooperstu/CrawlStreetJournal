@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "description": "Minimal Playwright (Node) runner to generate playwright-report for npx playwright show-report",
+  "scripts": {
+    "test": "playwright test",
+    "report": "playwright test --reporter=html && playwright show-report --host 127.0.0.1 --port 9323"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.1"
+  }
+}
