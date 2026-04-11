@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -103,6 +103,45 @@ def asset_category_for_url(url: str) -> Optional[str]:
 def is_skippable_asset_url(url: str) -> bool:
     """``True`` when *url* has a file extension that marks it as a downloadable asset."""
     return asset_category_for_url(url) is not None
+
+
+def normalise_keyword_log_terms(terms: Optional[Iterable[str]]) -> List[str]:
+    """Strip empty entries and duplicates while preserving order."""
+    if not terms:
+        return []
+    seen: Set[str] = set()
+    out: List[str] = []
+    for t in terms:
+        s = (t or "").strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+def keyword_hits_in_visible_text(
+    visible_text: str,
+    terms: List[str],
+) -> List[Tuple[str, int]]:
+    """Return ``(keyword, match_count)`` for each term present in *visible_text*.
+
+    Matching is case-insensitive whole-substring search on normalised whitespace
+    (runs of spaces collapsed). Empty *terms* yields an empty list.
+    """
+    if not terms or not visible_text:
+        return []
+    collapsed = " ".join(visible_text.split())
+    hay = collapsed.lower()
+    hits: List[Tuple[str, int]] = []
+    for kw in terms:
+        needle = " ".join(kw.split()).lower()
+        if not needle:
+            continue
+        n = hay.count(needle)
+        if n:
+            hits.append((kw, n))
+    return hits
 
 
 def get_visible_text(soup: BeautifulSoup) -> str:
@@ -1500,12 +1539,16 @@ def build_page_inventory_row(
     discovered_at: str,
     response_meta: Optional[Dict[str, str]] = None,
     sitemap_meta: Optional[Dict[str, str]] = None,
-) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    """Build the full ``pages.csv`` row and companion ``tags.csv`` rows for one page.
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Tuple[str, int]]]:
+    """Build the full ``pages.csv`` row, ``tags.csv`` rows, and keyword hits.
 
     Orchestrates every extraction helper in this module.  The returned
     *page_row* dict keys match ``storage.PAGES_FIELDS`` exactly — column
     ordering is handled by ``storage.write_page``.
+
+    The third return value is a list of ``(keyword, match_count)`` pairs for
+    configured keyword-log terms that appear in visible text (empty when
+    ``KEYWORD_LOG_TERMS`` is unset).
 
     Args:
         html: Raw HTML body.
@@ -1522,7 +1565,7 @@ def build_page_inventory_row(
             (keys: ``sitemap_lastmod``, ``source_sitemap``).
 
     Returns:
-        A 2-tuple of (*page_row*, *tag_rows*).
+        A 3-tuple of (*page_row*, *tag_rows*, *keyword_hits*).
     """
     response_meta = response_meta or {}
     sitemap_meta = sitemap_meta or {}
@@ -1566,7 +1609,10 @@ def build_page_inventory_row(
         for tv, src in tag_pairs
     ]
 
-    return page_row, tag_rows
+    kw_terms = normalise_keyword_log_terms(getattr(config, "KEYWORD_LOG_TERMS", None))
+    keyword_hits = keyword_hits_in_visible_text(seo.get("visible") or "", kw_terms)
+
+    return page_row, tag_rows, keyword_hits
 
 
 # ── build_page_inventory_row sub-functions ────────────────────────────────

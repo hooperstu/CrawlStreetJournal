@@ -26,6 +26,7 @@ Each crawl run lives in a timestamped subfolder under the project's
         nav_links.csv       — links inside <nav> elements
         link_checks.csv     — HEAD-check results for outbound links
         phone_numbers.csv   — tel: href links found on crawled pages
+        keyword_log.csv     — optional (page × keyword) when terms match visible text
 
 A ``.latest`` marker file in the ``runs/`` root points to the most recent
 run folder; ``get_latest_run_dir()`` resolves it.
@@ -80,6 +81,7 @@ def _sorted_run_folder_names(
     if exclude:
         names = [n for n in names if n != exclude]
     return names
+
 
 # ── CSV field definitions ─────────────────────────────────────────────────
 
@@ -216,6 +218,36 @@ PHONE_NUMBER_FIELDS = (
     "discovered_at",
 )
 
+KEYWORD_LOG_FIELDS = (
+    "keyword",
+    "match_count",
+    "requested_url",
+    "final_url",
+    "domain",
+    "http_status",
+    "content_type",
+    "title",
+    "meta_description",
+    "lang",
+    "canonical_url",
+    "url_content_hint",
+    "content_kind_guess",
+    "author",
+    "publisher",
+    "json_ld_types",
+    "og_type",
+    "tags_all",
+    "word_count",
+    "date_published",
+    "date_modified",
+    "cms_generator",
+    "breadcrumb_schema",
+    "training_related_flag",
+    "referrer_url",
+    "depth",
+    "discovered_at",
+)
+
 
 # ── Per-crawl storage context ─────────────────────────────────────────────
 
@@ -340,6 +372,13 @@ class StorageContext:
             self._output_path(config.PHONE_NUMBERS_CSV), PHONE_NUMBER_FIELDS, row,
         )
 
+    def write_keyword_log_row(self, row: Dict[str, Any]) -> None:
+        if not self.cfg.WRITE_KEYWORD_LOG_CSV:
+            return
+        self.append_row(
+            self._output_path(config.KEYWORD_LOG_CSV), KEYWORD_LOG_FIELDS, row,
+        )
+
     # -- latest-run marker ------------------------------------------------
 
     def _write_latest_marker(self, run_folder_name: str) -> None:
@@ -462,6 +501,10 @@ class StorageContext:
         self._write_header(
             self._output_path(config.PHONE_NUMBERS_CSV), PHONE_NUMBER_FIELDS,
         )
+        if self.cfg.WRITE_KEYWORD_LOG_CSV:
+            self._write_header(
+                self._output_path(config.KEYWORD_LOG_CSV), KEYWORD_LOG_FIELDS,
+            )
         seen: set[str] = set()
         for cat in set(config.ASSET_CATEGORY_BY_EXT.values()):
             if cat not in seen:
@@ -626,6 +669,8 @@ _SNAPSHOT_KEYS = (
     "CAPTURE_RESPONSE_HEADERS",
     "WRITE_SITEMAP_URLS_CSV",
     "WRITE_NAV_LINKS_CSV",
+    "WRITE_KEYWORD_LOG_CSV",
+    "KEYWORD_LOG_TERMS",
     "CHECK_OUTBOUND_LINKS",
     "MAX_LINK_CHECKS_PER_PAGE",
     "LINK_CHECK_DELAY_SECONDS",
@@ -1266,6 +1311,8 @@ def initialise_outputs(run_folder: Optional[str] = None, run_name: Optional[str]
     if config.CHECK_OUTBOUND_LINKS:
         _write_header(_output_path(config.LINK_CHECKS_CSV), LINK_CHECK_FIELDS)
     _write_header(_output_path(config.PHONE_NUMBERS_CSV), PHONE_NUMBER_FIELDS)
+    if config.WRITE_KEYWORD_LOG_CSV:
+        _write_header(_output_path(config.KEYWORD_LOG_CSV), KEYWORD_LOG_FIELDS)
     seen: set[str] = set()
     for cat in set(config.ASSET_CATEGORY_BY_EXT.values()):
         if cat not in seen:
@@ -1431,6 +1478,12 @@ def write_link_check(row: Dict[str, Any]) -> None:
 
 def write_phone_number(row: Dict[str, Any]) -> None:
     append_row(_output_path(config.PHONE_NUMBERS_CSV), PHONE_NUMBER_FIELDS, row)
+
+
+def write_keyword_log_row(row: Dict[str, Any]) -> None:
+    if not config.WRITE_KEYWORD_LOG_CSV:
+        return
+    append_row(_output_path(config.KEYWORD_LOG_CSV), KEYWORD_LOG_FIELDS, row)
 
 
 # ── Content hash persistence (for dedup + change detection) ──────────────

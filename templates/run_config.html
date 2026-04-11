@@ -326,6 +326,15 @@
         <label class="form-label" style="margin-bottom:0;">nav_links.csv — links inside &lt;nav&gt; elements</label>
       </div>
       <div class="checkbox-row">
+        <input type="checkbox" name="write_keyword_log" value="1" {% if cfg.get("WRITE_KEYWORD_LOG_CSV", False) %}checked{% endif %}>
+        <label class="form-label" style="margin-bottom:0;">keyword_log.csv — log pages where configured terms appear in visible text</label>
+      </div>
+      <div class="form-group" style="margin-top:8px;">
+        <label class="form-label">Keyword log terms</label>
+        <p class="field-explain">One phrase per line. Case-insensitive substring match against visible page text (not HTML markup). Join with pages.csv fields for charts and pivots.</p>
+        <textarea name="keyword_log_terms" rows="4" placeholder="NHS&#10;mental health&#10;…" style="font-family:monospace;font-size:13px;">{{ cfg.get("KEYWORD_LOG_TERMS", []) | join('\n') }}</textarea>
+      </div>
+      <div class="checkbox-row">
         <input type="checkbox" name="capture_readability" value="1" {% if cfg.get("CAPTURE_READABILITY", True) %}checked{% endif %}>
         <label class="form-label" style="margin-bottom:0;">Compute Flesch–Kincaid readability scores</label>
       </div>
