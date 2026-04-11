@@ -21,6 +21,9 @@ VOLUME ["/app/projects"]
 
 EXPOSE 5001
 
+# Listen on all interfaces inside the container (published port maps to the host).
+ENV CSJ_GUI_BIND=0.0.0.0
+
 ENV PYTHONUNBUFFERED=1
 
 # Run the Flask GUI directly (not the desktop launcher — no browser/window needed)

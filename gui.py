@@ -5,9 +5,9 @@ The Crawl Street Journal — Web GUI
 Flask application providing a browser interface for managing projects,
 configuring crawls, running them, and reviewing results.
 
-    python gui.py          # http://localhost:5001
+    python gui.py          # http://localhost:5001 (bind: ``127.0.0.1`` by default)
 
-Serves on port **5001** (not the Flask default 5000) with ``threaded=True``
+Serves on port **5001** (override with ``CSJ_GUI_PORT``) with ``threaded=True``
 so that SSE long-poll streams do not block other requests.
 
 Threading model
@@ -75,6 +75,7 @@ import itertools
 import json
 import logging
 import os
+import sys
 import threading
 import time
 import zipfile
@@ -107,6 +108,17 @@ app = Flask(
     static_url_path="/static",
 )
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+
+
+def _env_str(name: str, default: str) -> str:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip()
+
+
+def _gui_bind_address() -> str:
+    return _env_str("CSJ_GUI_BIND", getattr(config, "GUI_BIND_ADDRESS", "127.0.0.1"))
 
 
 def _load_secret_key() -> bytes:
@@ -1790,5 +1802,13 @@ if __name__ == "__main__":
     )
     # Move any flat-file data from pre-project-era layouts into the new structure.
     storage_module.migrate_legacy_data()
-    print("The Crawl Street Journal: http://localhost:5001")
-    run_server(host="0.0.0.0", port=5001, threaded=True)
+    bind = _gui_bind_address()
+    port = int(os.environ.get("CSJ_GUI_PORT", "5001"))
+    host_hint = "localhost" if bind in ("127.0.0.1", "::1") else bind
+    print(f"The Crawl Street Journal: http://{host_hint}:{port}")
+    if bind == "0.0.0.0":
+        print(
+            "Listening on all interfaces (0.0.0.0). Restrict access with a host firewall if needed.",
+            file=sys.stderr,
+        )
+    run_server(host=bind, port=port, threaded=True)

@@ -14,6 +14,7 @@ from urllib.parse import urljoin
 import requests
 
 import config
+from outbound_http import request_get_streaming
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,8 @@ def _fetch_xml(
     timeout: int = 0,
     verify: Optional[bool] = None,
     max_redirects: Optional[int] = None,
+    block_private: Optional[bool] = None,
+    max_body_bytes: Optional[int] = None,
 ) -> str:
     ua = user_agent or config.USER_AGENT
     to = timeout or config.REQUEST_TIMEOUT_SECONDS
@@ -41,13 +44,24 @@ def _fetch_xml(
     except (TypeError, ValueError):
         mr = 30
     mr = max(1, min(mr, 1000))
+    block = config.BLOCK_PRIVATE_OUTBOUND if block_private is None else block_private
+    cap = config.MAX_SITEMAP_RESPONSE_BYTES if max_body_bytes is None else int(max_body_bytes)
     with requests.Session() as sess:
         sess.verify = v
-        sess.max_redirects = mr
         sess.headers.update({"User-Agent": ua})
-        resp = sess.get(url, timeout=to, allow_redirects=True)
-    resp.raise_for_status()
-    return resp.text
+        raw, status, _fin, _ct, err, _rh = request_get_streaming(
+            sess,
+            url,
+            timeout=float(to),
+            max_redirects=mr,
+            max_body_bytes=cap,
+            block_private=bool(block),
+        )
+    if err:
+        raise RuntimeError(err)
+    if status >= 400:
+        raise RuntimeError(f"HTTP {status}")
+    return (raw or b"").decode("utf-8", errors="replace")
 
 
 def parse_sitemap_xml(
@@ -102,6 +116,8 @@ def collect_urls_from_sitemap(
     *,
     http_verify: Optional[bool] = None,
     http_max_redirects: Optional[int] = None,
+    block_private_outbound: Optional[bool] = None,
+    max_sitemap_bytes: Optional[int] = None,
 ) -> List[Tuple[str, str]]:
     """
     Recursively expand sitemap indexes up to *max_urls* page locations.
@@ -125,6 +141,8 @@ def collect_urls_from_sitemap(
                 sm_url,
                 verify=http_verify,
                 max_redirects=http_max_redirects,
+                block_private=block_private_outbound,
+                max_body_bytes=max_sitemap_bytes,
             )
         except Exception as e:
             logger.warning("Could not fetch sitemap %s: %s", sm_url, e)

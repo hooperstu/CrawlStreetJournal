@@ -19,3 +19,9 @@ secret_key
 build/
 dist/
 *.app
+
+# Node Playwright (playwright-node/) — HTML report at repo root
+playwright-node/node_modules/
+playwright-node/test-results/
+playwright-report/
+playwright-pytest-report.html

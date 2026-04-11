@@ -86,6 +86,7 @@ a = Analysis(
         "config",
         "utils",
         "scraper",
+        "outbound_http",
         "parser",
         "sitemap",
         "storage",

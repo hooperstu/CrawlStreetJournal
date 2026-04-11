@@ -34,6 +34,7 @@ Key entry points:
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import heapq
 import logging
@@ -51,6 +52,7 @@ import requests
 
 import config
 from config import CrawlConfig
+from outbound_http import request_get_streaming, request_head_follow, validate_outbound_url
 import parser as parser_module
 import sitemap as sitemap_module
 import storage
@@ -97,47 +99,36 @@ def _outbound_request_outcome(
     target: str,
     timeout: float,
     get_fallback: bool,
+    max_redirects: int,
+    block_private: bool,
+    max_get_bytes: int,
 ) -> Tuple[int, str, str]:
     """HEAD (optional GET fallback). Returns ``(status, final_url, message)``.
 
     *message* is empty on success; on total failure it holds a short diagnostic.
     """
     try:
-        resp = sess.head(target, timeout=timeout, allow_redirects=True)
-        status = resp.status_code
-        final = resp.url
-        resp.close()
+        status, final, _ctype, err, _rh = request_head_follow(
+            sess, target, timeout=timeout, max_redirects=max_redirects, block_private=block_private,
+        )
+        if err:
+            return 0, target, err
         if get_fallback and status in (403, 405, 501):
-            resp = sess.get(
+            raw, st2, fin2, _ct2, err2, _rh2 = request_get_streaming(
+                sess,
                 target,
                 timeout=timeout,
-                allow_redirects=True,
-                stream=True,
+                max_redirects=max_redirects,
+                max_body_bytes=max_get_bytes,
+                block_private=block_private,
                 headers={"Range": "bytes=0-0"},
             )
-            status = resp.status_code
-            final = resp.url
-            _drain_response_chunk(resp)
+            if err2:
+                return 0, target, err2
+            return st2, fin2, ""
         return status, final, ""
-    except Exception as head_exc:
-        if not get_fallback:
-            return (
-                0,
-                target,
-                f"{type(head_exc).__name__}: {str(head_exc)[:400]}",
-            )
-        try:
-            resp = sess.get(
-                target, timeout=timeout, allow_redirects=True, stream=True,
-            )
-            status = resp.status_code
-            final = resp.url
-            _drain_response_chunk(resp)
-            return status, final, ""
-        except Exception as get_exc:
-            h = f"{type(head_exc).__name__}: {str(head_exc)[:200]}"
-            g = f"{type(get_exc).__name__}: {str(get_exc)[:200]}"
-            return 0, target, f"HEAD: {h}; GET: {g}"
+    except Exception as exc:
+        return 0, target, f"{type(exc).__name__}: {str(exc)[:400]}"
 
 
 # ── URL priority scoring ─────────────────────────────────────────────────
@@ -348,7 +339,7 @@ def _origin_of(url: str) -> str:
 _crawl_delay_cache: Dict[str, Optional[float]] = {}
 
 
-def _robots_for_url(url: str) -> RobotFileParser:
+def _robots_for_url(url: str, cfg: Optional[CrawlConfig] = None) -> RobotFileParser:
     """Return a cached ``RobotFileParser`` for *url*'s origin, fetching if needed."""
     origin = _origin_of(url)
     with _global_state_lock:
@@ -356,16 +347,40 @@ def _robots_for_url(url: str) -> RobotFileParser:
             return _robots_cache[origin]
     rp = RobotFileParser()
     crawl_delay = None
+    robots_url = origin.rstrip("/") + "/robots.txt"
+    block = config.BLOCK_PRIVATE_OUTBOUND if cfg is None else cfg.BLOCK_PRIVATE_OUTBOUND
     try:
-        rp.set_url(origin + "/robots.txt")
-        rp.read()
-        # Extract Crawl-delay if present
-        try:
-            cd = rp.crawl_delay("*")
-            if cd is not None:
-                crawl_delay = float(cd)
-        except Exception:
-            pass
+        verr = validate_outbound_url(robots_url) if block else None
+        if verr:
+            logger.debug("robots.txt fetch blocked for %s: %s", origin, verr)
+        else:
+            _ua = cfg.USER_AGENT if cfg else config.USER_AGENT
+            _timeout = cfg.REQUEST_TIMEOUT_SECONDS if cfg else config.REQUEST_TIMEOUT_SECONDS
+            _max_r = cfg.HTTP_MAX_REDIRECTS if cfg else config.HTTP_MAX_REDIRECTS
+            _max_body = cfg.MAX_ROBOTS_TXT_BYTES if cfg else config.MAX_ROBOTS_TXT_BYTES
+            verify = cfg.HTTP_VERIFY_SSL if cfg else config.HTTP_VERIFY_SSL
+            with _http_session(cfg) as sess:
+                sess.headers.update({"User-Agent": _ua})
+                raw, _st, _fin, _ct, err, _rh = request_get_streaming(
+                    sess,
+                    robots_url,
+                    timeout=float(_timeout),
+                    max_redirects=int(_max_r),
+                    max_body_bytes=int(_max_body),
+                    block_private=bool(block),
+                )
+            if err:
+                logger.debug("Could not fetch robots.txt for %s: %s", origin, err)
+            elif raw:
+                rp.set_url(robots_url)
+                text = raw.decode("utf-8", errors="replace")
+                rp.parse(text.splitlines())
+                try:
+                    cd = rp.crawl_delay("*")
+                    if cd is not None:
+                        crawl_delay = float(cd)
+                except Exception:
+                    pass
     except Exception as e:
         logger.debug("Could not fetch robots.txt for %s: %s", origin, e)
     with _global_state_lock:
@@ -377,10 +392,10 @@ def _robots_for_url(url: str) -> RobotFileParser:
         return _robots_cache[origin]
 
 
-def _get_crawl_delay(url: str) -> Optional[float]:
+def _get_crawl_delay(url: str, cfg: Optional[CrawlConfig] = None) -> Optional[float]:
     """Return the Crawl-delay directive for this URL's origin, or None."""
     origin = _origin_of(url)
-    _robots_for_url(url)  # ensure cache is populated
+    _robots_for_url(url, cfg)  # ensure cache is populated
     with _global_state_lock:
         return _crawl_delay_cache.get(origin)
 
@@ -400,7 +415,7 @@ def can_fetch(url: str, cfg: Optional[CrawlConfig] = None) -> bool:
     with _global_state_lock:
         if origin in _blocked_origins:
             return False
-    rp = _robots_for_url(url)
+    rp = _robots_for_url(url, cfg)
     try:
         allowed = rp.can_fetch(_ua, url)
         if not allowed:
@@ -524,7 +539,7 @@ def _wait_for_domain(
     delay = _per_domain_delay(hostname, delay_cfg)
     # Respect Crawl-delay from robots.txt as a minimum floor
     if url:
-        robots_delay = _get_crawl_delay(url)
+        robots_delay = _get_crawl_delay(url, cfg)
         if robots_delay is not None and robots_delay > delay:
             delay = robots_delay
     with _global_state_lock:
@@ -552,6 +567,9 @@ def fetch_page(
     _retries = cfg.MAX_RETRIES if cfg else config.MAX_RETRIES
     _timeout = cfg.REQUEST_TIMEOUT_SECONDS if cfg else config.REQUEST_TIMEOUT_SECONDS
     _capture = cfg.CAPTURE_RESPONSE_HEADERS if cfg else config.CAPTURE_RESPONSE_HEADERS
+    _max_r = cfg.HTTP_MAX_REDIRECTS if cfg else config.HTTP_MAX_REDIRECTS
+    _max_body = cfg.MAX_RESPONSE_BYTES if cfg else config.MAX_RESPONSE_BYTES
+    _block = cfg.BLOCK_PRIVATE_OUTBOUND if cfg else config.BLOCK_PRIVATE_OUTBOUND
 
     empty_meta: Dict[str, str] = {}
     last_error = ""
@@ -563,27 +581,41 @@ def fetch_page(
                 backoff = min(2 ** attempt, 30)
                 time.sleep(backoff)
             try:
-                resp = sess.get(
-                    url, timeout=_timeout, allow_redirects=True,
+                raw, status, final, ctype, err, rh = request_get_streaming(
+                    sess,
+                    url,
+                    timeout=float(_timeout),
+                    max_redirects=int(_max_r),
+                    max_body_bytes=int(_max_body),
+                    block_private=bool(_block),
                 )
-                final = resp.url
-                ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
-                status = resp.status_code
                 meta = empty_meta
+                if err:
+                    last_error = err
+                    if "blocked:" in err or "redirect limit" in err.lower():
+                        return None, 0, final, ctype, meta, last_error
+                    if attempt == _retries:
+                        return None, 0, final, ctype, meta, last_error
+                    logger.warning("Fetch failed for %s: %s", url, last_error)
+                    continue
+                if raw is not None and len(raw) >= _max_body:
+                    last_error = f"response truncated at {_max_body} bytes"
+                    logger.warning("Size cap for %s: %s", url, last_error)
                 if _capture:
                     meta = {
-                        "last_modified": (resp.headers.get("Last-Modified") or "").strip(),
-                        "etag": (resp.headers.get("ETag") or "").strip(),
-                        "x_robots_tag": (resp.headers.get("X-Robots-Tag") or "").strip(),
-                        "server": (resp.headers.get("Server") or "").strip(),
-                        "x_powered_by": (resp.headers.get("X-Powered-By") or "").strip(),
+                        "last_modified": (rh.get("last-modified") or "").strip(),
+                        "etag": (rh.get("etag") or "").strip(),
+                        "x_robots_tag": (rh.get("x-robots-tag") or "").strip(),
+                        "server": (rh.get("server") or "").strip(),
+                        "x_powered_by": (rh.get("x-powered-by") or "").strip(),
                     }
                 if status >= 400:
                     last_error = f"HTTP {status}"
                     if attempt == _retries:
                         return None, status, final, ctype, meta, last_error
                     continue
-                return resp.text, status, final, ctype, meta, ""
+                text = (raw or b"").decode("utf-8", errors="replace")
+                return text, status, final, ctype, meta, ""
             except requests.exceptions.Timeout:
                 last_error = f"Timeout (attempt {attempt + 1}/{_retries + 1})"
                 logger.warning("Timeout fetching %s (attempt %s)", url, attempt + 1)
@@ -607,14 +639,21 @@ def head_asset(url: str, cfg: Optional[CrawlConfig] = None) -> Tuple[str, str]:
     """Return (content_type, content_length) from HEAD, or empty strings."""
     _ua = cfg.USER_AGENT if cfg else config.USER_AGENT
     _timeout = cfg.HEAD_TIMEOUT_SECONDS if cfg else config.HEAD_TIMEOUT_SECONDS
+    _max_r = cfg.HTTP_MAX_REDIRECTS if cfg else config.HTTP_MAX_REDIRECTS
+    _block = cfg.BLOCK_PRIVATE_OUTBOUND if cfg else config.BLOCK_PRIVATE_OUTBOUND
     try:
         with _http_session(cfg) as sess:
             sess.headers.update({"User-Agent": _ua})
-            resp = sess.head(
-                url, timeout=_timeout, allow_redirects=True,
+            _st, _fin, ct, err, rh = request_head_follow(
+                sess,
+                url,
+                timeout=float(_timeout),
+                max_redirects=int(_max_r),
+                block_private=bool(_block),
             )
-        ct = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
-        cl = (resp.headers.get("Content-Length") or "").strip()
+        if err:
+            return "", ""
+        cl = (rh.get("content-length") or "").strip()
         return ct, cl
     except Exception:
         return "", ""
@@ -647,18 +686,29 @@ def _sitemaps_from_robots(
     """Parse ``Sitemap:`` directives from *origin*'s ``robots.txt``."""
     _ua = cfg.USER_AGENT if cfg else config.USER_AGENT
     _timeout = cfg.REQUEST_TIMEOUT_SECONDS if cfg else config.REQUEST_TIMEOUT_SECONDS
+    _max_r = cfg.HTTP_MAX_REDIRECTS if cfg else config.HTTP_MAX_REDIRECTS
+    _max_body = cfg.MAX_ROBOTS_TXT_BYTES if cfg else config.MAX_ROBOTS_TXT_BYTES
+    _block = cfg.BLOCK_PRIVATE_OUTBOUND if cfg else config.BLOCK_PRIVATE_OUTBOUND
+    robots_url = origin.rstrip("/") + "/robots.txt"
     try:
         with _http_session(cfg) as sess:
             sess.headers.update({"User-Agent": _ua})
-            r = sess.get(
-                origin.rstrip("/") + "/robots.txt",
-                timeout=_timeout,
+            raw, _st, _fin, _ct, err, _rh = request_get_streaming(
+                sess,
+                robots_url,
+                timeout=float(_timeout),
+                max_redirects=int(_max_r),
+                max_body_bytes=int(_max_body),
+                block_private=bool(_block),
             )
-        r.raise_for_status()
+        if err:
+            logger.debug("robots.txt fetch failed for %s: %s", origin, err)
+            return []
+        text = (raw or b"").decode("utf-8", errors="replace")
     except Exception as e:
         logger.debug("robots.txt fetch failed for %s: %s", origin, e)
         return []
-    return utils.parse_robots_for_sitemaps(r.text)
+    return utils.parse_robots_for_sitemaps(text)
 
 
 def collect_start_items(
@@ -742,6 +792,8 @@ def collect_start_items(
                 max_urls=_max_sm,
                 http_verify=cfg.HTTP_VERIFY_SSL if cfg else config.HTTP_VERIFY_SSL,
                 http_max_redirects=cfg.HTTP_MAX_REDIRECTS if cfg else config.HTTP_MAX_REDIRECTS,
+                block_private_outbound=cfg.BLOCK_PRIVATE_OUTBOUND if cfg else config.BLOCK_PRIVATE_OUTBOUND,
+                max_sitemap_bytes=cfg.MAX_SITEMAP_RESPONSE_BYTES if cfg else config.MAX_SITEMAP_RESPONSE_BYTES,
             )
         except Exception as e:
             logger.warning("Sitemap crawl failed for %s: %s", sm_url, e)
@@ -823,6 +875,9 @@ def _check_outbound_links(
     _max_checks = cfg.MAX_LINK_CHECKS_PER_PAGE if cfg else config.MAX_LINK_CHECKS_PER_PAGE
     _delay = cfg.LINK_CHECK_DELAY_SECONDS if cfg else config.LINK_CHECK_DELAY_SECONDS
     _get_fb = cfg.LINK_CHECK_GET_FALLBACK if cfg else config.LINK_CHECK_GET_FALLBACK
+    _max_r = cfg.HTTP_MAX_REDIRECTS if cfg else config.HTTP_MAX_REDIRECTS
+    _block = cfg.BLOCK_PRIVATE_OUTBOUND if cfg else config.BLOCK_PRIVATE_OUTBOUND
+    _link_cap = cfg.MAX_LINK_CHECK_RESPONSE_BYTES if cfg else config.MAX_LINK_CHECK_RESPONSE_BYTES
 
     seen: Set[str] = set()
     checked = 0
@@ -836,7 +891,13 @@ def _check_outbound_links(
             if checked >= _max_checks:
                 break
             check_status, check_final, check_message = _outbound_request_outcome(
-                sess, target, float(_timeout), _get_fb,
+                sess,
+                target,
+                float(_timeout),
+                _get_fb,
+                int(_max_r),
+                bool(_block),
+                int(_link_cap),
             )
             lc_row = {
                 "from_url": row["from_url"],
