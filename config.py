@@ -136,6 +136,7 @@ PROJECTS_DIR = os.path.join(DATA_DIR, "projects")
 OUTPUT_DIR = os.path.join(DATA_DIR, "output")
 
 PAGES_CSV = "pages.csv"
+KEYWORD_LOG_CSV = "keyword_log.csv"
 EDGES_CSV = "edges.csv"
 TAGS_CSV = "tags.csv"
 ERRORS_CSV = "crawl_errors.csv"
@@ -268,6 +269,11 @@ TRAINING_KEYWORDS = (
     "masterclass",
 )
 
+# Keyword log: optional ``keyword_log.csv`` — one row per (page, keyword) when
+# the term appears in visible page text (case-insensitive substring match).
+WRITE_KEYWORD_LOG_CSV = False
+KEYWORD_LOG_TERMS = []
+
 # ── LOGGING ───────────────────────────────────────────────────────────
 # Python log-level name: DEBUG, INFO, WARNING, ERROR, CRITICAL.
 LOG_LEVEL = "INFO"
@@ -330,6 +336,8 @@ class CrawlConfig:
     CAPTURE_RESPONSE_HEADERS: bool = True
     WRITE_SITEMAP_URLS_CSV: bool = True
     WRITE_NAV_LINKS_CSV: bool = True
+    WRITE_KEYWORD_LOG_CSV: bool = False
+    KEYWORD_LOG_TERMS: list = field(default_factory=list)
     CHECK_OUTBOUND_LINKS: bool = False
     MAX_LINK_CHECKS_PER_PAGE: int = 50
     LINK_CHECK_DELAY_SECONDS: float = 0.5
