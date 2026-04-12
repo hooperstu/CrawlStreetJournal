@@ -22,8 +22,10 @@ tests exercise the file-reading paths without touching actual projects.
 """
 
 import csv
+import io
 import os
 import sys
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -796,3 +798,15 @@ def test_aggregate_competitor_intelligence_full_lists(tmp_path):
     assert len(full["keyword_content"]["top_tags"]) >= len(
         capped["keyword_content"]["top_tags"],
     )
+
+
+def test_build_competitor_intelligence_zip_bytes(tmp_path):
+    """ZIP export builds a valid archive with at least summary CSVs."""
+    import viz_exports
+
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
+    raw = viz_exports.build_competitor_intelligence_zip([run_dir])
+    assert raw[:2] == b"PK"
+    zf = zipfile.ZipFile(io.BytesIO(raw))
+    names = zf.namelist()
+    assert "product_pricing_summary.csv" in names
