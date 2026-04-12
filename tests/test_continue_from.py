@@ -107,3 +107,12 @@ def test_init_run_merges_visited_seed_skips_fetch():
             delay_cfg=0,
         )
         assert page_written is False
+
+
+def test_thread_safe_dict_supports_getitem_for_content_dedup():
+    """CONTENT_DEDUP reads content_hashes[key]; subscript must be thread-safe."""
+    d = scraper._ThreadSafeDict()
+    d["abc123"] = "https://example.com/first"
+    assert d["abc123"] == "https://example.com/first"
+    assert d.get("abc123") == "https://example.com/first"
+    assert "abc123" in d
