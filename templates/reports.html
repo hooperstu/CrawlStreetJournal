@@ -172,6 +172,53 @@
   .viz-canvas { width: 100%; overflow-x: auto; }
   .viz-canvas svg { display: block; }
 
+  .cpa-disclaimer {
+    font-size: 12px;
+    color: var(--csj-body);
+    background: var(--csj-newsprint);
+    border-left: 3px solid #5c6bc0;
+    padding: 10px 12px;
+    border-radius: var(--radius);
+    margin-bottom: 14px;
+    line-height: 1.45;
+  }
+  .cpa-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+  }
+  @media (max-width: 1100px) {
+    .cpa-grid { grid-template-columns: 1fr; }
+  }
+  .cpa-section h3 { font-size: 14px; margin: 0 0 8px; color: var(--csj-headline); }
+  .cpa-table-wrap {
+    max-height: 280px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: #fff;
+  }
+  .cpa-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .cpa-table th, .cpa-table td {
+    padding: 6px 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .cpa-table th {
+    background: var(--csj-newsprint);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+  .cpa-url { max-width: min(400px, 48vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cpa-url a { color: var(--csj-accent); }
+  .cpa-stack { display: flex; flex-direction: column; gap: 16px; }
+
   .viz-tooltip {
     position: absolute;
     pointer-events: none;
@@ -812,6 +859,15 @@
           <button class="viz-tab" data-panel="freshness">Freshness</button>
           <button class="viz-tab" data-panel="radar">Quality Radar</button>
           <button class="viz-tab" data-panel="parallel">Parallel Coords</button>
+        </div>
+      </div>
+      <div class="viz-tab-group vtg-content-onsite">
+        <div class="viz-tab-group-header">
+          <span class="viz-tab-group-title" style="color:#3949ab;">Content &amp; on-site performance</span>
+          <span class="viz-tab-group-desc">Content quality, internal links, and keyword alignment from crawl data</span>
+        </div>
+        <div class="viz-tab-row">
+          <button class="viz-tab" data-panel="contentaudit">On-Site Performance Audit</button>
           <button class="viz-tab" data-panel="contenthealth">Content Health</button>
         </div>
       </div>
@@ -1321,6 +1377,21 @@
       <div class="viz-canvas" id="viz-contenthealth" style="overflow-x:auto;"></div>
     </div>
   </div>
+
+  <!-- Content & On-Site Performance Audit -->
+  <div class="viz-panel" id="panel-contentaudit">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Content &amp; On-Site Performance Audit</h2>
+          <p class="viz-desc">Thin and duplicate URL patterns, internal link distribution from the crawl graph, and whether parser-derived tags appear in titles or H1s. Uses the same filters as the dashboard.</p>
+        </div>
+      </div>
+      <div id="contentaudit-kpis" class="stats" style="margin-bottom:14px;"></div>
+      <div class="viz-loading" id="loading-contentaudit">Loading on-site audit&hellip;</div>
+      <div class="viz-canvas" id="viz-contentaudit"></div>
+    </div>
+  </div>
 </div>
 
 <div class="viz-tooltip" id="vizTooltip"></div>
@@ -1347,6 +1418,7 @@
     schema_insights:"{{ url_for('reports.api_schema_insights',slug=project.slug) }}",
     page_depth:     "{{ url_for('reports.api_page_depth',     slug=project.slug) }}",
     content_health: "{{ url_for('reports.api_content_health', slug=project.slug) }}",
+    content_performance_audit: "{{ url_for('reports.api_content_performance_audit', slug=project.slug) }}",
     runs:           "{{ url_for('reports.api_runs',           slug=project.slug) }}"
   };
   window.ECO_PRESELECTED_RUNS = "{{ preselected_runs }}";

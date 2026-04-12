@@ -500,9 +500,13 @@ def _domain_row_to_json(
         "wcag_lang_pct": round(d["wcag_lang_valid_count"] / pc * 100, 1) if pc else 0,
         "wcag_heading_order_pct": round(d["wcag_heading_order_valid_count"] / pc * 100, 1) if pc else 0,
         "wcag_title_pct": round(d["wcag_title_present_count"] / pc * 100, 1) if pc else 0,
-        "wcag_form_labels_pct": round(d["wcag_form_labels_sum"] / d["wcag_form_labels_n"] * 100, 1) if d["wcag_form_labels_n"] else 100.0,
+        "wcag_form_labels_pct": round(
+            d["wcag_form_labels_sum"] / d["wcag_form_labels_n"] * 100, 1,
+        ) if d["wcag_form_labels_n"] else 100.0,
         "wcag_landmarks_pct": round(d["wcag_landmarks_present_count"] / pc * 100, 1) if pc else 0,
-        "wcag_vague_link_pct": round(d["wcag_vague_link_sum"] / d["wcag_vague_link_n"] * 100, 1) if d["wcag_vague_link_n"] else 0.0,
+        "wcag_vague_link_pct": round(
+            d["wcag_vague_link_sum"] / d["wcag_vague_link_n"] * 100, 1,
+        ) if d["wcag_vague_link_n"] else 0.0,
         # Phase 4 fields
         "cms_generator": primary_cms,
         "cms_generators": dict(d["cms_generators"]),
@@ -517,7 +521,9 @@ def _domain_row_to_json(
         "has_breadcrumb_schema_pct": round(d["has_breadcrumb_schema_count"] / pc * 100, 1) if pc else 0,
         "robots_noindex_pct": round(d["robots_noindex_count"] / pc * 100, 1) if pc else 0,
         "schema_types": dict(d["schema_types"].most_common(20)),
-        "avg_extraction_coverage": round(d["extraction_coverage_sum"] / d["extraction_coverage_n"], 1) if d["extraction_coverage_n"] else 0,
+        "avg_extraction_coverage": round(
+            d["extraction_coverage_sum"] / d["extraction_coverage_n"], 1,
+        ) if d["extraction_coverage_n"] else 0,
         "avg_extraction_coverage_core": round(
             d["extraction_coverage_core_sum"] / d["extraction_coverage_core_n"], 1,
         ) if d["extraction_coverage_core_n"] else 0,
@@ -922,7 +928,7 @@ def aggregate_navigation(
                         "name": tgt_dom,
                         "group": True,
                         "external": True,
-                        "children": sorted(leaves, key=lambda l: l["name"]),
+                        "children": sorted(leaves, key=lambda leaf: leaf["name"]),
                     })
             children.append({
                 "name": "External",
@@ -1634,6 +1640,297 @@ def aggregate_content_health(
         "signals": signal_names,
         "matrix": matrix,
         "page_counts": page_counts,
+    }
+
+
+# -- Content & On-Site Performance Audit -----------------------------------
+
+_THIN_WORD_THRESHOLD = 250
+
+
+def _all_page_urls(rows: List[Dict[str, str]]) -> set:
+    """All ``final_url`` / ``requested_url`` values from *rows*."""
+    urls: set = set()
+    for r in rows:
+        for key in ("final_url", "requested_url"):
+            u = (r.get(key) or "").strip()
+            if u:
+                urls.add(u)
+    return urls
+
+
+def _normalise_for_keyword_match(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").lower()).strip()
+
+
+def _tags_all_tokens(tags_all: str) -> List[str]:
+    """Split ``tags_all`` into non-empty tokens (pipe-delimited in CSV)."""
+    out: List[str] = []
+    for part in (tags_all or "").split("|"):
+        t = part.strip()
+        if len(t) >= 2:
+            out.append(t)
+    return out
+
+
+def _keyword_alignment(
+    tags_all: str,
+    title: str,
+    h1: str,
+) -> Tuple[bool, List[str]]:
+    """Return (aligned, tokens_checked) — aligned if any token appears in title or H1."""
+    tokens = _tags_all_tokens(tags_all)
+    if not tokens:
+        return True, []
+    title_n = _normalise_for_keyword_match(title)
+    h1_n = _normalise_for_keyword_match(h1)
+    blob = title_n + " " + h1_n
+    matched = False
+    for tok in tokens:
+        tl = tok.lower()
+        if len(tl) < 2:
+            continue
+        if tl in blob:
+            matched = True
+            break
+    return matched, tokens
+
+
+def aggregate_content_performance_audit(
+    run_dirs: List[str],
+    filters: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Thin/duplicate content, internal links, and keyword–copy alignment.
+
+    Uses ``pages.csv`` and ``edges.csv`` only. Duplicate detection uses
+    ``content_hash`` clusters and shared ``canonical_url`` targets. Internal
+    links are same-host edges present in the crawl. Keyword mapping uses
+    ``tags_all`` (parser-derived tags/keywords) against ``title`` and
+    ``h1_joined`` — a heuristic, not a substitute for Search Console data.
+
+    Args:
+        run_dirs: Absolute paths to one or more crawl run directories.
+        filters: Optional cross-cutting filter dict (see ``filter_pages``).
+
+    Returns:
+        Nested dict with ``summary``, ``thin_content``, ``duplicates``,
+        ``internal_links``, ``keyword_mapping``, and ``disclaimer``.
+    """
+    pages = filter_pages(
+        _read_csv_multi(run_dirs, config.PAGES_CSV), filters,
+    )
+    page_count = len(pages)
+    page_urls = _all_page_urls(pages)
+    domains_in_scope = {r.get("domain", "unknown") for r in pages}
+
+    # --- Thin content ---
+    thin_rows: List[Dict[str, Any]] = []
+    for r in pages:
+        wc = _safe_int(r.get("word_count", "0"))
+        if wc <= _THIN_WORD_THRESHOLD:
+            thin_rows.append({
+                "url": (r.get("final_url") or r.get("requested_url") or "").strip(),
+                "title": (r.get("title") or "")[:120],
+                "domain": r.get("domain", "unknown"),
+                "word_count": wc,
+                "content_kind_guess": (r.get("content_kind_guess") or "").strip(),
+            })
+    thin_rows.sort(key=lambda x: (x["word_count"], x["url"]))
+    thin_sample = thin_rows[:80]
+
+    # --- Duplicate clusters (content hash) ---
+    hash_to_urls: Dict[str, List[str]] = defaultdict(list)
+    for r in pages:
+        h = (r.get("content_hash") or "").strip()
+        if not h:
+            continue
+        u = (r.get("final_url") or r.get("requested_url") or "").strip()
+        if u:
+            hash_to_urls[h].append(u)
+    duplicate_hash_clusters = []
+    for h, urls in hash_to_urls.items():
+        if len(urls) <= 1:
+            continue
+        sorted_urls = sorted(set(urls))
+        duplicate_hash_clusters.append({
+            "content_hash": h,
+            "urls": sorted_urls,
+            "count": len(sorted_urls),
+        })
+    duplicate_hash_clusters.sort(key=lambda x: -x["count"])
+
+    # --- Canonical URL duplicates (multiple pages sharing one canonical) ---
+    canon_to_pages: Dict[str, List[Dict[str, str]]] = defaultdict(list)
+    for r in pages:
+        canon = (r.get("canonical_url") or "").strip()
+        if not canon:
+            continue
+        u = (r.get("final_url") or r.get("requested_url") or "").strip()
+        if not u:
+            continue
+        if u.rstrip("/") == canon.rstrip("/"):
+            continue
+        canon_to_pages[canon].append({
+            "url": u,
+            "title": (r.get("title") or "")[:120],
+        })
+    canonical_duplicates = [
+        {"canonical_url": c, "pages": plist, "count": len(plist)}
+        for c, plist in canon_to_pages.items()
+        if len(plist) > 1
+    ]
+    canonical_duplicates.sort(key=lambda x: -x["count"])
+
+    # --- Internal link graph (same host in edges.csv) ---
+    inlink: Counter[str] = Counter()
+    out_internal: Counter[str] = Counter()
+    internal_edge_total = 0
+    domain_internal_edges: Counter[str] = Counter()
+
+    for rd in run_dirs:
+        edges_path = os.path.join(rd, config.EDGES_CSV)
+        if not os.path.isfile(edges_path):
+            continue
+        try:
+            with open(edges_path, "r", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    from_u = (row.get("from_url") or "").strip()
+                    to_u = (row.get("to_url") or "").strip()
+                    if not from_u or not to_u:
+                        continue
+                    if from_u not in page_urls:
+                        continue
+                    src_dom = _extract_domain(from_u)
+                    tgt_dom = _extract_domain(to_u)
+                    if not src_dom or src_dom != tgt_dom:
+                        continue
+                    if tgt_dom not in domains_in_scope:
+                        continue
+                    internal_edge_total += 1
+                    domain_internal_edges[src_dom] += 1
+                    out_internal[from_u] += 1
+                    if to_u in page_urls:
+                        inlink[to_u] += 1
+        except Exception:
+            pass
+
+    url_to_row = {}
+    for r in pages:
+        fu = (r.get("final_url") or "").strip()
+        ru = (r.get("requested_url") or "").strip()
+        if fu:
+            url_to_row[fu] = r
+        if ru:
+            url_to_row[ru] = r
+
+    top_inlinked = []
+    for url, cnt in inlink.most_common(40):
+        rr = url_to_row.get(url, {})
+        top_inlinked.append({
+            "url": url,
+            "domain": rr.get("domain", _extract_domain(url) or "unknown"),
+            "title": (rr.get("title") or "")[:120],
+            "inlinks_internal": cnt,
+        })
+
+    top_outlinking = [
+        {"url": u, "outlinks_internal": c}
+        for u, c in out_internal.most_common(40)
+    ]
+
+    dom_list = sorted(domains_in_scope)
+    by_domain_internal = []
+    for dom in dom_list:
+        pc = sum(1 for r in pages if r.get("domain") == dom)
+        ie = domain_internal_edges.get(dom, 0)
+        avg_out = round(ie / pc, 2) if pc else 0.0
+        by_domain_internal.append({
+            "domain": dom,
+            "page_count": pc,
+            "internal_edges": ie,
+            "avg_internal_edges_per_page": avg_out,
+        })
+    by_domain_internal.sort(key=lambda x: -x["internal_edges"])
+
+    internal_links = {
+        "total_internal_edges": internal_edge_total,
+        "top_inlinked_pages": top_inlinked,
+        "top_outlinking_pages": top_outlinking,
+        "by_domain": by_domain_internal[:40],
+    }
+
+    # --- Keyword mapping (tags_all vs title / H1) ---
+    mapping_rows: List[Dict[str, Any]] = []
+    gap_rows: List[Dict[str, Any]] = []
+    for r in pages:
+        tags_all = r.get("tags_all", "")
+        tokens = _tags_all_tokens(tags_all)
+        if not tokens:
+            continue
+        title = r.get("title", "")
+        h1 = r.get("h1_joined", "")
+        aligned, _ = _keyword_alignment(tags_all, title, h1)
+        row_out = {
+            "url": (r.get("final_url") or r.get("requested_url") or "").strip(),
+            "domain": r.get("domain", "unknown"),
+            "title": (title or "")[:120],
+            "h1": (h1 or "")[:160],
+            "tags_all": tags_all[:300],
+            "aligned": aligned,
+        }
+        mapping_rows.append(row_out)
+        if not aligned:
+            gap_rows.append(row_out)
+
+    keyword_mapping = {
+        "pages_with_tags": len(mapping_rows),
+        "aligned_count": sum(1 for m in mapping_rows if m["aligned"]),
+        "gap_sample": gap_rows[:60],
+        "aligned_sample": [m for m in mapping_rows if m["aligned"]][:30],
+    }
+
+    summary = {
+        "page_count": page_count,
+        "thin_word_threshold": _THIN_WORD_THRESHOLD,
+        "thin_count": len(thin_rows),
+        "thin_pct": (
+            round(len(thin_rows) / page_count * 100, 1) if page_count else 0.0
+        ),
+        "duplicate_hash_cluster_count": len(duplicate_hash_clusters),
+        "canonical_duplicate_group_count": len(canonical_duplicates),
+        "internal_edge_count": internal_edge_total,
+        "pages_with_tags_all": keyword_mapping["pages_with_tags"],
+        "keyword_aligned_count": keyword_mapping["aligned_count"],
+    }
+    if keyword_mapping["pages_with_tags"]:
+        summary["keyword_alignment_pct"] = round(
+            keyword_mapping["aligned_count"] / keyword_mapping["pages_with_tags"] * 100, 1,
+        )
+    else:
+        summary["keyword_alignment_pct"] = 0.0
+
+    disclaimer = (
+        "This audit uses crawl exports only. Thin pages use a fixed word-count "
+        f"threshold ({_THIN_WORD_THRESHOLD} words). Duplicate clusters use "
+        "``content_hash`` when populated, plus pages that share a canonical URL. "
+        "Internal links are counted from ``edges.csv`` on the same host. "
+        "Keyword mapping compares ``tags_all`` tokens to title and H1 text — "
+        "configure richer tagging in the parser where needed."
+    )
+
+    return {
+        "summary": summary,
+        "thin_content": {
+            "sample": thin_sample,
+            "total_flagged": len(thin_rows),
+        },
+        "duplicates": {
+            "by_content_hash": duplicate_hash_clusters[:40],
+            "by_canonical_url": canonical_duplicates[:40],
+        },
+        "internal_links": internal_links,
+        "keyword_mapping": keyword_mapping,
+        "disclaimer": disclaimer,
     }
 
 

@@ -477,3 +477,66 @@ def test_aggregate_content_health_with_filter(tmp_path):
     assert result["domains"][0] == "shop.example.com"
 
 
+# ── Content & On-Site Performance Audit tests ────────────────────────────
+
+def test_aggregate_content_performance_audit(tmp_path):
+    """Thin pages, hash duplicates, internal edges, keyword gaps."""
+    p1 = dict(SAMPLE_PAGES[0])
+    p1["word_count"] = "80"
+    p1["content_hash"] = "abc123"
+    p1["tags_all"] = "widgets|pricing"
+    p1["h1_joined"] = "Welcome"
+
+    p2 = dict(SAMPLE_PAGES[1])
+    p2["content_hash"] = "abc123"
+    p2["tags_all"] = "widgets"
+    p2["h1_joined"] = "Our widgets catalogue"
+
+    p3 = dict(SAMPLE_PAGES[2])
+    p3["canonical_url"] = "https://shop.example.com/products/widget"
+    p3["final_url"] = "https://shop.example.com/products/widget-copy"
+    p3["requested_url"] = "https://shop.example.com/products/widget-copy"
+    p3["tags_all"] = "xyzunknownterm"
+    p3["title"] = "Different title"
+    p3["h1_joined"] = "No match here"
+
+    p4 = dict(SAMPLE_PAGES[2])
+    p4["canonical_url"] = "https://shop.example.com/products/widget"
+    p4["final_url"] = "https://shop.example.com/products/widget-alt"
+    p4["requested_url"] = "https://shop.example.com/products/widget-alt"
+    p4["title"] = "Alt product"
+
+    edges = [
+        {
+            "from_url": "https://example.com/",
+            "to_url": "https://example.com/blog",
+            "link_text": "Blog",
+            "discovered_at": "",
+        },
+        {
+            "from_url": "https://example.com/blog",
+            "to_url": "https://example.com/",
+            "link_text": "Home",
+            "discovered_at": "",
+        },
+    ]
+
+    run_dir = _make_run_dir(tmp_path, pages=[p1, p2, p3, p4], edges=edges)
+    result = viz_data.aggregate_content_performance_audit([run_dir])
+
+    assert result["summary"]["thin_count"] >= 1
+    assert result["summary"]["duplicate_hash_cluster_count"] >= 1
+    assert result["summary"]["canonical_duplicate_group_count"] >= 1
+    assert result["summary"]["internal_edge_count"] >= 1
+    assert result["summary"]["pages_with_tags_all"] >= 1
+
+    gaps = result["keyword_mapping"]["gap_sample"]
+    assert any("xyzunknownterm" in (g.get("tags_all") or "") for g in gaps)
+
+
+def test_aggregate_content_performance_audit_empty(tmp_path):
+    """Empty pages returns empty-shaped payload."""
+    run_dir = _make_run_dir(tmp_path, pages=[])
+    result = viz_data.aggregate_content_performance_audit([run_dir])
+    assert result["summary"]["page_count"] == 0
+    assert result["thin_content"]["sample"] == []

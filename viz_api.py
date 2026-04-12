@@ -283,3 +283,30 @@ def api_content_health(slug: str):
     return jsonify(data)
 
 
+@eco_bp.route("/p/<slug>/api/viz/content_performance_audit")
+def api_content_performance_audit(slug: str):
+    """Thin/duplicate content, internal links, and keyword alignment for on-site audit."""
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return jsonify({
+            "summary": {},
+            "thin_content": {"sample": [], "total_flagged": 0},
+            "duplicates": {"by_content_hash": [], "by_canonical_url": []},
+            "internal_links": {
+                "total_internal_edges": 0,
+                "top_inlinked_pages": [],
+                "top_outlinking_pages": [],
+                "by_domain": [],
+            },
+            "keyword_mapping": {
+                "pages_with_tags": 0,
+                "aligned_count": 0,
+                "gap_sample": [],
+                "aligned_sample": [],
+            },
+            "disclaimer": "",
+        })
+    data = viz_data.aggregate_content_performance_audit(
+        run_dirs, filters=_parse_filters(),
+    )
+    return jsonify(data)
