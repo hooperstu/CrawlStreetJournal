@@ -283,3 +283,27 @@ def api_content_health(slug: str):
     return jsonify(data)
 
 
+@eco_bp.route("/p/<slug>/api/viz/indexability")
+def api_indexability(slug: str):
+    """Noindex directives and robots.txt-blocked URLs for the indexability report."""
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return jsonify({
+            "summary": {
+                "page_count": 0,
+                "noindex_count": 0,
+                "noindex_pct": 0.0,
+                "noindex_meta_only": 0,
+                "noindex_header_only": 0,
+                "noindex_both_sources": 0,
+                "robots_txt_blocked_count": 0,
+                "non_indexable_total": 0,
+                "non_indexable_pct": 0.0,
+            },
+            "noindex_pages": [],
+            "noindex_pages_total": 0,
+            "robots_txt_blocked": [],
+            "robots_txt_blocked_total": 0,
+        })
+    data = viz_data.aggregate_indexability(run_dirs, filters=_parse_filters())
+    return jsonify(data)

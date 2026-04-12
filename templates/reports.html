@@ -172,6 +172,22 @@
   .viz-canvas { width: 100%; overflow-x: auto; }
   .viz-canvas svg { display: block; }
 
+  .indexability-meta { font-size: 12px; color: var(--csj-body); margin-bottom: 12px; }
+  .indexability-two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 960px) {
+    .indexability-two-col { grid-template-columns: 1fr; }
+  }
+  .indexability-section h3 { font-size: 14px; margin: 0 0 8px; color: var(--csj-headline); }
+  .indexability-table-wrap { max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; }
+  .indexability-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .indexability-table th, .indexability-table td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .indexability-table th { background: var(--csj-newsprint); position: sticky; top: 0; z-index: 1; }
+  .indexability-url { max-width: min(360px, 42vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .indexability-url a { color: var(--csj-accent); }
+  .idx-src-badge { display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 3px; margin-left: 4px; vertical-align: middle; }
+  .idx-src-meta { background: #E8F5E9; color: #2e7d32; }
+  .idx-src-header { background: #E3F2FD; color: #1565c0; }
+
   .viz-tooltip {
     position: absolute;
     pointer-events: none;
@@ -823,6 +839,7 @@
         <div class="viz-tab-row">
           <button class="viz-tab" data-panel="sunburst">Navigation</button>
           <button class="viz-tab" data-panel="wordcloud">Themes</button>
+          <button class="viz-tab" data-panel="indexability">Indexability</button>
         </div>
       </div>
       <div class="viz-tab-group vtg-technology">
@@ -1030,6 +1047,22 @@
         <span class="sb-leg"><span class="sb-leg-swatch" style="background:hsl(160,65%,48%);"></span>External domains</span>
         <span class="sb-leg sb-leg-hint">Click to zoom &middot; Centre to go back</span>
       </div>
+    </div>
+  </div>
+
+  <!-- Indexability report -->
+  <div class="viz-panel" id="panel-indexability">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Indexability Report</h2>
+          <p class="viz-desc">Pages with <code>noindex</code> (meta robots or <code>X-Robots-Tag</code>) and URLs the crawler never fetched because <code>robots.txt</code> disallowed them. Focus remediation on high-value URLs you expect in the index.</p>
+        </div>
+      </div>
+      <div id="indexability-kpis" class="stats" style="margin-bottom:14px;"></div>
+      <div id="indexability-meta" class="indexability-meta"></div>
+      <div class="viz-loading" id="loading-indexability">Loading indexability data&hellip;</div>
+      <div class="viz-canvas" id="viz-indexability"></div>
     </div>
   </div>
 
@@ -1347,6 +1380,7 @@
     schema_insights:"{{ url_for('reports.api_schema_insights',slug=project.slug) }}",
     page_depth:     "{{ url_for('reports.api_page_depth',     slug=project.slug) }}",
     content_health: "{{ url_for('reports.api_content_health', slug=project.slug) }}",
+    indexability:   "{{ url_for('reports.api_indexability',   slug=project.slug) }}",
     runs:           "{{ url_for('reports.api_runs',           slug=project.slug) }}"
   };
   window.ECO_PRESELECTED_RUNS = "{{ preselected_runs }}";

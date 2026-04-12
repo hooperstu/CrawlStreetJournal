@@ -7,7 +7,7 @@
  * time a tab becomes active its VIZ function fires, fetches data from
  * the Flask viz_api.py endpoints (domains, graph, freshness, chord,
  * navigation, tags, technology, authorship, schema_insights,
- * filter_options), and draws into its panel's SVG container.
+ * filter_options, indexability), and draws into its panel's SVG container.
  *
  * Data flow:
  *   1. `window.ECO_API` (set in the HTML template) holds endpoint URLs.
@@ -3984,6 +3984,112 @@
       hideLoading("loading-contenthealth");
       _healthData = data;
       _drawHealth();
+    });
+  };
+
+  // ────────────────────────────────────────────────────────────────
+  // Indexability report (noindex + robots.txt blocks)
+  // ────────────────────────────────────────────────────────────────
+
+  /**
+   * Lists pages with noindex directives and URLs blocked at fetch time by
+   * robots.txt.  Renders summary KPIs and two scrollable tables.
+   */
+  VIZ.indexability = function () {
+    fetchJSON(API.indexability).then(function (data) {
+      hideLoading("loading-indexability");
+      var root = document.getElementById("viz-indexability");
+      var kpis = document.getElementById("indexability-kpis");
+      var meta = document.getElementById("indexability-meta");
+      if (!root || !kpis) return;
+
+      var s = data.summary || {};
+      var pc = s.page_count || 0;
+      var ni = s.noindex_count || 0;
+      var rb = s.robots_txt_blocked_count || 0;
+      var totalNon = s.non_indexable_total != null ? s.non_indexable_total : ni + rb;
+
+      kpis.innerHTML =
+        '<div class="stat"><div class="stat-value">' + fmt(pc) + '</div>' +
+        '<div class="stat-label">Crawled pages in scope</div></div>' +
+        '<div class="stat"><div class="stat-value">' + fmt(ni) + '</div>' +
+        '<div class="stat-label">With noindex (' + (s.noindex_pct || 0) + '%)</div></div>' +
+        '<div class="stat"><div class="stat-value">' + fmt(rb) + '</div>' +
+        '<div class="stat-label">Blocked by robots.txt (not fetched)</div></div>' +
+        '<div class="stat"><div class="stat-value">' + fmt(totalNon) + '</div>' +
+        '<div class="stat-label">Non-indexable signals (total)</div></div>';
+
+      if (meta) {
+        var parts = [];
+        if ((s.noindex_meta_only || 0) + (s.noindex_header_only || 0) + (s.noindex_both_sources || 0) > 0) {
+          parts.push(
+            "Noindex breakdown: " + (s.noindex_meta_only || 0) + " meta only, " +
+            (s.noindex_header_only || 0) + " header only, " +
+            (s.noindex_both_sources || 0) + " both."
+          );
+        }
+        if (rb > 0 && pc > 0) {
+          parts.push(
+            "Robots.txt blocks are listed separately; they are not included in crawled page counts."
+          );
+        }
+        var cap = 500;
+        var niTot = data.noindex_pages_total != null ? data.noindex_pages_total : (data.noindex_pages || []).length;
+        var rbTot = data.robots_txt_blocked_total != null ? data.robots_txt_blocked_total : (data.robots_txt_blocked || []).length;
+        if (niTot > cap || rbTot > cap) {
+          parts.push("Tables show up to " + cap + " rows each when lists are long.");
+        }
+        meta.innerHTML = parts.length ? "<p>" + parts.join(" ") + "</p>" : "";
+      }
+
+      function esc(t) {
+        if (!t) return "";
+        return String(t)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      function srcBadges(row) {
+        var bits = [];
+        if (row.source_meta) bits.push('<span class="idx-src-badge idx-src-meta">meta</span>');
+        if (row.source_header) bits.push('<span class="idx-src-badge idx-src-header">header</span>');
+        return bits.join("");
+      }
+
+      var niRows = data.noindex_pages || [];
+      var rbRows = data.robots_txt_blocked || [];
+
+      var niHtml = niRows.map(function (row) {
+        var u = row.url || row.requested_url || "";
+        var link = u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + esc(u) + "</a>" : "—";
+        return "<tr><td class=\"indexability-url\">" + link + srcBadges(row) + "</td><td>" +
+          esc(row.domain) + "</td><td>" + esc(row.http_status) + "</td><td>" +
+          esc(row.robots_directives) + "</td></tr>";
+      }).join("");
+
+      var rbHtml = rbRows.map(function (row) {
+        var u = row.url || "";
+        var link = u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + esc(u) + "</a>" : "—";
+        return "<tr><td class=\"indexability-url\">" + link + "</td><td>" + esc(row.domain) +
+          "</td><td>" + esc(row.message || "Blocked by robots.txt") + "</td></tr>";
+      }).join("");
+
+      root.innerHTML =
+        '<div class="indexability-two-col">' +
+        '<div class="indexability-section">' +
+        "<h3>Pages with noindex</h3>" +
+        '<div class="indexability-table-wrap"><table class="indexability-table">' +
+        "<thead><tr><th>URL</th><th>Domain</th><th>HTTP</th><th>Robots directives</th></tr></thead><tbody>" +
+        (niHtml || "<tr><td colspan=\"4\">No pages with noindex in this selection.</td></tr>") +
+        "</tbody></table></div></div>" +
+        '<div class="indexability-section">' +
+        "<h3>URLs blocked by robots.txt</h3>" +
+        '<div class="indexability-table-wrap"><table class="indexability-table">' +
+        "<thead><tr><th>URL</th><th>Domain</th><th>Note</th></tr></thead><tbody>" +
+        (rbHtml || "<tr><td colspan=\"3\">No robots.txt blocks recorded for this selection.</td></tr>") +
+        "</tbody></table></div></div></div>";
     });
   };
 
