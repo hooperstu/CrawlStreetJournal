@@ -14,12 +14,13 @@ The Crawl Street Journal (CSJ) is a single-process Python (3.9+) web crawler wit
 
 ### Testing
 
-- **Unit tests:** `source .venv/bin/activate && python3 -m pytest tests/test_parser.py tests/test_signals_audit.py tests/test_sitemap.py tests/test_viz_data.py -v` (71 unit tests).
-- **Playwright tests:** `source .venv/bin/activate && python3 -m pytest tests/test_playwright.py -v` (113 scenario tests — requires Flask running on port 5001 and `tests/seed_test_data.py` run first).
-- **Real crawl tests:** `source .venv/bin/activate && python3 -m pytest tests/test_real_crawl.py -v` (41 tests — requires an `nhs-estate-crawl` project with crawl data).
+- **Full suite:** `source .venv/bin/activate && python3 -m pytest tests/ -v` (268 tests — parser, sitemap, outbound HTTP, continue-from, viz_data, viz_api, quit API, Playwright GUI, real NHS crawl).
+- **Unit-only (no browser E2E):** `source .venv/bin/activate && python3 -m pytest tests/ --ignore=tests/test_playwright.py --ignore=tests/test_real_crawl.py -v` (114 tests).
+- **Playwright GUI:** `source .venv/bin/activate && python3 -m pytest tests/test_playwright.py -v` (113 scenario tests).
+- **Real crawl:** `source .venv/bin/activate && python3 -m pytest tests/test_real_crawl.py -v` (41 tests — requires an `nhs-estate-crawl` project with crawl data under `projects/`).
 - **Linting:** `source .venv/bin/activate && flake8 --max-line-length=120 *.py` — no linting config is committed; the repo has minor pre-existing style warnings.
 - There is no dedicated test framework in `requirements.txt`; `pytest`, `flake8`, `playwright`, and `pytest-playwright` are installed as dev extras in the venv.
-- Playwright tests (`tests/test_playwright.py`) auto-start ``gui.py`` via ``tests/conftest.py`` unless port 5001 is already in use; they seed data automatically. Use ``CSJ_E2E_NO_SERVER=1`` when running the GUI yourself.
+- E2E tests auto-start ``gui.py`` on **127.0.0.1:5001** via ``tests/conftest.py`` (unless the port is already in use) and run ``seed_test_data.py`` once. ``tests/conftest.py`` also provides a **single session-scoped** Chromium instance shared by Playwright and real-crawl tests (only one ``sync_playwright()`` per session). Use ``CSJ_E2E_NO_SERVER=1`` when you start the GUI yourself.
 
 ### Non-obvious caveats
 

@@ -104,3 +104,7 @@ requires = [
     "lxml>=4.9.0",
     "pywebview>=5.0",
 ]
+
+# ── pytest (dev) ──────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]

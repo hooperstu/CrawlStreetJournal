@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Generator, Optional
 
 import pytest
+from playwright.sync_api import sync_playwright
 
 _ROOT = Path(__file__).resolve().parent.parent
 _GUI_PORT = int(os.environ.get("CSJ_GUI_PORT", "5001"))
@@ -34,12 +35,13 @@ def _port_accepting(host: str, port: int, timeout_s: float = 60.0) -> bool:
 
 @pytest.fixture(scope="session")
 def csj_e2e_flask_server() -> Generator[None, None, None]:
-    """Ensure the GUI is reachable for tests/test_playwright.py.
+    """Ensure the GUI is reachable for Playwright E2E tests.
+
+    Used by ``tests/test_playwright.py`` and ``tests/test_real_crawl.py``.
 
     - If something already listens on the bind/port, reuse it (manual ``gui.py``).
     - Otherwise spawn ``python3 gui.py`` for the session and terminate it after.
     """
-    # Only wire automatic server for the Playwright file (other test modules skip).
     if os.environ.get("CSJ_E2E_NO_SERVER"):
         yield
         return
@@ -80,3 +82,16 @@ def csj_e2e_flask_server() -> Generator[None, None, None]:
                 proc.kill()
 
 
+@pytest.fixture(scope="session")
+def csj_sync_playwright_browser(csj_e2e_flask_server):
+    """One Chromium instance per test session.
+
+    ``tests/test_playwright.py`` and ``tests/test_real_crawl.py`` both need a
+    browser; starting :func:`sync_playwright` twice in one session triggers
+    Playwright's "Sync API inside asyncio loop" error.
+    """
+    pw = sync_playwright().start()
+    browser = pw.chromium.launch(headless=True)
+    yield browser
+    browser.close()
+    pw.stop()
