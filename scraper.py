@@ -1238,7 +1238,9 @@ def _process_one_url(
 
     _render_js = cfg.RENDER_JAVASCRIPT
 
+    _t0 = time.perf_counter()
     html, status, final_url, ctype, resp_meta, error_detail = fetch_page(url, cfg)
+    fetch_ms = (time.perf_counter() - _t0) * 1000.0
     if html is None:
         _record_domain_failure(hostname)
         ctx.write_error({
@@ -1349,6 +1351,7 @@ def _process_one_url(
             discovered_at=now,
             response_meta=resp_meta,
             sitemap_meta=sm,
+            fetch_time_ms=fetch_ms,
         )
         if content_changed:
             page_row["content_changed"] = content_changed

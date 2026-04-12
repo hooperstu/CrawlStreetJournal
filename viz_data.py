@@ -1934,6 +1934,160 @@ def aggregate_content_performance_audit(
     }
 
 
+# -- Technical Performance (per-domain) ------------------------------------
+
+_SLOW_FETCH_MS = 3000.0
+_LARGE_IMAGE_BYTES = 500_000
+
+
+def _gather_asset_rows(run_dirs: List[str]) -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+    for rd in run_dirs:
+        if not os.path.isdir(rd):
+            continue
+        for name in sorted(os.listdir(rd)):
+            if name.startswith("assets_") and name.endswith(".csv"):
+                rows.extend(_read_csv(os.path.join(rd, name)))
+    return rows
+
+
+def aggregate_technical_performance(
+    run_dirs: List[str],
+    filters: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Per-domain technical UX signals: fetch time, viewport, asset inventory.
+
+    ``fetch_time_ms`` is recorded at crawl time (full GET including retries).
+    Asset rows come from ``assets_*.csv``; large images use ``head_content_length``
+    when HEAD metadata was collected.
+
+    Returns:
+        ``domains`` — list of per-domain summary dicts, sorted by page count.
+        ``disclaimer`` — crawl-scope limitations.
+    """
+    pages = filter_pages(
+        _read_csv_multi(run_dirs, config.PAGES_CSV), filters,
+    )
+    asset_rows_all = _gather_asset_rows(run_dirs)
+
+    # Restrict assets to referring pages in filtered set
+    allowed_ref = _all_page_urls(pages)
+    asset_rows = [
+        ar for ar in asset_rows_all
+        if not pages or (ar.get("referrer_page_url", "").strip() in allowed_ref)
+    ]
+
+    by_domain: Dict[str, Dict[str, Any]] = {}
+
+    def _ensure(dom: str) -> Dict[str, Any]:
+        if dom not in by_domain:
+            by_domain[dom] = {
+                "domain": dom,
+                "page_count": 0,
+                "fetch_times_ms": [],
+                "slow_pages": [],
+                "no_viewport_pages": [],
+                "viewport_ok_count": 0,
+                "assets_by_category": Counter(),
+                "external_scripts": Counter(),
+                "large_images": [],
+            }
+        return by_domain[dom]
+
+    # Initialise from pages
+    for r in pages:
+        dom = r.get("domain", "unknown")
+        d = _ensure(dom)
+        d["page_count"] += 1
+        ft = _safe_float(r.get("fetch_time_ms", ""), -1.0)
+        if ft >= 0:
+            d["fetch_times_ms"].append(ft)
+        if r.get("has_viewport_meta", "") == "1":
+            d["viewport_ok_count"] += 1
+        else:
+            u = (r.get("final_url") or r.get("requested_url") or "").strip()
+            if len(d["no_viewport_pages"]) < 40:
+                d["no_viewport_pages"].append({
+                    "url": u,
+                    "title": (r.get("title") or "")[:100],
+                })
+        if ft >= _SLOW_FETCH_MS and len(d["slow_pages"]) < 40:
+            d["slow_pages"].append({
+                "url": (r.get("final_url") or r.get("requested_url") or "").strip(),
+                "title": (r.get("title") or "")[:100],
+                "fetch_time_ms": round(ft, 0),
+            })
+
+    # Assets
+    for ar in asset_rows:
+        ref = (ar.get("referrer_page_url") or "").strip()
+        ref_dom = _extract_domain(ref)
+        if not ref_dom:
+            continue
+        if ref_dom not in by_domain:
+            _ensure(ref_dom)
+        d = by_domain[ref_dom]
+        cat = (ar.get("category") or "other").strip() or "other"
+        d["assets_by_category"][cat] += 1
+
+        asset_u = (ar.get("asset_url") or "").strip()
+        a_dom = _extract_domain(asset_u)
+        if cat == "script" and a_dom and a_dom.lower() != ref_dom.lower():
+            d["external_scripts"][asset_u] += 1
+
+        if cat == "image":
+            clen = _safe_float(ar.get("head_content_length", ""), 0.0)
+            if clen >= _LARGE_IMAGE_BYTES and len(d["large_images"]) < 25:
+                d["large_images"].append({
+                    "asset_url": asset_u[:300],
+                    "bytes": int(clen),
+                    "referrer": ref[:300],
+                })
+
+    domain_list: List[Dict[str, Any]] = []
+    for dom, d in by_domain.items():
+        times = sorted(d["fetch_times_ms"])
+        n = len(times)
+        avg_ft = round(sum(times) / n, 1) if n else 0.0
+        p90 = round(times[int(0.9 * (n - 1))], 1) if n else 0.0
+        pc = d["page_count"]
+        vp_pct = round(d["viewport_ok_count"] / pc * 100, 1) if pc else 0.0
+        ext_scripts = [
+            {"url": u, "count": c}
+            for u, c in d["external_scripts"].most_common(20)
+        ]
+        domain_list.append({
+            "domain": dom,
+            "page_count": pc,
+            "avg_fetch_time_ms": avg_ft,
+            "p90_fetch_time_ms": p90,
+            "slow_page_count": len([t for t in times if t >= _SLOW_FETCH_MS]),
+            "slow_pages_sample": d["slow_pages"],
+            "viewport_meta_pct": vp_pct,
+            "no_viewport_sample": d["no_viewport_pages"],
+            "assets_by_category": dict(d["assets_by_category"].most_common()),
+            "external_scripts_top": ext_scripts,
+            "large_images_sample": d["large_images"],
+        })
+
+    domain_list.sort(key=lambda x: -x["page_count"])
+
+    disclaimer = (
+        "Technical performance uses crawl-time measurements only. "
+        f"Fetch time is wall time for the HTTP GET (threshold {int(_SLOW_FETCH_MS)} ms for "
+        "\"slow\"). Mobile-friendliness is proxied by a viewport meta tag — "
+        "not device rendering. Asset sizes use HEAD metadata when enabled in config; "
+        "otherwise only counts are available."
+    )
+
+    return {
+        "slow_fetch_threshold_ms": int(_SLOW_FETCH_MS),
+        "large_image_bytes_threshold": _LARGE_IMAGE_BYTES,
+        "domains": domain_list,
+        "disclaimer": disclaimer,
+    }
+
+
 # -- Coverage Metrics / Filter Options -------------------------------------
 
 def get_filter_options(run_dirs: List[str]) -> Dict[str, Any]:

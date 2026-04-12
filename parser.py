@@ -1289,6 +1289,7 @@ _EXTRACTION_COVERAGE_SKIP_KEYS = frozenset({
     "content_type", "referrer_url", "depth", "discovered_at",
     "http_last_modified", "etag", "sitemap_lastmod",
     "referrer_sitemap_url",
+    "fetch_time_ms", "has_viewport_meta",
 })
 
 # Sparse JSON-LD slots (Product, JobPosting, etc.) — omitted from *core* coverage
@@ -1442,6 +1443,11 @@ def _assess_wcag_static(soup: BeautifulSoup, lang: str, title: str) -> dict:
     )
     has_nav = bool(soup.find("nav"))
 
+    # Mobile-friendly: viewport meta is the minimum signal without device testing
+    has_viewport = bool(
+        soup.find("meta", attrs={"name": lambda n: n and str(n).lower() == "viewport"})
+    )
+
     return {
         "wcag_lang_valid": "1" if lang_valid else "0",
         "wcag_heading_order_valid": "1" if heading_ok else "0",
@@ -1459,6 +1465,7 @@ def _assess_wcag_static(soup: BeautifulSoup, lang: str, title: str) -> dict:
         "wcag_autocomplete_pct": str(round(autocomplete_pct, 3)),
         "wcag_has_search": "1" if has_search else "0",
         "wcag_has_nav": "1" if has_nav else "0",
+        "has_viewport_meta": "1" if has_viewport else "0",
     }
 
 
@@ -1539,6 +1546,7 @@ def build_page_inventory_row(
     discovered_at: str,
     response_meta: Optional[Dict[str, str]] = None,
     sitemap_meta: Optional[Dict[str, str]] = None,
+    fetch_time_ms: Optional[float] = None,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Tuple[str, int]]]:
     """Build the full ``pages.csv`` row, ``tags.csv`` rows, and keyword hits.
 
@@ -1563,6 +1571,8 @@ def build_page_inventory_row(
             (keys: ``last_modified``, ``etag``, ``x_robots_tag``).
         sitemap_meta: Optional dict of sitemap provenance
             (keys: ``sitemap_lastmod``, ``source_sitemap``).
+        fetch_time_ms: Wall time for the HTTP GET (including retries) in
+            milliseconds, for technical performance reporting.
 
     Returns:
         A 3-tuple of (*page_row*, *tag_rows*, *keyword_hits*).
@@ -1594,6 +1604,7 @@ def build_page_inventory_row(
         seo=seo,
         quality=quality,
         phase4=phase4,
+        fetch_time_ms=fetch_time_ms,
     )
 
     page_row["extraction_coverage_pct"] = _compute_extraction_coverage_full(page_row)
@@ -1765,6 +1776,7 @@ def _assemble_page_row(
     seo: Dict[str, Any],
     quality: Dict[str, Any],
     phase4: Dict[str, Any],
+    fetch_time_ms: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Assemble the final ``pages.csv`` row dict from extracted sub-groups."""
     pagination_next, pagination_prev = phase4["pagination"]
@@ -1812,6 +1824,7 @@ def _assemble_page_row(
         "nav_link_count": quality["nav_count"],
         # WCAG static checks
         **quality["wcag"],
+        "fetch_time_ms": str(int(round(fetch_time_ms))) if fetch_time_ms is not None else "",
         # Phase 4 — extended extraction
         "author": phase4["author"],
         "publisher": phase4["publisher"],

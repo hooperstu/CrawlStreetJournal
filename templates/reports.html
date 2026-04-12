@@ -219,6 +219,28 @@
   .cpa-url a { color: var(--csj-accent); }
   .cpa-stack { display: flex; flex-direction: column; gap: 16px; }
 
+  .tp-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+    font-size: 13px;
+  }
+  .tp-toolbar label { font-weight: 600; color: var(--csj-headline); }
+  .tp-disclaimer {
+    font-size: 12px;
+    color: var(--csj-body);
+    background: var(--csj-newsprint);
+    border-left: 3px solid #00897b;
+    padding: 10px 12px;
+    border-radius: var(--radius);
+    margin-bottom: 14px;
+    line-height: 1.45;
+  }
+  .tp-section { margin-bottom: 18px; }
+  .tp-section h3 { font-size: 14px; margin: 0 0 8px; color: var(--csj-headline); }
+
   .viz-tooltip {
     position: absolute;
     pointer-events: none;
@@ -881,6 +903,15 @@
           <button class="viz-tab" data-panel="wordcloud">Themes</button>
         </div>
       </div>
+      <div class="viz-tab-group vtg-technical-perf">
+        <div class="viz-tab-group-header">
+          <span class="viz-tab-group-title" style="color:#00897b;">Technical performance</span>
+          <span class="viz-tab-group-desc">Fetch times, mobile signals, and asset inventory per site</span>
+        </div>
+        <div class="viz-tab-row">
+          <button class="viz-tab" data-panel="techperformance">Technical Performance Report</button>
+        </div>
+      </div>
       <div class="viz-tab-group vtg-technology">
         <div class="viz-tab-group-header">
           <span class="viz-tab-group-title" style="color:#6a1b9a;">Technology &amp; Standards</span>
@@ -1378,6 +1409,24 @@
     </div>
   </div>
 
+  <!-- Technical Performance Report -->
+  <div class="viz-panel" id="panel-techperformance">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Technical Performance Report</h2>
+          <p class="viz-desc">Per-domain crawl timing, viewport meta (mobile readiness proxy), and discovered assets (images, PDFs, scripts). Pick a site to inspect one estate at a time.</p>
+        </div>
+      </div>
+      <div class="tp-toolbar">
+        <label for="tp-domain-select">Site (domain)</label>
+        <select id="tp-domain-select" style="min-width:220px;padding:4px 8px;font-size:13px;border:1px solid var(--border);border-radius:var(--radius);"></select>
+      </div>
+      <div class="viz-loading" id="loading-techperformance">Loading technical performance&hellip;</div>
+      <div class="viz-canvas" id="viz-techperformance"></div>
+    </div>
+  </div>
+
   <!-- Content & On-Site Performance Audit -->
   <div class="viz-panel" id="panel-contentaudit">
     <div class="viz-container">
@@ -1419,6 +1468,7 @@
     page_depth:     "{{ url_for('reports.api_page_depth',     slug=project.slug) }}",
     content_health: "{{ url_for('reports.api_content_health', slug=project.slug) }}",
     content_performance_audit: "{{ url_for('reports.api_content_performance_audit', slug=project.slug) }}",
+    technical_performance: "{{ url_for('reports.api_technical_performance', slug=project.slug) }}",
     runs:           "{{ url_for('reports.api_runs',           slug=project.slug) }}"
   };
   window.ECO_PRESELECTED_RUNS = "{{ preselected_runs }}";

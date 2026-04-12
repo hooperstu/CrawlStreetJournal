@@ -97,6 +97,8 @@ def _make_page(
         "schema_recipe_time": schema_recipe_time,
         "extraction_coverage_pct": "55.0",
         "extraction_coverage_core_pct": "62.0",
+        "fetch_time_ms": "450",
+        "has_viewport_meta": "1",
         "referrer_url": "seed",
         "depth": str(depth),
         "discovered_at": "2025-03-15 10:00:00",
