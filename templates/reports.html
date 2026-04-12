@@ -836,6 +836,12 @@
         <label>Coverage &ge;</label>
         <input type="number" id="filter-coverage" min="0" max="100" step="5" placeholder="0%" style="width:60px;">
       </div>
+      <div class="filter-group" style="align-self:flex-end;">
+        <label class="filter-checkbox-label" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
+          <input type="checkbox" id="filter-full-lists" style="width:auto;">
+          Full list breakdowns in API (larger payloads)
+        </label>
+      </div>
     </div>
     <div id="filterAppliedSection" style="display:none;">
       <span class="filter-bar-title" style="display:block; margin-top:8px;">Applied Filters</span>
@@ -1423,6 +1429,10 @@
         <label for="tp-domain-select">Site (domain)</label>
         <select id="tp-domain-select" style="min-width:220px;padding:4px 8px;font-size:13px;border:1px solid var(--border);border-radius:var(--radius);"></select>
       </div>
+      <p class="report-export-row" style="font-size:12px;margin:0 0 10px;color:var(--csj-body);">
+        <a href="#" id="export-link-technical" class="btn btn-sm btn-secondary">Download full breakdown (ZIP of CSVs)</a>
+        <span style="opacity:.85;"> — Not PDF; open in Excel or print to PDF from there.</span>
+      </p>
       <div class="viz-loading" id="loading-techperformance">Loading technical performance&hellip;</div>
       <div class="viz-canvas" id="viz-techperformance"></div>
     </div>
@@ -1441,6 +1451,10 @@
         <label for="km-domain-select">Site (domain)</label>
         <select id="km-domain-select" style="min-width:220px;padding:4px 8px;font-size:13px;border:1px solid var(--border);border-radius:var(--radius);"></select>
       </div>
+      <p class="report-export-row" style="font-size:12px;margin:0 0 10px;color:var(--csj-body);">
+        <a href="#" id="export-link-keymetrics" class="btn btn-sm btn-secondary">Download full breakdown (ZIP of CSVs)</a>
+        <span style="opacity:.85;"> — Includes per-page discovery rows when exported.</span>
+      </p>
       <div class="viz-loading" id="loading-keymetrics">Loading key metrics&hellip;</div>
       <div class="viz-canvas" id="viz-keymetrics"></div>
     </div>
@@ -1455,6 +1469,10 @@
           <p class="viz-desc">Thin and duplicate URL patterns, internal link distribution from the crawl graph, and whether parser-derived tags appear in titles or H1s. Uses the same filters as the dashboard.</p>
         </div>
       </div>
+      <p class="report-export-row" style="font-size:12px;margin:0 0 10px;color:var(--csj-body);">
+        <a href="#" id="export-link-contentaudit" class="btn btn-sm btn-secondary">Download full breakdown (ZIP of CSVs)</a>
+        <span style="opacity:.85;"> — Thin pages, duplicates, internal links, keyword gaps.</span>
+      </p>
       <div id="contentaudit-kpis" class="stats" style="margin-bottom:14px;"></div>
       <div class="viz-loading" id="loading-contentaudit">Loading on-site audit&hellip;</div>
       <div class="viz-canvas" id="viz-contentaudit"></div>
@@ -1489,6 +1507,9 @@
     content_performance_audit: "{{ url_for('reports.api_content_performance_audit', slug=project.slug) }}",
     technical_performance: "{{ url_for('reports.api_technical_performance', slug=project.slug) }}",
     key_metrics_snapshot: "{{ url_for('reports.api_key_metrics_snapshot', slug=project.slug) }}",
+    export_content_audit_zip: "{{ url_for('reports.export_content_performance_audit_zip', slug=project.slug) }}",
+    export_technical_zip: "{{ url_for('reports.export_technical_performance_zip', slug=project.slug) }}",
+    export_key_metrics_zip: "{{ url_for('reports.export_key_metrics_snapshot_zip', slug=project.slug) }}",
     runs:           "{{ url_for('reports.api_runs',           slug=project.slug) }}"
   };
   window.ECO_PRESELECTED_RUNS = "{{ preselected_runs }}";
