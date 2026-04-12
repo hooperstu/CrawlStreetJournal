@@ -108,7 +108,7 @@ When `CHANGE_DETECTION` is enabled and the crawl resumes:
 
 | Function | Purpose |
 |----------|---------|
-| `_process_one_url(url, referrer, depth, ...)` | Fetch and process one URL. Workflow: check visited → check robots → wait for domain → fetch → JS render fallback → check content type → content dedup → parse inventory → write page row → write tags → write nav links → extract links → write edges → write assets → write phone numbers → queue new URLs. Returns `(page_written, new_assets, final_url)`. |
+| `_process_one_url(url, referrer, depth, ...)` | Fetch and process one URL. Workflow: check visited → check robots → wait for domain → fetch (records **wall time in ms** for `fetch_time_ms`) → JS render fallback → check content type → content dedup → parse inventory → write page row → write tags → optional keyword-log rows → write nav links → extract links → write edges → write assets → write phone numbers → queue new URLs. Returns `(page_written, new_assets, final_url)`. |
 
 #### Sitemap handling
 
@@ -186,7 +186,7 @@ Extracts metadata from raw HTML. Organised in extraction phases.
 
 | Function | Purpose |
 |----------|---------|
-| `_assess_wcag_static(soup, lang, title)` | 15 WCAG 2.1 checks: language declaration, heading hierarchy, page title, form labels, bypass blocks, vague links, image alt, empty headings, duplicate IDs, empty buttons/links, table headers, autocomplete, search/nav presence. Returns dict with string values for CSV. |
+| `_assess_wcag_static(soup, lang, title)` | 15 WCAG 2.1 checks: language declaration, heading hierarchy, page title, form labels, bypass blocks, vague links, image alt, empty headings, duplicate IDs, empty buttons/links, table headers, autocomplete, search/nav presence; also sets **`has_viewport_meta`** from `<meta name="viewport">`. Returns dict with string values for CSV. |
 
 #### Phase 4 extraction
 
@@ -207,6 +207,13 @@ Extracts metadata from raw HTML. Organised in extraction phases.
 | `_compute_extraction_coverage_full(page_row)` | Percentage of non-empty extractable columns (full row, including sparse schema.org slots). |
 | `_compute_extraction_coverage_core(page_row)` | Same, but excludes optional Product/Event/Job/Recipe-specific schema columns so the figure reflects typical SEO/trust inventory. |
 
+#### Keyword log (optional)
+
+| Function | Purpose |
+|----------|---------|
+| `normalise_keyword_log_terms(terms)` | Normalise configured `KEYWORD_LOG_TERMS` for matching. |
+| `keyword_hits_in_visible_text(visible_text, terms)` | Count matches of each term in visible text for `keyword_log.csv`. |
+
 #### Link extraction
 
 | Function | Purpose |
@@ -220,7 +227,7 @@ Extracts metadata from raw HTML. Organised in extraction phases.
 
 | Function | Purpose |
 |----------|---------|
-| `build_page_inventory_row(html, requested_url, final_url, ...)` | Orchestrates all extraction. Returns `(page_row_dict, tag_rows_list)`. Calls every function above in sequence. |
+| `build_page_inventory_row(html, requested_url, final_url, http_status, content_type, referrer_url, depth, discovered_at, response_meta=…, sitemap_meta=…, fetch_time_ms=…)` | Orchestrates all extraction. Returns **3-tuple** `(page_row_dict, tag_rows_list, keyword_hits)` where *keyword_hits* is `[(term, match_count), …]` for `KEYWORD_LOG_TERMS` (empty when disabled). Passes **`fetch_time_ms`** into the page row for crawl-time performance reporting. |
 
 ---
 
@@ -245,6 +252,7 @@ Filesystem persistence: CSV writing, project/run lifecycle, config snapshots, re
 | `write_nav_link(row)` | Write to `nav_links.csv`. |
 | `write_link_check(row)` | Write to `link_checks.csv`. |
 | `write_phone_number(row)` | Write to `phone_numbers.csv`. |
+| `write_keyword_log_row(row)` | Append to `keyword_log.csv` when keyword logging is enabled. |
 
 #### Project lifecycle
 
@@ -305,6 +313,8 @@ Shared stateless helpers used across the codebase.
 
 ## 4. Visualisation & Reporting
 
+The ecosystem dashboard (`/p/<slug>/reports`) is read-only: it aggregates existing CSVs. Several endpoints support **`full_lists`** (query `full=1` / `true` / `yes` / `all`) to return uncapped row lists for exports or deep analysis; otherwise list fields may be sampled for UI performance.
+
 ### Module: `viz_data.py`
 
 Pure aggregation layer — reads crawl CSVs and returns JSON-serialisable structures.
@@ -313,7 +323,7 @@ Pure aggregation layer — reads crawl CSVs and returns JSON-serialisable struct
 |----------|---------|
 | `filter_pages(rows, filters)` | Cross-cutting filter: domains, CMS, content kinds, schema formats/types, date range, min coverage. |
 | `aggregate_domains(run_dirs, filters)` | Per-domain summary with 40+ metrics including Phase 4 fields. |
-| `aggregate_domain_graph(run_dirs, filters)` | Force/chord/sankey node + link data from `edges.csv`. |
+| `aggregate_domain_graph(run_dirs, filters)` | Force-directed node + link data from `edges.csv`. |
 | `aggregate_tags(run_dirs, filters)` | Tag frequency and co-occurrence from `tags.csv`. |
 | `aggregate_navigation(run_dirs, domain, filters)` | Hierarchical navigation tree from `nav_links.csv`. |
 | `aggregate_freshness(run_dirs, filters)` | Per-domain date ranges and staleness classification. |
@@ -321,11 +331,40 @@ Pure aggregation layer — reads crawl CSVs and returns JSON-serialisable struct
 | `aggregate_technology(run_dirs, filters)` | CMS distribution, structured data adoption, schema types, SEO readiness, coverage histogram. |
 | `aggregate_authorship(run_dirs, filters)` | Author-domain network, publisher landscape. |
 | `aggregate_schema_insights(run_dirs, filters)` | Conditional Product/Event/Job/Recipe summaries. |
+| `aggregate_page_depth(run_dirs, filters)` | Depth histogram and quality-by-depth scatter inputs. |
+| `aggregate_content_health(run_dirs, filters)` | Domain × signal matrix for content health heatmap. |
+| `aggregate_competitor_intelligence(run_dirs, filters, full_lists=…)` | Tags, top pages by words/coverage, schema product/pricing rows, in-crawl cross-domain edges (not third-party backlinks). |
+| `aggregate_content_performance_audit(run_dirs, filters, full_lists=…)` | Thin content, duplicate `content_hash` / shared `canonical_url`, internal link graph, `tags_all` vs title/H1 alignment. |
+| `aggregate_technical_performance(run_dirs, filters, full_lists=…)` | Per-domain fetch time (`fetch_time_ms`), viewport meta coverage, asset categories, external scripts, large images (from `assets_*.csv` HEAD metadata when present). |
+| `aggregate_key_metrics_snapshot(run_dirs, filters, full_lists=…)` | Crawl-proxy “traffic” (referrer buckets), structural engagement, schema commerce counts — **not** analytics sessions. |
+| `aggregate_indexability(run_dirs, filters, full_lists=…)` | Pages with `noindex` in `robots_directives` plus `robots_disallowed` rows from `crawl_errors.csv`. |
 | `get_filter_options(run_dirs)` | Available values for filter dropdowns. |
 
 ### Module: `viz_api.py`
 
-Flask blueprint exposing JSON API endpoints for the dashboard. All endpoints accept filter query parameters.
+Flask blueprint (`eco_bp`) registered in `gui.py`. Routes are prefixed with `/p/<slug>/`.
+
+**JSON APIs** (all accept the shared filter query parameters plus optional `full` where noted above):
+
+| Prefix | Examples |
+|--------|----------|
+| `/api/viz/` | `runs`, `filter_options`, `domains`, `graph`, `tags`, `navigation`, `freshness`, `chord`, `technology`, `authorship`, `schema_insights`, `page_depth`, `content_health`, `content_performance_audit`, `technical_performance`, `key_metrics_snapshot`, `competitor_intelligence`, `indexability` |
+
+**ZIP exports** (UTF-8 CSV files inside `application/zip`; same filter query string as JSON):
+
+| Route | Builder |
+|-------|---------|
+| `/export/content_performance_audit.zip` | `viz_exports.build_content_audit_zip` |
+| `/export/technical_performance.zip` | `viz_exports.build_technical_performance_zip` |
+| `/export/key_metrics_snapshot.zip` | `viz_exports.build_key_metrics_zip` |
+| `/export/indexability.zip` | `viz_exports.build_indexability_zip` |
+| `/export/competitor_intelligence.zip` | `viz_exports.build_competitor_intelligence_zip` |
+
+Legacy per-run URL `/p/<slug>/runs/<run_name>/reports` redirects to the project-level dashboard with `?runs=` preset.
+
+### Module: `viz_exports.py`
+
+Builds in-memory ZIP archives by calling the corresponding `viz_data.aggregate_*` functions with `full_lists=True` and serialising rows to CSV. Used for spreadsheet analysis or print-to-PDF outside the app.
 
 ---
 
@@ -406,8 +445,11 @@ Flask application serving the web interface. All routes resolve run and project 
 | `/p/<slug>/runs/<run>/rename` | POST | Rename run |
 | `/api/progress/<slug>` | GET | SSE crawl progress stream |
 | `/api/logs` | GET | SSE log stream |
+| `/api/quit` | POST | Cooperative shutdown: stop crawls, then background worker ends Flask / closes pywebview — **403 unless the client is loopback** |
 | `/p/<slug>/api/audit` | GET | JSON content audit |
 | `/p/<slug>/api/wcag` | GET | JSON WCAG audit |
+
+Visualisation JSON and ZIP routes live on the **`viz_api`** blueprint (`register_blueprint(eco_bp)`), not inline in `gui.py` — see §4.
 
 ---
 
@@ -459,6 +501,8 @@ All configuration is defined as module-level constants with a `CrawlConfig` data
 | `WRITE_TAGS_CSV` | True | Write `tags.csv` per-tag rows |
 | `WRITE_SITEMAP_URLS_CSV` | True | Write `sitemap_urls.csv` |
 | `WRITE_NAV_LINKS_CSV` | True | Write `nav_links.csv` |
+| `WRITE_KEYWORD_LOG_CSV` | False | Write `keyword_log.csv` when terms match visible text |
+| `KEYWORD_LOG_TERMS` | `[]` | Substrings to match for keyword logging (see `parser.keyword_hits_in_visible_text`) |
 | `ASSET_HEAD_METADATA` | True | HEAD-request discovered asset links |
 | `CAPTURE_RESPONSE_HEADERS` | True | Persist `Last-Modified`/`ETag` on page rows |
 
