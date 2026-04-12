@@ -542,6 +542,19 @@ def test_aggregate_content_performance_audit_empty(tmp_path):
     assert result["thin_content"]["sample"] == []
 
 
+def test_aggregate_content_performance_audit_full_lists_flag(tmp_path):
+    """full_lists=True returns full_lists key and uncapped thin sample."""
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
+    r = viz_data.aggregate_content_performance_audit(
+        [run_dir], full_lists=True,
+    )
+    assert r.get("full_lists") is True
+    assert len(r["thin_content"]["sample"]) == len([
+        p for p in SAMPLE_PAGES
+        if int(p.get("word_count", "0") or 0) <= viz_data._THIN_WORD_THRESHOLD
+    ])
+
+
 def test_aggregate_technical_performance_per_domain(tmp_path):
     """Per-domain roll-ups include fetch time and asset categories."""
     p1 = dict(SAMPLE_PAGES[0])
@@ -604,3 +617,9 @@ def test_aggregate_key_metrics_snapshot(tmp_path):
     shop = next((d for d in result["domains"] if d["domain"] == "shop.example.com"), None)
     assert shop is not None
     assert shop["discovery_mix_counts"].get("sitemap", 0) >= 1
+
+    full = viz_data.aggregate_key_metrics_snapshot(
+        [run_dir], filters=None, full_lists=True,
+    )
+    assert full.get("full_lists") is True
+    assert len(full.get("page_breakdown") or []) == 3

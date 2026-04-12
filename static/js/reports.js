@@ -8,7 +8,7 @@
  * the Flask viz_api.py endpoints (domains, graph, freshness, chord,
  * navigation, tags, technology, authorship, schema_insights,
  * filter_options, content_performance_audit, technical_performance,
- * key_metrics_snapshot), and draws into its panel's SVG container.
+ * key_metrics_snapshot, export ZIP URLs), and draws into its panel's SVG container.
  *
  * Data flow:
  *   1. `window.ECO_API` (set in the HTML template) holds endpoint URLs.
@@ -2631,6 +2631,7 @@
     if (activeFilters.content_kinds)  parts.push("content_kinds="  + encodeURIComponent(activeFilters.content_kinds));
     if (activeFilters.schema_formats) parts.push("schema_formats=" + encodeURIComponent(activeFilters.schema_formats));
     if (activeFilters.min_coverage)   parts.push("min_coverage="   + activeFilters.min_coverage);
+    if (activeFilters.full_lists)      parts.push("full=1");
     return parts.length ? "?" + parts.join("&") : "";
   }
 
@@ -2663,6 +2664,7 @@
     var kind   = msKind.getValues().join(",");
     var schema = msSchema.getValues().join(",");
     var cov    = document.getElementById("filter-coverage").value;
+    var fullCb = document.getElementById("filter-full-lists");
 
     activeFilters = {};
     if (runs)                          activeFilters.runs           = runs;
@@ -2670,6 +2672,7 @@
     if (kind)                          activeFilters.content_kinds  = kind;
     if (schema)                        activeFilters.schema_formats = schema;
     if (cov && parseFloat(cov) > 0)    activeFilters.min_coverage   = cov;
+    if (fullCb && fullCb.checked)      activeFilters.full_lists     = "1";
 
     var count = Object.keys(activeFilters).length;
     var badge    = document.getElementById("filterCount");
@@ -2721,6 +2724,9 @@
     if (activeFilters.min_coverage) {
       chips.push({ key: "min_coverage", value: "", label: "Coverage \u2265 " + activeFilters.min_coverage + "%" });
     }
+    if (activeFilters.full_lists) {
+      chips.push({ key: "full_lists", value: "", label: "Full list breakdowns (API)" });
+    }
 
     section.style.display = chips.length > 0 ? "" : "none";
     el.innerHTML = chips.map(function (c) {
@@ -2741,6 +2747,9 @@
           msSchema.setValues(msSchema.getValues().filter(function (v) { return v !== val; }));
         } else if (key === "min_coverage") {
           document.getElementById("filter-coverage").value = "";
+        } else if (key === "full_lists") {
+          var fcb = document.getElementById("filter-full-lists");
+          if (fcb) fcb.checked = false;
         }
         onFilterChange();
       });
@@ -2755,8 +2764,24 @@
     msKind.clear();
     msSchema.clear();
     document.getElementById("filter-coverage").value = "";
+    var fcb = document.getElementById("filter-full-lists");
+    if (fcb) fcb.checked = false;
     onFilterChange();
   });
+
+  document.getElementById("filter-full-lists").addEventListener("change", onFilterChange);
+
+  function _wireReportExportLink(id, apiUrl) {
+    var el = document.getElementById(id);
+    if (!el || !apiUrl) return;
+    el.addEventListener("click", function (e) {
+      e.preventDefault();
+      window.location.href = addFilterParam(apiUrl);
+    });
+  }
+  _wireReportExportLink("export-link-technical", API.export_technical_zip);
+  _wireReportExportLink("export-link-keymetrics", API.export_key_metrics_zip);
+  _wireReportExportLink("export-link-contentaudit", API.export_content_audit_zip);
 
   /**
    * Reload CMS and content-kind options from the filter_options

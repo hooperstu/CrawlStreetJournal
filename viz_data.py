@@ -1647,6 +1647,9 @@ def aggregate_content_health(
 
 _THIN_WORD_THRESHOLD = 250
 
+# Default max rows returned in JSON when ``full_lists`` is False (dashboard performance).
+_REPORT_DEFAULT_CAP = 80
+
 
 def _all_page_urls(rows: List[Dict[str, str]]) -> set:
     """All ``final_url`` / ``requested_url`` values from *rows*."""
@@ -1699,6 +1702,7 @@ def _keyword_alignment(
 def aggregate_content_performance_audit(
     run_dirs: List[str],
     filters: Optional[Dict[str, Any]] = None,
+    full_lists: bool = False,
 ) -> Dict[str, Any]:
     """Thin/duplicate content, internal links, and keyword–copy alignment.
 
@@ -1711,11 +1715,13 @@ def aggregate_content_performance_audit(
     Args:
         run_dirs: Absolute paths to one or more crawl run directories.
         filters: Optional cross-cutting filter dict (see ``filter_pages``).
+        full_lists: When True, return complete row lists (no sampling caps).
 
     Returns:
         Nested dict with ``summary``, ``thin_content``, ``duplicates``,
         ``internal_links``, ``keyword_mapping``, and ``disclaimer``.
     """
+    cap = None if full_lists else _REPORT_DEFAULT_CAP
     pages = filter_pages(
         _read_csv_multi(run_dirs, config.PAGES_CSV), filters,
     )
@@ -1736,7 +1742,7 @@ def aggregate_content_performance_audit(
                 "content_kind_guess": (r.get("content_kind_guess") or "").strip(),
             })
     thin_rows.sort(key=lambda x: (x["word_count"], x["url"]))
-    thin_sample = thin_rows[:80]
+    thin_sample = thin_rows if cap is None else thin_rows[:cap]
 
     # --- Duplicate clusters (content hash) ---
     hash_to_urls: Dict[str, List[str]] = defaultdict(list)
@@ -1824,7 +1830,8 @@ def aggregate_content_performance_audit(
             url_to_row[ru] = r
 
     top_inlinked = []
-    for url, cnt in inlink.most_common(40):
+    in_items = inlink.most_common() if cap is None else inlink.most_common(cap)
+    for url, cnt in in_items:
         rr = url_to_row.get(url, {})
         top_inlinked.append({
             "url": url,
@@ -1833,10 +1840,8 @@ def aggregate_content_performance_audit(
             "inlinks_internal": cnt,
         })
 
-    top_outlinking = [
-        {"url": u, "outlinks_internal": c}
-        for u, c in out_internal.most_common(40)
-    ]
+    out_items = out_internal.most_common() if cap is None else out_internal.most_common(cap)
+    top_outlinking = [{"url": u, "outlinks_internal": c} for u, c in out_items]
 
     dom_list = sorted(domains_in_scope)
     by_domain_internal = []
@@ -1851,12 +1856,15 @@ def aggregate_content_performance_audit(
             "avg_internal_edges_per_page": avg_out,
         })
     by_domain_internal.sort(key=lambda x: -x["internal_edges"])
+    by_dom_slice = (
+        by_domain_internal if cap is None else by_domain_internal[:cap]
+    )
 
     internal_links = {
         "total_internal_edges": internal_edge_total,
         "top_inlinked_pages": top_inlinked,
         "top_outlinking_pages": top_outlinking,
-        "by_domain": by_domain_internal[:40],
+        "by_domain": by_dom_slice,
     }
 
     # --- Keyword mapping (tags_all vs title / H1) ---
@@ -1882,11 +1890,19 @@ def aggregate_content_performance_audit(
         if not aligned:
             gap_rows.append(row_out)
 
+    aligned_rows = [m for m in mapping_rows if m["aligned"]]
+    if cap is None:
+        gap_sample = gap_rows
+        aligned_sample = aligned_rows
+    else:
+        gap_sample = gap_rows[: min(60, cap)]
+        aligned_sample = aligned_rows[: min(30, cap)]
+
     keyword_mapping = {
         "pages_with_tags": len(mapping_rows),
         "aligned_count": sum(1 for m in mapping_rows if m["aligned"]),
-        "gap_sample": gap_rows[:60],
-        "aligned_sample": [m for m in mapping_rows if m["aligned"]][:30],
+        "gap_sample": gap_sample,
+        "aligned_sample": aligned_sample,
     }
 
     summary = {
@@ -1918,6 +1934,9 @@ def aggregate_content_performance_audit(
         "configure richer tagging in the parser where needed."
     )
 
+    dup_h = duplicate_hash_clusters if cap is None else duplicate_hash_clusters[:cap]
+    dup_c = canonical_duplicates if cap is None else canonical_duplicates[:cap]
+
     return {
         "summary": summary,
         "thin_content": {
@@ -1925,12 +1944,13 @@ def aggregate_content_performance_audit(
             "total_flagged": len(thin_rows),
         },
         "duplicates": {
-            "by_content_hash": duplicate_hash_clusters[:40],
-            "by_canonical_url": canonical_duplicates[:40],
+            "by_content_hash": dup_h,
+            "by_canonical_url": dup_c,
         },
         "internal_links": internal_links,
         "keyword_mapping": keyword_mapping,
         "disclaimer": disclaimer,
+        "full_lists": bool(full_lists),
     }
 
 
@@ -1954,6 +1974,7 @@ def _gather_asset_rows(run_dirs: List[str]) -> List[Dict[str, str]]:
 def aggregate_technical_performance(
     run_dirs: List[str],
     filters: Optional[Dict[str, Any]] = None,
+    full_lists: bool = False,
 ) -> Dict[str, Any]:
     """Per-domain technical UX signals: fetch time, viewport, asset inventory.
 
@@ -1961,10 +1982,17 @@ def aggregate_technical_performance(
     Asset rows come from ``assets_*.csv``; large images use ``head_content_length``
     when HEAD metadata was collected.
 
+    Args:
+        full_lists: When True, include all slow pages, viewport gaps, large images,
+            and full external-script lists per domain (no row caps).
+
     Returns:
         ``domains`` — list of per-domain summary dicts, sorted by page count.
         ``disclaimer`` — crawl-scope limitations.
     """
+    cap = None if full_lists else _REPORT_DEFAULT_CAP
+    ext_cap = None if full_lists else 20
+    large_cap = None if full_lists else 25
     pages = filter_pages(
         _read_csv_multi(run_dirs, config.PAGES_CSV), filters,
     )
@@ -2006,12 +2034,12 @@ def aggregate_technical_performance(
             d["viewport_ok_count"] += 1
         else:
             u = (r.get("final_url") or r.get("requested_url") or "").strip()
-            if len(d["no_viewport_pages"]) < 40:
+            if cap is None or len(d["no_viewport_pages"]) < cap:
                 d["no_viewport_pages"].append({
                     "url": u,
                     "title": (r.get("title") or "")[:100],
                 })
-        if ft >= _SLOW_FETCH_MS and len(d["slow_pages"]) < 40:
+        if ft >= _SLOW_FETCH_MS and (cap is None or len(d["slow_pages"]) < cap):
             d["slow_pages"].append({
                 "url": (r.get("final_url") or r.get("requested_url") or "").strip(),
                 "title": (r.get("title") or "")[:100],
@@ -2037,7 +2065,9 @@ def aggregate_technical_performance(
 
         if cat == "image":
             clen = _safe_float(ar.get("head_content_length", ""), 0.0)
-            if clen >= _LARGE_IMAGE_BYTES and len(d["large_images"]) < 25:
+            if clen >= _LARGE_IMAGE_BYTES and (
+                large_cap is None or len(d["large_images"]) < large_cap
+            ):
                 d["large_images"].append({
                     "asset_url": asset_u[:300],
                     "bytes": int(clen),
@@ -2052,10 +2082,19 @@ def aggregate_technical_performance(
         p90 = round(times[int(0.9 * (n - 1))], 1) if n else 0.0
         pc = d["page_count"]
         vp_pct = round(d["viewport_ok_count"] / pc * 100, 1) if pc else 0.0
-        ext_scripts = [
-            {"url": u, "count": c}
-            for u, c in d["external_scripts"].most_common(20)
-        ]
+        if ext_cap is None:
+            ext_scripts = [
+                {"url": u, "count": c}
+                for u, c in sorted(
+                    d["external_scripts"].items(),
+                    key=lambda x: (-x[1], x[0]),
+                )
+            ]
+        else:
+            ext_scripts = [
+                {"url": u, "count": c}
+                for u, c in d["external_scripts"].most_common(ext_cap)
+            ]
         domain_list.append({
             "domain": dom,
             "page_count": pc,
@@ -2085,6 +2124,7 @@ def aggregate_technical_performance(
         "large_image_bytes_threshold": _LARGE_IMAGE_BYTES,
         "domains": domain_list,
         "disclaimer": disclaimer,
+        "full_lists": bool(full_lists),
     }
 
 
@@ -2138,12 +2178,16 @@ def _classify_discovery_referrer(
 def aggregate_key_metrics_snapshot(
     run_dirs: List[str],
     filters: Optional[Dict[str, Any]] = None,
+    full_lists: bool = False,
 ) -> Dict[str, Any]:
     """Per-domain proxies for traffic, engagement, and conversion-style signals.
 
     Real analytics (sessions, time on page, scroll, purchases) are **not** in
     crawl exports. This aggregates **crawl-time** heuristics: how pages were
     discovered, content size and link structure, and schema.org commercial hints.
+
+    Args:
+        full_lists: When True, include ``page_breakdown`` with one row per page.
 
     Returns:
         ``domains`` — list of per-domain dicts; ``disclaimer`` explains limits.
@@ -2153,6 +2197,7 @@ def aggregate_key_metrics_snapshot(
     )
 
     by_domain: Dict[str, Dict[str, Any]] = {}
+    page_breakdown: List[Dict[str, Any]] = []
 
     def _ensure(dom: str) -> Dict[str, Any]:
         if dom not in by_domain:
@@ -2180,6 +2225,22 @@ def aggregate_key_metrics_snapshot(
             dom,
         )
         d["discovery_counts"][bucket] += 1
+
+        if full_lists:
+            url = (r.get("final_url") or r.get("requested_url") or "").strip()
+            page_breakdown.append({
+                "domain": dom,
+                "url": url,
+                "title": (r.get("title") or "")[:200],
+                "discovery_bucket": bucket,
+                "referrer_url": (r.get("referrer_url") or "")[:500],
+                "word_count": _safe_int(r.get("word_count", "0")),
+                "depth": _safe_int(r.get("depth", "0")),
+                "link_count_internal": _safe_int(r.get("link_count_internal", "0")),
+                "link_count_external": _safe_int(r.get("link_count_external", "0")),
+                "has_schema_price": bool((r.get("schema_price") or "").strip()),
+                "schema_availability": (r.get("schema_availability") or "")[:120],
+            })
 
         wc = _safe_int(r.get("word_count", "0"))
         if wc > 0:
@@ -2244,10 +2305,14 @@ def aggregate_key_metrics_snapshot(
         "not checkout or form submission events."
     )
 
-    return {
+    result: Dict[str, Any] = {
         "domains": out,
         "disclaimer": disclaimer,
+        "full_lists": bool(full_lists),
     }
+    if full_lists:
+        result["page_breakdown"] = page_breakdown
+    return result
 
 
 # -- Coverage Metrics / Filter Options -------------------------------------

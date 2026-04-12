@@ -16,11 +16,12 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional
 
-from flask import Blueprint, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, jsonify, redirect, render_template, request, url_for, Response
 
 import config
 import storage as storage_module
 import viz_data
+import viz_exports
 
 eco_bp = Blueprint("reports", __name__)
 
@@ -91,6 +92,12 @@ def _parse_filters() -> Optional[Dict[str, Any]]:
             pass
 
     return filters if filters else None
+
+
+def _want_full_lists() -> bool:
+    """True when ``?full=1`` or ``?full=true`` (case-insensitive)."""
+    v = request.args.get("full", "").strip().lower()
+    return v in ("1", "true", "yes", "all")
 
 
 # ── Project-level page route ─────────────────────────────────────────────
@@ -307,9 +314,29 @@ def api_content_performance_audit(slug: str):
             "disclaimer": "",
         })
     data = viz_data.aggregate_content_performance_audit(
-        run_dirs, filters=_parse_filters(),
+        run_dirs,
+        filters=_parse_filters(),
+        full_lists=_want_full_lists(),
     )
     return jsonify(data)
+
+
+@eco_bp.route("/p/<slug>/export/content_performance_audit.zip")
+def export_content_performance_audit_zip(slug: str):
+    """ZIP of UTF-8 CSVs — full list breakdown for the on-site performance audit."""
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return "No run data", 404
+    payload = viz_exports.build_content_audit_zip(
+        run_dirs, filters=_parse_filters(),
+    )
+    return Response(
+        payload,
+        mimetype="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="content_performance_audit.zip"',
+        },
+    )
 
 
 @eco_bp.route("/p/<slug>/api/viz/technical_performance")
@@ -324,9 +351,29 @@ def api_technical_performance(slug: str):
             "disclaimer": "",
         })
     data = viz_data.aggregate_technical_performance(
-        run_dirs, filters=_parse_filters(),
+        run_dirs,
+        filters=_parse_filters(),
+        full_lists=_want_full_lists(),
     )
     return jsonify(data)
+
+
+@eco_bp.route("/p/<slug>/export/technical_performance.zip")
+def export_technical_performance_zip(slug: str):
+    """ZIP of UTF-8 CSVs — per-domain technical performance breakdown."""
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return "No run data", 404
+    payload = viz_exports.build_technical_performance_zip(
+        run_dirs, filters=_parse_filters(),
+    )
+    return Response(
+        payload,
+        mimetype="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="technical_performance.zip"',
+        },
+    )
 
 
 @eco_bp.route("/p/<slug>/api/viz/key_metrics_snapshot")
@@ -336,6 +383,26 @@ def api_key_metrics_snapshot(slug: str):
     if not run_dirs:
         return jsonify({"domains": [], "disclaimer": ""})
     data = viz_data.aggregate_key_metrics_snapshot(
-        run_dirs, filters=_parse_filters(),
+        run_dirs,
+        filters=_parse_filters(),
+        full_lists=_want_full_lists(),
     )
     return jsonify(data)
+
+
+@eco_bp.route("/p/<slug>/export/key_metrics_snapshot.zip")
+def export_key_metrics_snapshot_zip(slug: str):
+    """ZIP of UTF-8 CSVs — domain summary and per-page discovery breakdown."""
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return "No run data", 404
+    payload = viz_exports.build_key_metrics_zip(
+        run_dirs, filters=_parse_filters(),
+    )
+    return Response(
+        payload,
+        mimetype="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="key_metrics_snapshot.zip"',
+        },
+    )
