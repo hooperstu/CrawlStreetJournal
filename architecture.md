@@ -57,6 +57,7 @@ graph TD
     subgraph storageViz [Storage and Viz]
         storage[storage.py]
         vizData[viz_data.py]
+        vizExports[viz_exports.py]
         vizApi[viz_api.py]
         reportsJs[reports.js]
     end
@@ -76,6 +77,8 @@ graph TD
     wcagAudit --> storage
     guiPy --> vizApi
     vizApi --> vizData
+    vizApi --> vizExports
+    vizExports --> vizData
     vizData --> storage
     reportsJs --> vizApi
 ```
@@ -115,6 +118,8 @@ graph LR
     vizApi --> configMod
     vizApi --> storage
     vizApi --> vizData
+    vizApi --> vizExports[viz_exports.py]
+    vizExports --> vizData
 
     guiPy[gui.py] --> configMod
     guiPy --> storage
@@ -190,7 +195,7 @@ Each project can have at most one active crawl at a time. A `CrawlSlot` holds:
 | Run management | config (GET/POST), monitor, start, stop, resume, rename, delete |
 | Results | results hub, paginated CSV viewer, single-file download, all-CSVs ZIP |
 | SSE streams | `/api/progress/<slug>`, `/api/logs` |
-| Reports | registered via `viz_api.eco_bp` blueprint — Dashboard and ~12 JSON API endpoints |
+| Reports | registered via `viz_api.eco_bp` blueprint — Dashboard (`/p/<slug>/reports`), JSON APIs under `/p/<slug>/api/viz/…`, and ZIP export routes under `/p/<slug>/export/…` |
 
 **SSE (Server-Sent Events):**
 
@@ -466,6 +471,13 @@ graph TD
 | `wcag_landmarks_present` | any ARIA landmark or HTML5 sectioning element |
 | `wcag_vague_link_pct` | % of links with vague visible text |
 
+**Crawl-time technical fields (also in `pages.csv`):**
+
+| Field | Source |
+|-------|--------|
+| `fetch_time_ms` | `scraper.py` — wall-clock milliseconds for the successful HTML GET (including retries) |
+| `has_viewport_meta` | `parser.py` — `1` / `0` whether a `<meta name="viewport">` tag is present (basic responsive signal) |
+
 ### Phase 3 — tags and content classification
 
 **Tag extraction sources (in priority order):**
@@ -538,7 +550,8 @@ The header row is written once by `initialise_outputs` / `resume_outputs` at run
 
 | File | Key fields |
 |------|-----------|
-| `pages.csv` | ~80 fields: Phase 1–4 metadata + WCAG (15 columns) + provenance + `content_hash` + `content_changed` (see README for full list) |
+| `pages.csv` | ~82 fields: Phase 1–4 metadata + WCAG (15 columns) + provenance + `content_hash` + `content_changed` + `fetch_time_ms` + `has_viewport_meta` (see README for full list) |
+| `keyword_log.csv` | Optional per-run file: configurable visible-text keyword hits (`page_url`, term, context, etc.) when keyword logging is enabled |
 | `assets_<category>.csv` | `referrer_page_url`, `asset_url`, `link_text`, `category`, `head_content_type`, `head_content_length`, `discovered_at` |
 | `edges.csv` | `from_url`, `to_url`, `link_text`, `discovered_at` |
 | `tags.csv` | `page_url`, `tag_value`, `tag_source`, `discovered_at` |
@@ -580,7 +593,7 @@ When `--resume` is passed (or the GUI resumes a run):
 
 ## 9. Ecosystem visualisation layer
 
-The ecosystem dashboard is a separate read-only layer that sits entirely on top of the completed crawl output. It never writes to disk. ~20 D3 panels are organised into **5 tab groups** (Governance, Trust, Findability, Technology, Provenance), and all panels share a unified filter system (runs, domains, CMS, content kind, schema, date range, coverage).
+The ecosystem dashboard is a separate read-only layer that sits entirely on top of the completed crawl output. It never writes crawl data to disk (exports are generated on demand in memory). **~30** D3 or HTML-table panels are organised into **8 tab groups** on `reports.html`, and all panels share a unified filter system.
 
 ### 9.1 Architecture
 
@@ -591,18 +604,36 @@ graph LR
     reportsJs[reports.js D3 v7]
     vizApiBp[viz_api.py Flask blueprint]
     vizDataMod[viz_data.py aggregators]
+    vizExports[viz_exports.py ZIP builders]
     csvFiles[Run CSVs - pages.csv edges.csv etc]
 
     browser --> reportsHtml
     reportsHtml --> reportsJs
     reportsJs -->|JSON API calls with filters| vizApiBp
     vizApiBp --> vizDataMod
+    vizApiBp --> vizExports
+    vizExports --> vizDataMod
     vizDataMod -->|csv.DictReader| csvFiles
 ```
 
-### 9.2 Filtering
+**`viz_exports.py`** builds UTF-8 CSV files inside a ZIP response for selected reports (full breakdowns for spreadsheets or external PDF printing). It reuses the same aggregators as the dashboard with `full_lists=True`.
 
-All API endpoints accept the same filter query parameters:
+### 9.2 Tab groups (UI)
+
+| Tab group | Focus |
+|-----------|--------|
+| Governance | Network, treemap, analytics matrix, chord, bubble, content types, page depth, crawl landscape |
+| Trust | Status & errors, freshness, quality radar, parallel coordinates |
+| Content & on-site performance | On-site performance audit (thin/duplicate URLs, internal links, keyword alignment), content health matrix |
+| Findability | Navigation sunburst, themes word cloud, indexability |
+| Technical performance | Technical performance report (per-domain fetch time, viewport, assets), key metrics snapshot (crawl proxies for discovery mix / structure / schema commerce) |
+| Technology & standards | CMS landscape, structured data, SEO readiness, extraction coverage |
+| Competitive intelligence | Competitor intelligence (tags, schema commerce, in-crawl cross-domain edges) |
+| Provenance & authorship | Author network, publishers, schema-specific insights |
+
+### 9.3 Filtering
+
+All JSON API endpoints accept the same filter query parameters (paths below are relative to `/p/<slug>/`):
 
 | Parameter | Filters on |
 |-----------|------------|
@@ -614,40 +645,64 @@ All API endpoints accept the same filter query parameters:
 | `schema_types` | JSON-LD `@type` substring |
 | `date_from` / `date_to` | Filter by `date_published` range |
 | `min_coverage` | Minimum `extraction_coverage_pct` (0–100) |
+| `full` | When `1`, `true`, `yes`, or `all`, several report endpoints return **uncapped** list payloads instead of dashboard samples (larger JSON) |
 
 `viz_data.filter_pages` applies all active filters as an AND condition before any aggregation.
 
-### 9.3 API endpoints and D3 panels
+### 9.4 API endpoints and D3 panels
 
-| Panel (`data-panel`) | Tab group | API endpoint | `viz_data` function |
+Paths are under `/p/<slug>/api/viz/…` unless noted.
+
+| Panel (`data-panel`) | Tab group | Primary API | `viz_data` function |
 |----------------------|-----------|-------------|---------------------|
-| `network` | Governance | `/api/graph` | `aggregate_domain_graph` |
-| `treemap` | Governance | `/api/domains` | `aggregate_domains` |
-| `analytics` | Governance | `/api/domains` | `aggregate_domains` |
-| `chord` | Governance | `/api/chord` | `aggregate_chord` |
-| `bubble` | Governance | `/api/domains` | `aggregate_domains` |
-| `contenttypes` | Governance | `/api/domains` | `aggregate_domains` |
-| `status` | Trust | `/api/domains` | `aggregate_domains` |
-| `freshness` | Trust | `/api/freshness` | `aggregate_freshness` |
-| `radar` | Trust | `/api/domains` | `aggregate_domains` |
-| `parallel` | Trust | `/api/domains` | `aggregate_domains` |
-| `sunburst` | Findability | `/api/navigation` | `aggregate_navigation` |
-| `wordcloud` | Findability | `/api/tags` | `aggregate_tags` |
-| `sankey` | Findability | `/api/graph` | `aggregate_domain_graph` |
-| `cmslandscape` | Technology | `/api/technology` | `aggregate_technology` |
-| `structureddata` | Technology | `/api/technology` | `aggregate_technology` |
-| `seoreadiness` | Technology | `/api/technology` | `aggregate_technology` |
-| `coverage` | Technology | `/api/technology` | `aggregate_technology` |
-| `authornetwork` | Provenance | `/api/authorship` | `aggregate_authorship` |
-| `publishers` | Provenance | `/api/authorship` | `aggregate_authorship` |
-| `schemainsights` | Provenance | `/api/schema_insights` | `aggregate_schema_insights` |
+| `network` | Governance | `graph` | `aggregate_domain_graph` |
+| `treemap` | Governance | `domains` | `aggregate_domains` |
+| `analytics` | Governance | `domains` | `aggregate_domains` |
+| `chord` | Governance | `chord` | `aggregate_chord` |
+| `bubble` | Governance | `domains` | `aggregate_domains` |
+| `contenttypes` | Governance | `domains` | `aggregate_domains` |
+| `pagedepth` | Governance | `page_depth` | `aggregate_page_depth` |
+| `landscape` | Governance | `domains` | `aggregate_domains` (axes chosen client-side) |
+| `status` | Trust | `domains` | `aggregate_domains` |
+| `freshness` | Trust | `freshness` | `aggregate_freshness` |
+| `radar` | Trust | `domains` | `aggregate_domains` |
+| `parallel` | Trust | `domains` | `aggregate_domains` |
+| `contentaudit` | Content & on-site | `content_performance_audit` | `aggregate_content_performance_audit` |
+| `contenthealth` | Content & on-site | `content_health` | `aggregate_content_health` |
+| `sunburst` | Findability | `navigation` | `aggregate_navigation` |
+| `wordcloud` | Findability | `tags` | `aggregate_tags` |
+| `indexability` | Findability | `indexability` | `aggregate_indexability` |
+| `techperformance` | Technical performance | `technical_performance` | `aggregate_technical_performance` |
+| `keymetrics` | Technical performance | `key_metrics_snapshot` | `aggregate_key_metrics_snapshot` |
+| `cmslandscape` | Technology | `technology` | `aggregate_technology` |
+| `structureddata` | Technology | `technology` | `aggregate_technology` |
+| `seoreadiness` | Technology | `technology` | `aggregate_technology` |
+| `coverage` | Technology | `technology` | `aggregate_technology` |
+| `competitorintel` | Competitive intelligence | `competitor_intelligence` | `aggregate_competitor_intelligence` |
+| `authornetwork` | Provenance | `authorship` | `aggregate_authorship` |
+| `publishers` | Provenance | `authorship` | `aggregate_authorship` |
+| `schemainsights` | Provenance | `schema_insights` | `aggregate_schema_insights` |
 
-### 9.4 Frontend caching and filter flow
+**Supporting endpoints:** `runs`, `filter_options` (`get_filter_options`).
+
+**ZIP exports (GET `/p/<slug>/export/…`):** `content_performance_audit.zip`, `technical_performance.zip`, `key_metrics_snapshot.zip`, `indexability.zip`, `competitor_intelligence.zip` — each applies the same filter query string as the JSON APIs.
+
+### 9.5 Report semantics (brief)
+
+Several panels are **heuristic summaries** of crawl exports, not live analytics products:
+
+- **Indexability** — `noindex` from `robots_directives` plus `robots_disallowed` rows in `crawl_errors.csv`.
+- **Competitor intelligence** — tag frequencies, schema.org product fields, and cross-domain edges from `edges.csv` (not third-party backlink indexes).
+- **On-site performance audit** — thin content, `content_hash` / canonical collisions, internal edges, `tags_all` vs title/H1 alignment.
+- **Technical performance** — crawl fetch time, viewport meta, asset inventory from `assets_*.csv`.
+- **Key metrics snapshot** — discovery referrer buckets and structural proxies; not Google Analytics sessions.
+
+### 9.6 Frontend caching and filter flow
 
 `reports.js` maintains an in-memory `cache` keyed by full request URL (including query string). On every filter change:
 
 1. `onFilterChange` clears `cache` and the `rendered` guard (which prevents a panel re-rendering on tab revisit)
-2. `reloadFilterOptions()` fetches `/api/filter_options` with the current `runs` selection to populate dropdowns with values present in the selected data
+2. `reloadFilterOptions()` fetches `filter_options` with the current `runs` selection to populate dropdowns with values present in the selected data
 3. The active panel re-renders via `renderPanel(activePanelName)`
 
 `ECO_PRESELECTED_RUNS` (injected from the template via Jinja2) pre-seeds the runs filter when navigating from a per-run "Reports" link.
@@ -858,16 +913,21 @@ source .venv/bin/activate
 python3 -m pytest tests/ -v
 ```
 
+`pyproject.toml` sets `[tool.pytest.ini_options] testpaths = ["tests"]` so `pytest` discovers the suite from the repository root.
+
 | File | What it tests | Key techniques |
 |------|--------------|---------------|
-| `tests/test_parser.py` | Phase 1–4 extraction, content kind classification, URL hints, WCAG signals (all 15 columns), coverage %, full `build_page_inventory_row` integration | Inline HTML fixtures, `response_meta` / `sitemap_meta` dicts |
+| `tests/conftest.py` | Session Flask auto-start for E2E (`gui.py` on **127.0.0.1:5001** unless port in use or `CSJ_E2E_NO_SERVER=1`); **`csj_sync_playwright_browser`** — one `sync_playwright()` / Chromium per session shared by Playwright and real-crawl tests | `subprocess.Popen`, port probe, `seed_test_data.py` once per spawned server |
+| `tests/test_parser.py` | Phase 1–4 extraction, content kind classification, URL hints, WCAG signals (all 15 columns), coverage %, `fetch_time_ms` / `has_viewport_meta`, full `build_page_inventory_row` integration | Inline HTML fixtures, `response_meta` / `sitemap_meta` dicts |
 | `tests/test_sitemap.py` | Sitemap XML parsing (urlset + index), malformed XML resilience, domain allowlist case-insensitivity across `scraper` and `parser` | Inline XML strings, `monkeypatch` / direct `config.ALLOWED_DOMAINS` mutation |
 | `tests/test_signals_audit.py` | `audit_page` top-level keys, per-category signal extraction, `summarise_audit` output | Single comprehensive HTML fixture with all signal types present |
-| `tests/test_viz_data.py` | `filter_pages` (no filter, CMS, content kind, schema format, coverage, combined AND), `aggregate_domains`, `aggregate_technology`, `aggregate_authorship`, `aggregate_schema_insights`, `get_filter_options` | `tempfile.mkdtemp`, synthetic `pages.csv` with full schema including WCAG and Phase 4 columns |
-| `tests/test_playwright.py` | End-to-end GUI testing: project creation, configuration, crawl lifecycle, results viewing, ecosystem dashboard interactions | Playwright browser automation against a live Flask instance |
-| `tests/test_real_crawl.py` | Integration tests with real crawl data: CSV schema validation, data consistency, output completeness | Real crawl output directories |
+| `tests/test_viz_data.py` | `filter_pages`, core aggregators, newer report functions (indexability, competitor intelligence, content audit, technical performance, key metrics), `viz_exports.build_competitor_intelligence_zip` smoke | `tempfile.mkdtemp`, synthetic CSVs matching production schemas |
+| `tests/test_viz_api.py` | Smoke tests for reports blueprint routes (e.g. competitor intelligence JSON empty shape, ZIP 404 when no runs) | `gui.app.test_client()` |
+| `tests/test_playwright.py` | End-to-end GUI testing: project creation, configuration, crawl lifecycle, results viewing, ecosystem dashboard interactions | Playwright sync API; shared session browser from `conftest` |
+| `tests/test_real_crawl.py` | Integration tests against **`nhs-estate-crawl`** project data: API consistency, reports rendering, results CSV | Playwright + live Flask; requires crawl data under `projects/` |
+| Other | `test_continue_from.py`, `test_outbound_http.py`, `test_sitemap_discovery_cache.py`, `test_quit_api.py` | Mixed unit / API |
 
-**Total: 225 tests** (71 unit, 113 Playwright, 41 real-data integration tests).
+**Total: 268 tests** (114 tests without Playwright + real-crawl; 113 Playwright GUI; 41 real-crawl integration — counts from `pytest --collect-only`).
 
 Linting:
 
