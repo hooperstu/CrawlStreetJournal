@@ -7,8 +7,8 @@
  * time a tab becomes active its VIZ function fires, fetches data from
  * the Flask viz_api.py endpoints (domains, graph, freshness, chord,
  * navigation, tags, technology, authorship, schema_insights,
- * filter_options, indexability, content_performance_audit, technical_performance,
- * key_metrics_snapshot, export ZIP URLs), and draws into its panel's SVG container.
+ * filter_options, indexability, competitor_intelligence, content_performance_audit,
+ * technical_performance, key_metrics_snapshot, export ZIP URLs), and draws into its panel's SVG container.
  *
  * Data flow:
  *   1. `window.ECO_API` (set in the HTML template) holds endpoint URLs.
@@ -2783,6 +2783,7 @@
   _wireReportExportLink("export-link-keymetrics", API.export_key_metrics_zip);
   _wireReportExportLink("export-link-contentaudit", API.export_content_audit_zip);
   _wireReportExportLink("export-link-indexability", API.export_indexability_zip);
+  _wireReportExportLink("export-link-competitorintel", API.export_competitor_intel_zip);
 
   /**
    * Reload CMS and content-kind options from the filter_options
@@ -4017,6 +4018,137 @@
       hideLoading("loading-contenthealth");
       _healthData = data;
       _drawHealth();
+    });
+  };
+
+  // ────────────────────────────────────────────────────────────────
+  // Competitor Intelligence (tags, schema commerce, in-crawl edges)
+  // ────────────────────────────────────────────────────────────────
+
+  VIZ.competitorintel = function () {
+    fetchJSON(API.competitor_intelligence).then(function (data) {
+      hideLoading("loading-competitorintel");
+      var root = document.getElementById("viz-competitorintel");
+      if (!root) return;
+
+      function esc(t) {
+        if (t === undefined || t === null) return "";
+        return String(t)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      var disc = data.disclaimer ? '<div class="ci-disclaimer">' + esc(data.disclaimer) + "</div>" : "";
+
+      var kc = data.keyword_content || {};
+      var tags = kc.top_tags || [];
+      var pages = kc.top_content_pages || [];
+
+      var tagsHtml = tags.map(function (row) {
+        return "<tr><td>" + esc(row.term) + "</td><td>" + fmt(row.count) + "</td></tr>";
+      }).join("");
+
+      var pagesHtml = pages.map(function (row) {
+        var u = row.url || "";
+        var link = u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + esc(u) + "</a>" : "—";
+        return "<tr><td class=\"ci-url\">" + link + "</td><td>" + esc(row.domain) + "</td><td>" +
+          esc(row.content_kind_guess || "") + "</td><td>" + fmt(row.word_count) + "</td><td>" +
+          esc(String(row.extraction_coverage_pct)) + "</td></tr>";
+      }).join("");
+
+      var pp = data.product_pricing || {};
+      var prodTotal = pp.product_rows_total || 0;
+      var prods = pp.products_sample || [];
+      var promos = pp.promotional_sample || [];
+      var domPrice = pp.by_domain_price || [];
+
+      var prodHtml = prods.map(function (row) {
+        var u = row.url || "";
+        var link = u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + esc(row.title || u) + "</a>" : esc(row.title);
+        return "<tr><td>" + esc(row.domain) + "</td><td>" + link + "</td><td>" +
+          esc(String(row.price)) + "</td><td>" + esc(row.currency) + "</td><td>" +
+          esc(row.availability) + "</td><td>" + esc(String(row.rating)) + "</td></tr>";
+      }).join("");
+
+      var promoHtml = promos.map(function (row) {
+        var u = row.url || "";
+        var link = u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + esc(row.title || u) + "</a>" : esc(row.title);
+        return "<tr><td>" + esc(row.domain) + "</td><td>" + link + "</td><td>" +
+          esc(String(row.price)) + " " + esc(row.currency) + "</td><td>" + esc(row.availability) + "</td></tr>";
+      }).join("");
+
+      var domPriceHtml = domPrice.map(function (row) {
+        return "<tr><td>" + esc(row.domain) + "</td><td>" + fmt(row.count) + "</td><td>" +
+          esc(String(row.price_min)) + "</td><td>" + esc(String(row.price_max)) + "</td><td>" +
+          esc(String(row.price_avg)) + "</td></tr>";
+      }).join("");
+
+      var bl = data.backlinks || {};
+      var inbound = bl.top_inbound || [];
+      var outext = bl.top_outbound_external || [];
+      var pairs = bl.top_cross_domain_pairs || [];
+
+      var inHtml = inbound.map(function (row) {
+        return "<tr><td>" + esc(row.domain) + "</td><td>" + fmt(row.count) + "</td></tr>";
+      }).join("");
+      var outHtml = outext.map(function (row) {
+        return "<tr><td>" + esc(row.domain) + "</td><td>" + fmt(row.count) + "</td></tr>";
+      }).join("");
+      var pairHtml = pairs.map(function (row) {
+        return "<tr><td>" + esc(row.from_domain) + "</td><td>" + esc(row.to_domain) +
+          "</td><td>" + fmt(row.count) + "</td></tr>";
+      }).join("");
+
+      root.innerHTML =
+        disc +
+        '<div class="ci-grid">' +
+        '<div class="ci-stack">' +
+        '<div class="ci-section"><h3>Keyword and content themes (from tags)</h3>' +
+        '<div class="ci-table-wrap"><table class="ci-table"><thead><tr><th>Term</th><th>Pages</th></tr></thead><tbody>' +
+        (tagsHtml || "<tr><td colspan=\"2\">No tag rows in scope (enable tag extraction in crawl settings).</td></tr>") +
+        "</tbody></table></div></div>" +
+        '<div class="ci-section"><h3>Largest pages (word count)</h3>' +
+        '<div class="ci-table-wrap"><table class="ci-table"><thead><tr><th>URL</th><th>Domain</th><th>Kind</th><th>Words</th><th>Coverage %</th></tr></thead><tbody>' +
+        (pagesHtml || "<tr><td colspan=\"5\">No pages in this filter selection.</td></tr>") +
+        "</tbody></table></div></div>" +
+        "</div>" +
+        '<div class="ci-stack">' +
+        '<div class="ci-section"><h3>Product and pricing (schema.org Product)</h3>' +
+        "<p style=\"font-size:12px;margin:0 0 8px;color:var(--csj-body);\">" +
+        fmt(prodTotal) + " product row(s) with a schema price in scope.</p>" +
+        '<div class="ci-table-wrap"><table class="ci-table"><thead><tr><th>Domain</th><th>Title</th><th>Price</th><th>CCY</th><th>Availability</th><th>Rating</th></tr></thead><tbody>' +
+        (prodHtml || "<tr><td colspan=\"6\">No schema prices found. Product pages need extractable Offer data.</td></tr>") +
+        "</tbody></table></div></div>" +
+        '<div class="ci-section"><h3>Promotional wording (title or availability)</h3>' +
+        '<div class="ci-table-wrap"><table class="ci-table"><thead><tr><th>Domain</th><th>Title</th><th>Price</th><th>Availability</th></tr></thead><tbody>' +
+        (promoHtml || "<tr><td colspan=\"4\">No promotional keywords detected in product rows.</td></tr>") +
+        "</tbody></table></div></div>" +
+        '<div class="ci-section"><h3>Price range by domain</h3>' +
+        '<div class="ci-table-wrap"><table class="ci-table"><thead><tr><th>Domain</th><th>Products</th><th>Min</th><th>Max</th><th>Avg</th></tr></thead><tbody>' +
+        (domPriceHtml || "<tr><td colspan=\"5\">No priced products to summarise.</td></tr>") +
+        "</tbody></table></div></div>" +
+        "</div></div>" +
+        '<div class="ci-section" style="margin-top:18px;"><h3>In-crawl link profile (edges.csv)</h3>' +
+        "<p style=\"font-size:12px;margin:0 0 8px;color:var(--csj-body);\">" +
+        "Inbound = links from other hosts to pages in your filtered set. " +
+        "Outbound external = links from your set to third-party hosts. " +
+        "Pairs = strongest cross-domain link bundles observed.</p>" +
+        '<div class="ci-grid">' +
+        '<div class="ci-section"><h3 style="font-size:13px;">Top inbound (other &rarr; you)</h3>' +
+        '<div class="ci-table-wrap"><table class="ci-table"><thead><tr><th>Your domain</th><th>Links in</th></tr></thead><tbody>' +
+        (inHtml || "<tr><td colspan=\"2\">No cross-domain inbound links recorded.</td></tr>") +
+        "</tbody></table></div></div>" +
+        '<div class="ci-section"><h3 style="font-size:13px;">Top outbound external (you &rarr; other)</h3>' +
+        '<div class="ci-table-wrap"><table class="ci-table"><thead><tr><th>Your domain</th><th>Links out</th></tr></thead><tbody>' +
+        (outHtml || "<tr><td colspan=\"2\">No external outbound links recorded.</td></tr>") +
+        "</tbody></table></div></div>" +
+        "</div>" +
+        '<div class="ci-section" style="margin-top:12px;"><h3 style="font-size:13px;">Strongest cross-domain pairs</h3>' +
+        '<div class="ci-table-wrap"><table class="ci-table"><thead><tr><th>From domain</th><th>To domain</th><th>Links</th></tr></thead><tbody>' +
+        (pairHtml || "<tr><td colspan=\"3\">No cross-domain edges in scope.</td></tr>") +
+        "</tbody></table></div></div>";
     });
   };
 

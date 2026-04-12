@@ -172,6 +172,57 @@
   .viz-canvas { width: 100%; overflow-x: auto; }
   .viz-canvas svg { display: block; }
 
+  .ci-disclaimer {
+    font-size: 12px;
+    color: var(--csj-body);
+    background: var(--csj-newsprint);
+    border-left: 3px solid var(--csj-accent);
+    padding: 10px 12px;
+    border-radius: var(--radius);
+    margin-bottom: 14px;
+    line-height: 1.45;
+  }
+  .ci-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  @media (max-width: 1100px) {
+    .ci-grid { grid-template-columns: 1fr; }
+  }
+  .ci-section h3 {
+    font-size: 14px;
+    margin: 0 0 8px;
+    color: var(--csj-headline);
+  }
+  .ci-table-wrap {
+    max-height: 320px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: #fff;
+  }
+  .ci-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .ci-table th, .ci-table td {
+    padding: 6px 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .ci-table th {
+    background: var(--csj-newsprint);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+  .ci-url { max-width: min(380px, 48vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ci-url a { color: var(--csj-accent); }
+  .ci-stack { display: flex; flex-direction: column; gap: 18px; }
+
   .cpa-disclaimer {
     font-size: 12px;
     color: var(--csj-body);
@@ -947,6 +998,15 @@
           <button class="viz-tab" data-panel="coverage">Extraction Coverage</button>
         </div>
       </div>
+      <div class="viz-tab-group vtg-competitive">
+        <div class="viz-tab-group-header">
+          <span class="viz-tab-group-title" style="color:#c62828;">Competitive intelligence</span>
+          <span class="viz-tab-group-desc">Themes, commercial signals, and in-crawl links across competitor sites</span>
+        </div>
+        <div class="viz-tab-row">
+          <button class="viz-tab" data-panel="competitorintel">Competitor Intelligence</button>
+        </div>
+      </div>
       <div class="viz-tab-group vtg-provenance">
         <div class="viz-tab-group-header">
           <span class="viz-tab-group-title" style="color:#00695c;">Provenance &amp; Authorship</span>
@@ -1406,6 +1466,24 @@
     </div>
   </div>
 
+  <!-- Competitor Intelligence -->
+  <div class="viz-panel" id="panel-competitorintel">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Competitor Intelligence</h2>
+          <p class="viz-desc">Keyword and content signals from on-page tags, schema.org product fields where present, and cross-domain links recorded during the crawl (not third-party backlink indexes).</p>
+        </div>
+      </div>
+      <p class="report-export-row" style="font-size:12px;margin:0 0 10px;color:var(--csj-body);">
+        <a href="#" id="export-link-competitorintel" class="btn btn-sm btn-secondary">Download full breakdown (ZIP of CSVs)</a>
+        <span style="opacity:.85;"> — Tags, pages, products, and cross-domain edges.</span>
+      </p>
+      <div class="viz-loading" id="loading-competitorintel">Loading competitor intelligence&hellip;</div>
+      <div class="viz-canvas" id="viz-competitorintel"></div>
+    </div>
+  </div>
+
   <!-- 22. Page Depth Analysis -->
   <div class="viz-panel" id="panel-pagedepth">
     <div class="viz-container">
@@ -1548,6 +1626,8 @@
     export_technical_zip: "{{ url_for('reports.export_technical_performance_zip', slug=project.slug) }}",
     export_key_metrics_zip: "{{ url_for('reports.export_key_metrics_snapshot_zip', slug=project.slug) }}",
     export_indexability_zip: "{{ url_for('reports.export_indexability_zip', slug=project.slug) }}",
+    competitor_intelligence: "{{ url_for('reports.api_competitor_intelligence', slug=project.slug) }}",
+    export_competitor_intel_zip: "{{ url_for('reports.export_competitor_intelligence_zip', slug=project.slug) }}",
     runs:           "{{ url_for('reports.api_runs',           slug=project.slug) }}"
   };
   window.ECO_PRESELECTED_RUNS = "{{ preselected_runs }}";

@@ -1673,6 +1673,243 @@ def aggregate_content_health(
     }
 
 
+# -- Competitor Intelligence ---------------------------------------------
+
+# Very common English tokens to de-emphasise in keyword/tag lists (not exhaustive).
+_CI_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "from", "this", "that", "your", "our", "are",
+    "was", "has", "have", "been", "will", "can", "all", "not", "but", "you",
+    "more", "page", "home", "site", "www", "com",
+})
+
+
+def _page_url_set(rows: List[Dict[str, str]]) -> set:
+    """URLs from page rows used to align tags and edges with filtered pages."""
+    out: set = set()
+    for r in rows:
+        fu = (r.get("final_url") or "").strip()
+        if fu:
+            out.add(fu)
+        ru = (r.get("requested_url") or "").strip()
+        if ru:
+            out.add(ru)
+    return out
+
+
+def aggregate_competitor_intelligence(
+    run_dirs: List[str],
+    filters: Optional[Dict[str, Any]] = None,
+    full_lists: bool = False,
+) -> Dict[str, Any]:
+    """Summarise crawl data for competitor-mapping views.
+
+    Uses existing artefacts only: ``tags.csv`` (keyword/tag signals),
+    ``pages.csv`` (content size, schema Product fields), and ``edges.csv``
+    (outbound links between hosts).  This does not call external SEO APIs or
+    discover backlinks from the wider web—only links observed during the crawl.
+
+    Args:
+        full_lists: When True, return uncapped tag, page, product, and link lists.
+
+    Returns:
+        ``keyword_content``, ``product_pricing``, ``backlinks``, and a short
+        ``disclaimer`` string for the dashboard.
+    """
+    pages = filter_pages(
+        _read_csv_multi(run_dirs, config.PAGES_CSV), filters,
+    )
+    allowed_urls = _page_url_set(pages)
+    domains_in_scope = {r.get("domain", "unknown") for r in pages}
+
+    # --- Keyword & content signals ---
+    tag_freq: Counter[str] = Counter()
+    tags_rows = _read_csv_multi(run_dirs, config.TAGS_CSV)
+    for r in tags_rows:
+        if pages and r.get("page_url", "") not in allowed_urls:
+            continue
+        tag = (r.get("tag_value") or "").strip().lower()
+        if not tag or len(tag) > 80:
+            continue
+        if tag in _CI_STOPWORDS or len(tag) < 3:
+            continue
+        tag_freq[tag] += 1
+
+    if full_lists:
+        top_tags = [{"term": t, "count": c} for t, c in tag_freq.most_common()]
+    else:
+        top_tags = [{"term": t, "count": c} for t, c in tag_freq.most_common(50)]
+
+    top_pages: List[Dict[str, Any]] = []
+    for r in pages:
+        wc = _safe_int(r.get("word_count", "0"))
+        cov = _safe_float(r.get("extraction_coverage_pct", "0"))
+        score = wc + cov
+        top_pages.append({
+            "url": (r.get("final_url") or r.get("requested_url") or "").strip(),
+            "title": (r.get("title") or "")[:120],
+            "domain": r.get("domain", "unknown"),
+            "content_kind_guess": (r.get("content_kind_guess") or "").strip(),
+            "word_count": wc,
+            "extraction_coverage_pct": round(cov, 1),
+            "score": round(score, 1),
+        })
+    top_pages.sort(key=lambda x: (-x["word_count"], -x["extraction_coverage_pct"]))
+    if full_lists:
+        top_content_pages = top_pages
+    else:
+        top_content_pages = top_pages[:40]
+
+    # --- Product / pricing (schema.org Product signals on page rows) ---
+    products: List[Dict[str, Any]] = []
+    promo_hits: List[Dict[str, Any]] = []
+    promo_re = re.compile(
+        r"\b(sale|offer|clearance|promo|discount|deal|save)\b", re.IGNORECASE,
+    )
+    for r in pages:
+        price_raw = (r.get("schema_price") or "").strip()
+        if not price_raw:
+            continue
+        price = _safe_float(price_raw)
+        title = (r.get("title") or "")[:120]
+        avail = (r.get("schema_availability") or "").strip()
+        row_out = {
+            "domain": r.get("domain", ""),
+            "title": title,
+            "price": price,
+            "currency": (r.get("schema_currency") or "").strip(),
+            "availability": avail,
+            "rating": _safe_float(r.get("schema_rating", "")),
+            "review_count": _safe_int(r.get("schema_review_count", "")),
+            "url": (r.get("final_url") or r.get("requested_url") or "").strip(),
+        }
+        products.append(row_out)
+        blob = f"{title} {avail}"
+        if promo_re.search(blob):
+            promo_hits.append(row_out)
+
+    availability_mix = Counter(p["availability"] for p in products if p["availability"])
+    by_domain: Dict[str, List[float]] = defaultdict(list)
+    for p in products:
+        if p["price"] > 0:
+            by_domain[p["domain"]].append(p["price"])
+
+    domain_limit = None if full_lists else 25
+    domain_price_stats: List[Dict[str, Any]] = []
+    for dom, prices in sorted(by_domain.items(), key=lambda x: -len(x[1])):
+        domain_price_stats.append({
+            "domain": dom,
+            "count": len(prices),
+            "price_min": round(min(prices), 2),
+            "price_max": round(max(prices), 2),
+            "price_avg": round(sum(prices) / len(prices), 2),
+        })
+        if domain_limit is not None and len(domain_price_stats) >= domain_limit:
+            break
+
+    if full_lists:
+        products_sample = sorted(
+            products,
+            key=lambda x: (-x["review_count"], -x["price"]),
+        )
+        promotional_sample = promo_hits
+    else:
+        products_sample = sorted(
+            products,
+            key=lambda x: (-x["review_count"], -x["price"]),
+        )[:60]
+        promotional_sample = promo_hits[:30]
+
+    product_pricing = {
+        "product_rows_total": len(products),
+        "products_sample": products_sample,
+        "availability_mix": dict(availability_mix.most_common(15)),
+        "by_domain_price": domain_price_stats,
+        "promotional_sample": promotional_sample,
+    }
+
+    # --- In-crawl link graph (not full-web backlinks) ---
+    pair_counts: Counter[Tuple[str, str]] = Counter()
+    inbound: Counter[str] = Counter()
+    outbound_external: Counter[str] = Counter()
+
+    for rd in run_dirs:
+        edges_path = os.path.join(rd, config.EDGES_CSV)
+        if not os.path.isfile(edges_path):
+            continue
+        try:
+            with open(edges_path, "r", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    from_u = (row.get("from_url") or "").strip()
+                    to_u = (row.get("to_url") or "").strip()
+                    if pages and from_u not in allowed_urls:
+                        continue
+                    src = _extract_domain(from_u)
+                    tgt = _extract_domain(to_u)
+                    if not src or not tgt:
+                        continue
+                    if src == tgt:
+                        continue
+                    pair_counts[(src, tgt)] += 1
+                    if tgt in domains_in_scope:
+                        inbound[tgt] += 1
+                    if src in domains_in_scope and tgt not in domains_in_scope:
+                        outbound_external[src] += 1
+        except Exception:
+            pass
+
+    if full_lists:
+        top_inbound = [
+            {"domain": d, "count": c}
+            for d, c in inbound.most_common()
+        ]
+        top_outbound_external = [
+            {"domain": d, "count": c}
+            for d, c in outbound_external.most_common()
+        ]
+        top_pairs = [
+            {"from_domain": a, "to_domain": b, "count": w}
+            for (a, b), w in pair_counts.most_common()
+        ]
+    else:
+        top_inbound = [
+            {"domain": d, "count": c}
+            for d, c in inbound.most_common(30)
+        ]
+        top_outbound_external = [
+            {"domain": d, "count": c}
+            for d, c in outbound_external.most_common(30)
+        ]
+        top_pairs = [
+            {"from_domain": a, "to_domain": b, "count": w}
+            for (a, b), w in pair_counts.most_common(40)
+        ]
+
+    backlinks = {
+        "top_inbound": top_inbound,
+        "top_outbound_external": top_outbound_external,
+        "top_cross_domain_pairs": top_pairs,
+    }
+
+    disclaimer = (
+        "Competitor Intelligence uses your crawl data only. "
+        "Keywords and themes come from on-page tags; "
+        "product prices come from schema.org Product fields where present; "
+        "link data reflects outbound links captured in edges.csv, "
+        "not third-party backlink indexes."
+    )
+
+    return {
+        "keyword_content": {
+            "top_tags": top_tags,
+            "top_content_pages": top_content_pages,
+        },
+        "product_pricing": product_pricing,
+        "backlinks": backlinks,
+        "disclaimer": disclaimer,
+        "full_lists": bool(full_lists),
+    }
+
+
 # -- Content & On-Site Performance Audit -----------------------------------
 
 _THIN_WORD_THRESHOLD = 250
