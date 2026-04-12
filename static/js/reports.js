@@ -7,7 +7,8 @@
  * time a tab becomes active its VIZ function fires, fetches data from
  * the Flask viz_api.py endpoints (domains, graph, freshness, chord,
  * navigation, tags, technology, authorship, schema_insights,
- * filter_options, content_performance_audit, technical_performance), and draws into its panel's SVG container.
+ * filter_options, content_performance_audit, technical_performance,
+ * key_metrics_snapshot), and draws into its panel's SVG container.
  *
  * Data flow:
  *   1. `window.ECO_API` (set in the HTML template) holds endpoint URLs.
@@ -44,6 +45,9 @@
 
   /** Cached payload for Technical Performance Report (per-domain drill-down). */
   var _technicalPerfData = null;
+
+  /** Cached payload for Key metrics snapshot. */
+  var _keyMetricsData = null;
 
   /**
    * Tracks which panels have already been rendered so each VIZ function
@@ -4125,6 +4129,126 @@
       }
 
       _renderTechnicalPerfDetail(domains[0], esc, thrSlow, thrImg);
+      if (sel) sel.value = domains[0].domain;
+    });
+  };
+
+  // ────────────────────────────────────────────────────────────────
+  // Key metrics snapshot (crawl proxies — not GA)
+  // ────────────────────────────────────────────────────────────────
+
+  var _KM_LABELS = {
+    direct_seed: "Direct (seed URL)",
+    sitemap: "Sitemap",
+    internal_discovery: "Internal link",
+    social_referrer: "External — social",
+    search_referrer: "External — search",
+    external_other: "External — other",
+    unknown: "Unknown"
+  };
+
+  function _renderKeyMetricsDetail(d, esc) {
+    var root = document.getElementById("viz-keymetrics");
+    if (!root || !d) return;
+
+    var disc = _keyMetricsData && _keyMetricsData.disclaimer
+      ? '<div class="tp-disclaimer">' + esc(_keyMetricsData.disclaimer) + "</div>"
+      : "";
+
+    var mix = d.discovery_mix_pct || {};
+    var mixRows = Object.keys(mix).sort().map(function (k) {
+      var lab = _KM_LABELS[k] || k;
+      return "<tr><td>" + esc(lab) + "</td><td>" + esc(String(mix[k])) + "%</td></tr>";
+    }).join("");
+
+    var kpis =
+      '<div class="stats" style="margin-bottom:14px;">' +
+      '<div class="stat"><div class="stat-value">' + fmt(d.page_count || 0) + '</div>' +
+      '<div class="stat-label">Pages</div></div>' +
+      '<div class="stat"><div class="stat-value">' + fmt(d.avg_word_count || 0) + '</div>' +
+      '<div class="stat-label">Avg words (proxy)</div></div>' +
+      '<div class="stat"><div class="stat-value">' + esc(String(d.avg_depth || 0)) + '</div>' +
+      '<div class="stat-label">Avg crawl depth</div></div>' +
+      '<div class="stat"><div class="stat-value">' + esc(String(d.avg_internal_links || 0)) + '</div>' +
+      '<div class="stat-label">Avg internal links</div></div>' +
+      '<div class="stat"><div class="stat-value">' + esc(String(d.avg_external_links || 0)) + '</div>' +
+      '<div class="stat-label">Avg external links</div></div>' +
+      '<div class="stat"><div class="stat-value">' + esc(String(d.avg_form_label_pct || 0)) + "%</div>" +
+      '<div class="stat-label">Avg form label coverage</div></div>' +
+      '<div class="stat"><div class="stat-value">' + fmt(d.priced_pages || 0) + '</div>' +
+      '<div class="stat-label">Schema priced pages</div></div>' +
+      '<div class="stat"><div class="stat-value">' + esc(String(d.in_stock_pct || 0)) + "%</div>" +
+      '<div class="stat-label">In-stock (of priced)</div></div>' +
+      "</div>";
+
+    root.innerHTML =
+      disc + kpis +
+      '<div class="tp-section"><h3>Traffic sources (crawl discovery mix)</h3>' +
+      "<p style=\"font-size:12px;margin:0 0 8px;color:var(--csj-body);\">" +
+      "How each page entered the crawl — not visitor sessions.</p>" +
+      '<div class="cpa-table-wrap"><table class="cpa-table"><thead><tr><th>Source</th><th>% of pages</th></tr></thead><tbody>' +
+      (mixRows || "<tr><td colspan=\"2\">No discovery data.</td></tr>") +
+      "</tbody></table></div></div>" +
+
+      '<div class="tp-section"><h3>Engagement proxies (structure)</h3>' +
+      "<p style=\"font-size:12px;margin:0 0 8px;color:var(--csj-body);\">" +
+      "Word count, depth, and links — there is no time on page or scroll in the crawl.</p>" +
+      "<ul style=\"margin:0;padding-left:18px;font-size:12px;color:var(--csj-body);\">" +
+      "<li>Average words: " + fmt(d.avg_word_count || 0) + "</li>" +
+      "<li>Average crawl depth: " + esc(String(d.avg_depth || 0)) + "</li>" +
+      "<li>Average internal links: " + esc(String(d.avg_internal_links || 0)) + "</li>" +
+      "<li>Average external links: " + esc(String(d.avg_external_links || 0)) + "</li>" +
+      "</ul></div>" +
+
+      '<div class="tp-section"><h3>Conversion proxies (schema commerce)</h3>' +
+      "<p style=\"font-size:12px;margin:0 0 8px;color:var(--csj-body);\">" +
+      "Product schema fields only — not purchases or form submits.</p>" +
+      "<ul style=\"margin:0;padding-left:18px;font-size:12px;color:var(--csj-body);\">" +
+      "<li>Pages with schema price: " + fmt(d.priced_pages || 0) + "</li>" +
+      "<li>In-stock (of priced): " + fmt(d.in_stock_pages || 0) + " (" + esc(String(d.in_stock_pct || 0)) + "%)</li>" +
+      "</ul></div>";
+  }
+
+  VIZ.keymetrics = function () {
+    fetchJSON(API.key_metrics_snapshot).then(function (data) {
+      hideLoading("loading-keymetrics");
+      _keyMetricsData = data;
+      var domains = data.domains || [];
+      var sel = document.getElementById("km-domain-select");
+      var root = document.getElementById("viz-keymetrics");
+
+      function esc(t) {
+        if (t === undefined || t === null) return "";
+        return String(t)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      if (sel) {
+        sel.innerHTML = "";
+        domains.forEach(function (d) {
+          var opt = document.createElement("option");
+          opt.value = d.domain;
+          opt.textContent = d.domain + " (" + fmt(d.page_count || 0) + " pages)";
+          sel.appendChild(opt);
+        });
+        sel.onchange = function () {
+          var v = sel.value;
+          var row = domains.find(function (x) { return x.domain === v; });
+          _renderKeyMetricsDetail(row, esc);
+        };
+      }
+
+      if (!domains.length) {
+        if (root) {
+          root.innerHTML = '<p style="font-size:13px;color:var(--csj-body);">No domains in the current filter selection.</p>';
+        }
+        return;
+      }
+
+      _renderKeyMetricsDetail(domains[0], esc);
       if (sel) sel.value = domains[0].domain;
     });
   };

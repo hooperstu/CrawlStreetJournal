@@ -910,6 +910,7 @@
         </div>
         <div class="viz-tab-row">
           <button class="viz-tab" data-panel="techperformance">Technical Performance Report</button>
+          <button class="viz-tab" data-panel="keymetrics">Key metrics snapshot</button>
         </div>
       </div>
       <div class="viz-tab-group vtg-technology">
@@ -1427,6 +1428,24 @@
     </div>
   </div>
 
+  <!-- Key metrics snapshot (crawl proxies) -->
+  <div class="viz-panel" id="panel-keymetrics">
+    <div class="viz-container">
+      <div class="viz-header">
+        <div>
+          <h2 class="viz-title">Key metrics snapshot</h2>
+          <p class="viz-desc">Discovery mix, structural engagement proxies, and schema-based commercial hints — all from crawl data, not live analytics.</p>
+        </div>
+      </div>
+      <div class="tp-toolbar">
+        <label for="km-domain-select">Site (domain)</label>
+        <select id="km-domain-select" style="min-width:220px;padding:4px 8px;font-size:13px;border:1px solid var(--border);border-radius:var(--radius);"></select>
+      </div>
+      <div class="viz-loading" id="loading-keymetrics">Loading key metrics&hellip;</div>
+      <div class="viz-canvas" id="viz-keymetrics"></div>
+    </div>
+  </div>
+
   <!-- Content & On-Site Performance Audit -->
   <div class="viz-panel" id="panel-contentaudit">
     <div class="viz-container">
@@ -1469,6 +1488,7 @@
     content_health: "{{ url_for('reports.api_content_health', slug=project.slug) }}",
     content_performance_audit: "{{ url_for('reports.api_content_performance_audit', slug=project.slug) }}",
     technical_performance: "{{ url_for('reports.api_technical_performance', slug=project.slug) }}",
+    key_metrics_snapshot: "{{ url_for('reports.api_key_metrics_snapshot', slug=project.slug) }}",
     runs:           "{{ url_for('reports.api_runs',           slug=project.slug) }}"
   };
   window.ECO_PRESELECTED_RUNS = "{{ preselected_runs }}";
