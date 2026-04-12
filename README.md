@@ -61,6 +61,7 @@ python3 gui.py                 # open http://localhost:5001 in your browser
 - Listing **file assets** discovered in-page (PDFs, documents, media) in **type-specific** CSVs for distribution charts.
 - Running **content audits** (duplicate content, thin pages, broken links, redirect chains) and **WCAG 2.1 accessibility assessments** against crawl data.
 - Optional **link graph** data (`edges.csv`) and **tag-level** data (`tags.csv`) for deeper breakdowns.
+- **Dashboard reports** — indexability (noindex / robots.txt blocks), competitor-style signals from crawl data (tags, schema commerce, cross-domain edges), on-site performance audit, technical performance (fetch time, viewport, assets), and crawl-proxy “metrics” — with optional **full list** JSON (`?full=1`) and **ZIP CSV exports** for spreadsheets.
 
 ---
 
@@ -85,7 +86,7 @@ The primary interface is a **browser-based GUI** served by Flask on port **5001*
 - **Live monitor** — real-time progress (pages crawled, assets found, elapsed time) and streaming log output via Server-Sent Events
 - **Results viewer** — paginated in-browser CSV viewer, per-run download links, and a ZIP of all CSVs
 - **Navigation** — Dashboard | Runs | Settings (with Content Audit and WCAG audit accessible from the Dashboard and Results pages)
-- **Ecosystem dashboard** — interactive D3 visualisations across ~20 panels (domain network, CMS landscape, freshness, readability, structured-data coverage, author networks, and more)
+- **Ecosystem dashboard** — interactive D3 (and HTML table) views across **~30 panels** in **eight** tab groups (Governance, Trust, Content & on-site performance, Findability, Technical performance, Technology & standards, Competitive intelligence, Provenance). Includes global filters (runs, domains, CMS, content kind, schema, coverage) and an optional **“Full list breakdowns”** mode for larger JSON payloads. Selected reports offer **Download full breakdown (ZIP of CSVs)** for offline analysis.
 
 ```bash
 cd /path/to/CrawlStreetJournal
@@ -95,7 +96,7 @@ pip install -r requirements.txt
 python3 gui.py
 ```
 
-Open **http://localhost:5001** in your browser. The desktop app (`launcher.py`) does this automatically.
+Open **http://127.0.0.1:5001** or **http://localhost:5001** in your browser (the server binds to **127.0.0.1** by default). The desktop app (`launcher.py`) does this automatically.
 
 ---
 
@@ -133,14 +134,17 @@ Output is saved under `projects/my-project/runs/`.
 ### Development tools
 
 ```bash
-# Tests (225 across unit, Playwright, and real-data tests)
+# Full test suite (268 tests — unit, Playwright GUI, real-crawl integration)
 python3 -m pytest tests/ -v
+
+# Unit tests only (no browser E2E)
+python3 -m pytest tests/ --ignore=tests/test_playwright.py --ignore=tests/test_real_crawl.py -v
 
 # Linting
 flake8 --max-line-length=120 *.py
 ```
 
-`pytest` and `flake8` are not in `requirements.txt` but are installed in the `.venv` as dev extras.
+`pytest` and `flake8` are not in `requirements.txt` but are installed in the `.venv` as dev extras. Test discovery defaults to `tests/` via `[tool.pytest.ini_options]` in `pyproject.toml`. Playwright tests auto-start the Flask app on **127.0.0.1:5001** unless that port is already in use (see `tests/conftest.py`).
 
 ### Long background run
 
@@ -216,6 +220,8 @@ Edit `config.py` before you run. You do not need to change Python code elsewhere
 | `CAPTURE_RESPONSE_HEADERS` | If `True`, persists `Last-Modified` and `ETag` from HTTP responses on each `pages.csv` row. |
 | `WRITE_SITEMAP_URLS_CSV` | If `True`, writes `sitemap_urls.csv` — one row per `<loc>` discovered in sitemaps (with `<lastmod>` and source sitemap URL). Useful for estate-size analysis even when only a subset of URLs are actually crawled. |
 | `WRITE_NAV_LINKS_CSV` | If `True`, writes `nav_links.csv` — one row per distinct link inside `<nav>` or `[role=navigation]` elements. |
+| `WRITE_KEYWORD_LOG_CSV` | If `True`, writes `keyword_log.csv` — rows when configured terms appear in visible text (see `KEYWORD_LOG_TERMS`). |
+| `KEYWORD_LOG_TERMS` | List of substrings to match for optional keyword logging. |
 | `CHECK_OUTBOUND_LINKS` | If `True`, HEAD-checks outbound link targets per page and writes `link_checks.csv`. **Expensive** at scale — disabled by default. |
 | `MAX_LINK_CHECKS_PER_PAGE` | Cap on outbound links checked per page (default 50). |
 | `LINK_CHECK_DELAY_SECONDS` | Delay between HEAD checks (default 0.5s). |
@@ -306,6 +312,8 @@ If a single row fails to write for any reason, the error is logged and the crawl
 | `referrer_url` | Page URL this one was first discovered from (`seed`, `sitemap:…`, or an HTML page URL). |
 | `depth` | Number of link hops from a seed/sitemap entry (0 for direct seeds). |
 | `discovered_at` | UTC timestamp when the row was written. |
+| `fetch_time_ms` | Wall time in milliseconds for the successful HTML GET (including retries) — used for technical performance reporting. |
+| `has_viewport_meta` | `1` or `0` — whether a `<meta name="viewport">` tag is present (basic responsive signal). |
 
 #### WCAG signals
 
@@ -354,10 +362,15 @@ If a single row fails to write for any reason, the error is logged and the crawl
 | `schema_job_location` | Job location from `JobPosting` JSON-LD. |
 | `schema_recipe_time` | Total time from `Recipe` JSON-LD. |
 | `extraction_coverage_pct` | Percentage of Phase 1–4 fields that are non-empty — a rough indicator of metadata richness. |
+| `extraction_coverage_core_pct` | Same idea as above but excludes sparse optional schema columns so the figure reflects typical SEO/trust inventory. |
 | `content_hash` | SHA-256 hash (16-char prefix) of visible text. Used for content deduplication and change detection across runs. |
 | `content_changed` | Change detection flag when comparing against a previous run: `changed`, `unchanged`, `new`, or empty if change detection is disabled. |
 
 ---
+
+### `keyword_log.csv` (optional)
+
+When `WRITE_KEYWORD_LOG_CSV` is enabled and `KEYWORD_LOG_TERMS` is non-empty, the crawler writes one row per (page, keyword) match in visible text. Use it for configurable keyword inventories alongside `tags.csv`.
 
 ### `assets_<category>.csv` — linked files (not crawled as HTML)
 
@@ -509,8 +522,9 @@ This prevents the same page being fetched multiple times under cosmetically diff
 | `sitemap.py` | Sitemap XML parsing (index and urlset formats, namespace-agnostic). |
 | `render.py` | Optional Playwright-based JS rendering (not installed by default; gated by `RENDER_JAVASCRIPT`). |
 | `storage.py` | Filesystem persistence: CSV schemas, project/run lifecycle, config snapshots, resume state, export/import ZIP. |
-| `viz_data.py` | Pure aggregation layer — reads crawl CSVs and returns JSON-serialisable structures for the dashboard. |
-| `viz_api.py` | Flask blueprint (`eco_bp`) exposing the ecosystem dashboard HTML and ~12 JSON API endpoints. |
+| `viz_data.py` | Pure aggregation layer — reads crawl CSVs and returns JSON-serialisable structures for the dashboard (domains, graph, tags, technology, audits, indexability, competitor-style summaries, exports, etc.). |
+| `viz_api.py` | Flask blueprint (`eco_bp`) — dashboard HTML route plus JSON under `/api/viz/…` and ZIP CSV exports under `/export/…`. |
+| `viz_exports.py` | Builds ZIP archives of UTF-8 CSVs for full report breakdowns (used by dashboard download links). |
 | `audit_data.py` | Content audit engine — 10 finding types (duplicate content, redirects, thin content, title/meta quality, orphan pages, link distribution, image accessibility, URL structure, content decay, broken links). Route: `/p/<slug>/audit`. |
 | `wcag_audit.py` | WCAG 2.1 accessibility audit engine — 13 testable criteria (Level A + AA) organised by WCAG principles. Route: `/p/<slug>/wcag`. |
 | `signals_audit.py` | Standalone research tool — full metadata signal inventory of a single page (not in the main crawl pipeline). |
@@ -518,9 +532,10 @@ This prevents the same page being fetched multiple times under cosmetically diff
 | `Dockerfile` | Container image definition (~191 MB, runs `gui.py`, persists data via volume). |
 | `docker-compose.yml` | Single-service Compose file — maps port 5001 and a named data volume. |
 | `collector.spec` | PyInstaller spec for building the desktop app (macOS `.app`, Windows `.exe`, Linux binary). |
-| `static/js/reports.js` | D3 v7 frontend driving all ~20 ecosystem dashboard charts. |
+| `static/js/reports.js` | D3 v7 (and HTML tables) for the ecosystem dashboard panels and filters. |
 | `templates/` | Jinja2 HTML templates for all GUI views. |
-| `tests/` | 225 tests across 6 files covering parser, sitemap, signals audit, viz data, Playwright end-to-end, and real-data integration. |
+| `tests/` | **268** tests: parser, sitemap, outbound HTTP, continue-from, signals audit, viz_data, viz_api, quit API, Playwright GUI, real NHS crawl integration — see `tests/conftest.py` for shared Flask/Playwright fixtures. |
+| `architecture.md` | System architecture overview (modules, dashboard, testing). |
 | `requirements.txt` | Python dependencies: `requests`, `beautifulsoup4`, `lxml`, `urllib3`, `flask`, `textstat`, `tldextract`, `pywebview`. |
 
 ---
