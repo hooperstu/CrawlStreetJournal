@@ -36,6 +36,7 @@ SAMPLE_HTML = """\
 <html lang="en">
 <head>
   <title>Test Page</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="A test page.">
   <meta property="article:published_time" content="2024-06-01T09:00:00Z">
   <meta property="article:modified_time" content="2025-02-14T12:00:00Z">
@@ -215,6 +216,8 @@ def test_build_page_row_includes_new_fields():
     assert row["etag"] == '"abc123"'
     assert row["sitemap_lastmod"] == "2025-02-14"
     assert row["referrer_sitemap_url"] == "https://example.com/sitemap.xml"
+    assert row["has_viewport_meta"] == "1"
+    assert row["fetch_time_ms"] == ""
     assert "H2:" in row["heading_outline"]
     assert row["date_published"]
     assert row["date_modified"]
@@ -233,6 +236,22 @@ def test_build_page_row_includes_new_fields():
     assert "extraction_coverage_pct" in row
     assert "extraction_coverage_core_pct" in row
     assert kw_hits == []
+
+
+def test_build_page_row_fetch_time_ms():
+    """Optional fetch_time_ms is stored as a rounded integer string."""
+    row, _, _ = parser_module.build_page_inventory_row(
+        SAMPLE_HTML,
+        requested_url="https://www.example.com/test",
+        final_url="https://www.example.com/test",
+        http_status=200,
+        content_type="text/html",
+        referrer_url="seed",
+        depth=0,
+        discovered_at="2025-01-01 00:00:00",
+        fetch_time_ms=1234.56,
+    )
+    assert row["fetch_time_ms"] == "1235"
 
 
 # ── Phase 4 tests ─────────────────────────────────────────────────────────

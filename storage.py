@@ -138,6 +138,9 @@ PAGES_FIELDS = (
     "wcag_autocomplete_pct",
     "wcag_has_search",
     "wcag_has_nav",
+    # Technical / UX signals (Phase 2 extension)
+    "fetch_time_ms",
+    "has_viewport_meta",
     # Phase 4 — extended extraction
     "author",
     "publisher",

@@ -540,3 +540,47 @@ def test_aggregate_content_performance_audit_empty(tmp_path):
     result = viz_data.aggregate_content_performance_audit([run_dir])
     assert result["summary"]["page_count"] == 0
     assert result["thin_content"]["sample"] == []
+
+
+def test_aggregate_technical_performance_per_domain(tmp_path):
+    """Per-domain roll-ups include fetch time and asset categories."""
+    p1 = dict(SAMPLE_PAGES[0])
+    p1["fetch_time_ms"] = "500"
+    p1["has_viewport_meta"] = "1"
+    p2 = dict(SAMPLE_PAGES[1])
+    p2["fetch_time_ms"] = "4000"
+    p2["has_viewport_meta"] = "0"
+
+    img_row = {
+        "referrer_page_url": p1["final_url"],
+        "asset_url": "https://example.com/hero.jpg",
+        "link_text": "",
+        "category": "image",
+        "head_content_type": "image/jpeg",
+        "head_content_length": "600000",
+        "discovered_at": "",
+    }
+    script_row = {
+        "referrer_page_url": p1["final_url"],
+        "asset_url": "https://cdn.other.com/big.js",
+        "link_text": "",
+        "category": "script",
+        "head_content_type": "application/javascript",
+        "head_content_length": "",
+        "discovered_at": "",
+    }
+    run_dir = _make_run_dir(tmp_path, pages=[p1, p2], edges=None)
+    for name, row in (("assets_image.csv", img_row), ("assets_script.csv", script_row)):
+        ap = os.path.join(run_dir, name)
+        with open(ap, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=list(row.keys()), quoting=csv.QUOTE_ALL)
+            w.writeheader()
+            w.writerow(row)
+
+    result = viz_data.aggregate_technical_performance([run_dir])
+    assert "domains" in result
+    ex = next((d for d in result["domains"] if d["domain"] == "example.com"), None)
+    assert ex is not None
+    assert ex["slow_page_count"] >= 1
+    assert ex["assets_by_category"].get("image", 0) >= 1
+    assert len(ex["external_scripts_top"]) >= 1

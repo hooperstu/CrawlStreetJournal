@@ -7,7 +7,7 @@
  * time a tab becomes active its VIZ function fires, fetches data from
  * the Flask viz_api.py endpoints (domains, graph, freshness, chord,
  * navigation, tags, technology, authorship, schema_insights,
- * filter_options, content_performance_audit), and draws into its panel's SVG container.
+ * filter_options, content_performance_audit, technical_performance), and draws into its panel's SVG container.
  *
  * Data flow:
  *   1. `window.ECO_API` (set in the HTML template) holds endpoint URLs.
@@ -41,6 +41,9 @@
    * @type {Object.<string, *>}
    */
   var cache = {};
+
+  /** Cached payload for Technical Performance Report (per-domain drill-down). */
+  var _technicalPerfData = null;
 
   /**
    * Tracks which panels have already been rendered so each VIZ function
@@ -3984,6 +3987,145 @@
       hideLoading("loading-contenthealth");
       _healthData = data;
       _drawHealth();
+    });
+  };
+
+  // ────────────────────────────────────────────────────────────────
+  // Technical Performance Report (per domain)
+  // ────────────────────────────────────────────────────────────────
+
+  function _renderTechnicalPerfDetail(d, esc, thrSlow, thrImg) {
+    var root = document.getElementById("viz-techperformance");
+    if (!root || !d) return;
+
+    var disc = _technicalPerfData && _technicalPerfData.disclaimer
+      ? '<div class="tp-disclaimer">' + esc(_technicalPerfData.disclaimer) + "</div>"
+      : "";
+
+    var kpis =
+      '<div class="stats" style="margin-bottom:14px;">' +
+      '<div class="stat"><div class="stat-value">' + fmt(d.page_count || 0) + '</div>' +
+      '<div class="stat-label">Pages</div></div>' +
+      '<div class="stat"><div class="stat-value">' + esc(String(d.avg_fetch_time_ms || 0)) + " ms</div>" +
+      '<div class="stat-label">Avg fetch time</div></div>' +
+      '<div class="stat"><div class="stat-value">' + esc(String(d.p90_fetch_time_ms || 0)) + " ms</div>" +
+      '<div class="stat-label">P90 fetch time</div></div>' +
+      '<div class="stat"><div class="stat-value">' + fmt(d.slow_page_count || 0) + '</div>' +
+      '<div class="stat-label">Slow pages (&ge; ' + thrSlow + " ms)</div></div>" +
+      '<div class="stat"><div class="stat-value">' + esc(String(d.viewport_meta_pct || 0)) + "%</div>" +
+      '<div class="stat-label">Pages with viewport meta</div></div>' +
+      "</div>";
+
+    var slow = d.slow_pages_sample || [];
+    var slowHtml = slow.map(function (row) {
+      var u = row.url || "";
+      var link = u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + esc(u) + "</a>" : "—";
+      return "<tr><td class=\"cpa-url\">" + link + "</td><td>" + esc(row.title) + "</td><td>" +
+        esc(String(row.fetch_time_ms)) + "</td></tr>";
+    }).join("");
+
+    var novp = d.no_viewport_sample || [];
+    var novpHtml = novp.map(function (row) {
+      var u = row.url || "";
+      var link = u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + esc(u) + "</a>" : "—";
+      return "<tr><td class=\"cpa-url\">" + link + "</td><td>" + esc(row.title) + "</td></tr>";
+    }).join("");
+
+    var abc = d.assets_by_category || {};
+    var abcRows = Object.keys(abc).sort().map(function (k) {
+      return "<tr><td>" + esc(k) + "</td><td>" + fmt(abc[k]) + "</td></tr>";
+    }).join("");
+
+    var ext = d.external_scripts_top || [];
+    var extHtml = ext.map(function (row) {
+      return "<tr><td class=\"cpa-url\">" + esc(row.url) + "</td><td>" + fmt(row.count) + "</td></tr>";
+    }).join("");
+
+    var large = d.large_images_sample || [];
+    var largeHtml = large.map(function (row) {
+      return "<tr><td class=\"cpa-url\">" + esc(row.asset_url) + "</td><td>" + fmt(row.bytes) + "</td><td class=\"cpa-url\">" +
+        esc(row.referrer) + "</td></tr>";
+    }).join("");
+
+    root.innerHTML =
+      disc + kpis +
+      '<div class="tp-section"><h3>Page speed (crawl fetch time)</h3>' +
+      "<p style=\"font-size:12px;margin:0 0 8px;color:var(--csj-body);\">" +
+      "Wall time for the HTML GET during the crawl. Not Core Web Vitals.</p>" +
+      '<div class="cpa-table-wrap"><table class="cpa-table"><thead><tr><th>URL</th><th>Title</th><th>Fetch ms</th></tr></thead><tbody>' +
+      (slowHtml || "<tr><td colspan=\"3\">No slow pages at this threshold.</td></tr>") +
+      "</tbody></table></div></div>" +
+
+      '<div class="tp-section"><h3>Mobile-friendliness (viewport meta)</h3>' +
+      "<p style=\"font-size:12px;margin:0 0 8px;color:var(--csj-body);\">" +
+      "Pages missing <code>&lt;meta name=\"viewport\"&gt;</code> — a basic responsive signal only.</p>" +
+      '<div class="cpa-table-wrap"><table class="cpa-table"><thead><tr><th>URL</th><th>Title</th></tr></thead><tbody>' +
+      (novpHtml || "<tr><td colspan=\"2\">All sampled pages declare a viewport meta tag.</td></tr>") +
+      "</tbody></table></div></div>" +
+
+      '<div class="cpa-grid">' +
+      '<div class="tp-section"><h3>Asset inventory (counts by category)</h3>' +
+      '<div class="cpa-table-wrap"><table class="cpa-table"><thead><tr><th>Category</th><th>Count</th></tr></thead><tbody>' +
+      (abcRows || "<tr><td colspan=\"2\">No asset rows for this domain.</td></tr>") +
+      "</tbody></table></div></div>" +
+      '<div class="tp-section"><h3>External scripts (third-party hosts)</h3>' +
+      '<div class="cpa-table-wrap"><table class="cpa-table"><thead><tr><th>Script URL</th><th>References</th></tr></thead><tbody>' +
+      (extHtml || "<tr><td colspan=\"2\">No external script URLs detected.</td></tr>") +
+      "</tbody></table></div></div>" +
+      "</div>" +
+
+      '<div class="tp-section"><h3>Large images (HEAD size &ge; ' + fmt(thrImg) + " bytes)</h3>" +
+      "<p style=\"font-size:12px;margin:0 0 8px;color:var(--csj-body);\">" +
+      "Requires asset HEAD metadata in crawl output.</p>" +
+      '<div class="cpa-table-wrap"><table class="cpa-table"><thead><tr><th>Asset</th><th>Bytes</th><th>Referrer page</th></tr></thead><tbody>' +
+      (largeHtml || "<tr><td colspan=\"3\">No large images with known size, or threshold not met.</td></tr>") +
+      "</tbody></table></div></div>";
+  }
+
+  VIZ.techperformance = function () {
+    fetchJSON(API.technical_performance).then(function (data) {
+      hideLoading("loading-techperformance");
+      _technicalPerfData = data;
+      var domains = data.domains || [];
+      var sel = document.getElementById("tp-domain-select");
+      var root = document.getElementById("viz-techperformance");
+
+      function esc(t) {
+        if (t === undefined || t === null) return "";
+        return String(t)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      var thrSlow = data.slow_fetch_threshold_ms != null ? data.slow_fetch_threshold_ms : 3000;
+      var thrImg = data.large_image_bytes_threshold != null ? data.large_image_bytes_threshold : 500000;
+
+      if (sel) {
+        sel.innerHTML = "";
+        domains.forEach(function (d) {
+          var opt = document.createElement("option");
+          opt.value = d.domain;
+          opt.textContent = d.domain + " (" + fmt(d.page_count || 0) + " pages)";
+          sel.appendChild(opt);
+        });
+        sel.onchange = function () {
+          var v = sel.value;
+          var row = domains.find(function (x) { return x.domain === v; });
+          _renderTechnicalPerfDetail(row, esc, thrSlow, thrImg);
+        };
+      }
+
+      if (!domains.length) {
+        if (root) {
+          root.innerHTML = '<p style="font-size:13px;color:var(--csj-body);">No domains in the current filter selection.</p>';
+        }
+        return;
+      }
+
+      _renderTechnicalPerfDetail(domains[0], esc, thrSlow, thrImg);
+      if (sel) sel.value = domains[0].domain;
     });
   };
 

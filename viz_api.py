@@ -310,3 +310,20 @@ def api_content_performance_audit(slug: str):
         run_dirs, filters=_parse_filters(),
     )
     return jsonify(data)
+
+
+@eco_bp.route("/p/<slug>/api/viz/technical_performance")
+def api_technical_performance(slug: str):
+    """Per-domain fetch time, viewport, and asset inventory for technical UX reporting."""
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return jsonify({
+            "slow_fetch_threshold_ms": 3000,
+            "large_image_bytes_threshold": 500000,
+            "domains": [],
+            "disclaimer": "",
+        })
+    data = viz_data.aggregate_technical_performance(
+        run_dirs, filters=_parse_filters(),
+    )
+    return jsonify(data)
