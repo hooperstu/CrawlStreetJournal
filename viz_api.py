@@ -408,6 +408,54 @@ def export_key_metrics_snapshot_zip(slug: str):
     )
 
 
+@eco_bp.route("/p/<slug>/api/viz/competitor_intelligence")
+def api_competitor_intelligence(slug: str):
+    """Keyword/content, product pricing, and in-crawl link signals for competitor views."""
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return jsonify({
+            "keyword_content": {"top_tags": [], "top_content_pages": []},
+            "product_pricing": {
+                "product_rows_total": 0,
+                "products_sample": [],
+                "availability_mix": {},
+                "by_domain_price": [],
+                "promotional_sample": [],
+            },
+            "backlinks": {
+                "top_inbound": [],
+                "top_outbound_external": [],
+                "top_cross_domain_pairs": [],
+            },
+            "disclaimer": "",
+            "full_lists": False,
+        })
+    data = viz_data.aggregate_competitor_intelligence(
+        run_dirs,
+        filters=_parse_filters(),
+        full_lists=_want_full_lists(),
+    )
+    return jsonify(data)
+
+
+@eco_bp.route("/p/<slug>/export/competitor_intelligence.zip")
+def export_competitor_intelligence_zip(slug: str):
+    """ZIP of UTF-8 CSVs — full competitor intelligence breakdown."""
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return "No run data", 404
+    payload = viz_exports.build_competitor_intelligence_zip(
+        run_dirs, filters=_parse_filters(),
+    )
+    return Response(
+        payload,
+        mimetype="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="competitor_intelligence.zip"',
+        },
+    )
+
+
 @eco_bp.route("/p/<slug>/api/viz/indexability")
 def api_indexability(slug: str):
     """Noindex directives and robots.txt-blocked URLs for the indexability report."""
