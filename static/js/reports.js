@@ -7,7 +7,7 @@
  * time a tab becomes active its VIZ function fires, fetches data from
  * the Flask viz_api.py endpoints (domains, graph, freshness, chord,
  * navigation, tags, technology, authorship, schema_insights,
- * filter_options), and draws into its panel's SVG container.
+ * filter_options, content_performance_audit), and draws into its panel's SVG container.
  *
  * Data flow:
  *   1. `window.ECO_API` (set in the HTML template) holds endpoint URLs.
@@ -3984,6 +3984,153 @@
       hideLoading("loading-contenthealth");
       _healthData = data;
       _drawHealth();
+    });
+  };
+
+  // ────────────────────────────────────────────────────────────────
+  // Content & On-Site Performance Audit
+  // ────────────────────────────────────────────────────────────────
+
+  VIZ.contentaudit = function () {
+    fetchJSON(API.content_performance_audit).then(function (data) {
+      hideLoading("loading-contentaudit");
+      var kpis = document.getElementById("contentaudit-kpis");
+      var root = document.getElementById("viz-contentaudit");
+      if (!root) return;
+
+      function esc(t) {
+        if (t === undefined || t === null) return "";
+        return String(t)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      var s = data.summary || {};
+      var thr = s.thin_word_threshold != null ? s.thin_word_threshold : 250;
+      if (kpis) {
+        kpis.innerHTML =
+          '<div class="stat"><div class="stat-value">' + fmt(s.page_count || 0) + '</div>' +
+          '<div class="stat-label">Pages in scope</div></div>' +
+          '<div class="stat"><div class="stat-value">' + fmt(s.thin_count || 0) + '</div>' +
+          '<div class="stat-label">Thin (&le; ' + thr + ' words, ' + (s.thin_pct || 0) + '%)</div></div>' +
+          '<div class="stat"><div class="stat-value">' + fmt(s.duplicate_hash_cluster_count || 0) + '</div>' +
+          '<div class="stat-label">Duplicate content_hash clusters</div></div>' +
+          '<div class="stat"><div class="stat-value">' + fmt(s.canonical_duplicate_group_count || 0) + '</div>' +
+          '<div class="stat-label">Shared canonical groups</div></div>' +
+          '<div class="stat"><div class="stat-value">' + fmt(s.internal_edge_count || 0) + '</div>' +
+          '<div class="stat-label">Internal edges (same host)</div></div>' +
+          '<div class="stat"><div class="stat-value">' + (s.keyword_alignment_pct != null ? s.keyword_alignment_pct + "%" : "—") + '</div>' +
+          '<div class="stat-label">Tags in title/H1 (where tags present)</div></div>';
+      }
+
+      var disc = data.disclaimer
+        ? '<div class="cpa-disclaimer">' + esc(data.disclaimer) + "</div>"
+        : "";
+
+      var thin = (data.thin_content && data.thin_content.sample) || [];
+      var thinHtml = thin.map(function (row) {
+        var u = row.url || "";
+        var link = u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + esc(u) + "</a>" : "—";
+        return "<tr><td class=\"cpa-url\">" + link + "</td><td>" + esc(row.domain) + "</td><td>" +
+          fmt(row.word_count) + "</td><td>" + esc(row.content_kind_guess) + "</td></tr>";
+      }).join("");
+
+      var dupH = (data.duplicates && data.duplicates.by_content_hash) || [];
+      var dupHhtml = dupH.map(function (cl) {
+        var urls = (cl.urls || []).map(function (u) {
+          return '<div class="cpa-url"><a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' +
+            esc(u) + "</a></div>";
+        }).join("");
+        return "<tr><td><code>" + esc(cl.content_hash) + "</code></td><td>" + fmt(cl.count) + "</td><td>" +
+          urls + "</td></tr>";
+      }).join("");
+
+      var dupC = (data.duplicates && data.duplicates.by_canonical_url) || [];
+      var dupChtml = dupC.map(function (g) {
+        var rows = (g.pages || []).map(function (p) {
+          var u = p.url || "";
+          var link = u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + esc(u) + "</a>" : "—";
+          return "<div>" + link + " — " + esc(p.title) + "</div>";
+        }).join("");
+        return "<tr><td class=\"cpa-url\">" + esc(g.canonical_url) + "</td><td>" + fmt(g.count) + "</td><td>" +
+          rows + "</td></tr>";
+      }).join("");
+
+      var il = data.internal_links || {};
+      var topIn = il.top_inlinked_pages || [];
+      var topInHtml = topIn.map(function (row) {
+        var u = row.url || "";
+        var link = u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + esc(u) + "</a>" : "—";
+        return "<tr><td class=\"cpa-url\">" + link + "</td><td>" + esc(row.domain) + "</td><td>" +
+          esc(row.title) + "</td><td>" + fmt(row.inlinks_internal) + "</td></tr>";
+      }).join("");
+
+      var topOut = il.top_outlinking_pages || [];
+      var topOutHtml = topOut.map(function (row) {
+        var u = row.url || "";
+        var link = u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + esc(u) + "</a>" : "—";
+        return "<tr><td class=\"cpa-url\">" + link + "</td><td>" + fmt(row.outlinks_internal) + "</td></tr>";
+      }).join("");
+
+      var byDom = il.by_domain || [];
+      var byDomHtml = byDom.map(function (row) {
+        return "<tr><td>" + esc(row.domain) + "</td><td>" + fmt(row.page_count) + "</td><td>" +
+          fmt(row.internal_edges) + "</td><td>" + esc(String(row.avg_internal_edges_per_page)) + "</td></tr>";
+      }).join("");
+
+      var km = data.keyword_mapping || {};
+      var gaps = km.gap_sample || [];
+      var gapHtml = gaps.map(function (row) {
+        var u = row.url || "";
+        var link = u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + esc(u) + "</a>" : "—";
+        return "<tr><td class=\"cpa-url\">" + link + "</td><td>" + esc(row.tags_all) + "</td><td>" +
+          esc(row.title) + "</td><td>" + esc(row.h1) + "</td></tr>";
+      }).join("");
+
+      root.innerHTML =
+        disc +
+        '<div class="cpa-stack">' +
+        '<div class="cpa-section"><h3>Thin content (low word count)</h3>' +
+        '<div class="cpa-table-wrap"><table class="cpa-table"><thead><tr><th>URL</th><th>Domain</th><th>Words</th><th>Kind</th></tr></thead><tbody>' +
+        (thinHtml || "<tr><td colspan=\"4\">No thin pages in this selection.</td></tr>") +
+        "</tbody></table></div></div>" +
+
+        '<div class="cpa-grid">' +
+        '<div class="cpa-section"><h3>Duplicate body hash clusters</h3>' +
+        '<div class="cpa-table-wrap"><table class="cpa-table"><thead><tr><th>Hash</th><th>Count</th><th>URLs</th></tr></thead><tbody>' +
+        (dupHhtml || "<tr><td colspan=\"3\">No duplicate content_hash values (or hashes not stored for this run).</td></tr>") +
+        "</tbody></table></div></div>" +
+        '<div class="cpa-section"><h3>Multiple pages sharing a canonical URL</h3>' +
+        '<div class="cpa-table-wrap"><table class="cpa-table"><thead><tr><th>Canonical</th><th>Count</th><th>Pages</th></tr></thead><tbody>' +
+        (dupChtml || "<tr><td colspan=\"3\">No canonical URL collisions detected.</td></tr>") +
+        "</tbody></table></div></div>" +
+        "</div>" +
+
+        '<div class="cpa-section"><h3>Internal link audit (same-host edges)</h3>' +
+        '<div class="cpa-grid">' +
+        '<div><h3 style="font-size:13px;margin:0 0 6px;">Most in-linked URLs</h3>' +
+        '<div class="cpa-table-wrap"><table class="cpa-table"><thead><tr><th>URL</th><th>Domain</th><th>Title</th><th>In</th></tr></thead><tbody>' +
+        (topInHtml || "<tr><td colspan=\"4\">No internal edges, or edges.csv missing.</td></tr>") +
+        "</tbody></table></div></div>" +
+        '<div><h3 style="font-size:13px;margin:0 0 6px;">Most out-linking URLs</h3>' +
+        '<div class="cpa-table-wrap"><table class="cpa-table"><thead><tr><th>URL</th><th>Out (internal)</th></tr></thead><tbody>' +
+        (topOutHtml || "<tr><td colspan=\"2\">No internal edges recorded.</td></tr>") +
+        "</tbody></table></div></div>" +
+        "</div>" +
+        '<div class="cpa-section" style="margin-top:8px;"><h3 style="font-size:13px;">Internal edges by domain</h3>' +
+        '<div class="cpa-table-wrap"><table class="cpa-table"><thead><tr><th>Domain</th><th>Pages</th><th>Internal edges</th><th>Avg edges / page</th></tr></thead><tbody>' +
+        (byDomHtml || "<tr><td colspan=\"4\">No data.</td></tr>") +
+        "</tbody></table></div></div>" +
+
+        '<div class="cpa-section"><h3>Keyword mapping (tags vs title / H1)</h3>' +
+        "<p style=\"font-size:12px;margin:0 0 8px;color:var(--csj-body);\">" +
+        "Pages with <code>tags_all</code> where no token appears in the title or H1.</p>" +
+        '<div class="cpa-table-wrap"><table class="cpa-table"><thead><tr><th>URL</th><th>tags_all</th><th>Title</th><th>H1</th></tr></thead><tbody>' +
+        (gapHtml || "<tr><td colspan=\"4\">No gaps — or no tags_all on pages in scope.</td></tr>") +
+        "</tbody></table></div></div>" +
+        "</div>";
     });
   };
 
