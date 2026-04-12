@@ -36,7 +36,7 @@ import urllib.parse
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import sync_playwright, Page, Browser
+from playwright.sync_api import Page
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -50,12 +50,9 @@ _CREATE_PROJECT_FORM = 'form[action$="/projects/create"]'
 # ── Fixtures ──────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="session")
-def browser(csj_e2e_flask_server):
-    pw = sync_playwright().start()
-    b = pw.chromium.launch(headless=True)
-    yield b
-    b.close()
-    pw.stop()
+def browser(csj_sync_playwright_browser):
+    """Shared session browser from ``conftest`` (single sync_playwright per session)."""
+    return csj_sync_playwright_browser
 
 
 @pytest.fixture
