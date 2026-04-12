@@ -584,3 +584,23 @@ def test_aggregate_technical_performance_per_domain(tmp_path):
     assert ex["slow_page_count"] >= 1
     assert ex["assets_by_category"].get("image", 0) >= 1
     assert len(ex["external_scripts_top"]) >= 1
+
+
+def test_aggregate_key_metrics_snapshot(tmp_path):
+    """Discovery mix and structural proxies per domain."""
+    a = dict(SAMPLE_PAGES[0])
+    a["referrer_url"] = "seed"
+    b = dict(SAMPLE_PAGES[1])
+    b["referrer_url"] = "https://www.facebook.com/share"
+    c = dict(SAMPLE_PAGES[2])
+    c["referrer_url"] = "sitemap:https://example.com/sitemap.xml"
+    run_dir = _make_run_dir(tmp_path, pages=[a, b, c])
+    result = viz_data.aggregate_key_metrics_snapshot([run_dir])
+    assert "disclaimer" in result
+    ex = next((d for d in result["domains"] if d["domain"] == "example.com"), None)
+    assert ex is not None
+    assert ex["discovery_mix_counts"].get("direct_seed", 0) >= 1
+    assert ex["discovery_mix_counts"].get("social_referrer", 0) >= 1
+    shop = next((d for d in result["domains"] if d["domain"] == "shop.example.com"), None)
+    assert shop is not None
+    assert shop["discovery_mix_counts"].get("sitemap", 0) >= 1

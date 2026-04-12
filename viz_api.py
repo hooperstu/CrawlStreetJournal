@@ -327,3 +327,15 @@ def api_technical_performance(slug: str):
         run_dirs, filters=_parse_filters(),
     )
     return jsonify(data)
+
+
+@eco_bp.route("/p/<slug>/api/viz/key_metrics_snapshot")
+def api_key_metrics_snapshot(slug: str):
+    """Crawl-proxy metrics for discovery mix, engagement structure, and schema commerce."""
+    run_dirs = _resolve_run_dirs(slug)
+    if not run_dirs:
+        return jsonify({"domains": [], "disclaimer": ""})
+    data = viz_data.aggregate_key_metrics_snapshot(
+        run_dirs, filters=_parse_filters(),
+    )
+    return jsonify(data)

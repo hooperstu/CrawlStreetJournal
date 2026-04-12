@@ -2088,6 +2088,168 @@ def aggregate_technical_performance(
     }
 
 
+# -- Key metrics snapshot (crawl proxies for traffic / engagement / conversion) ---
+
+_SOCIAL_HOST_FRAGMENTS = (
+    "facebook.", "fb.com", "twitter.", "t.co", "linkedin.", "instagram.",
+    "youtube.", "youtu.be", "tiktok.", "pinterest.", "reddit.", "snapchat.",
+)
+_SEARCH_HOST_FRAGMENTS = (
+    "google.", "bing.com", "duckduckgo.", "yahoo.", "baidu.", "yandex.",
+    "ecosia.", "startpage.",
+)
+
+
+def _classify_discovery_referrer(
+    referrer_url: str,
+    page_domain: str,
+) -> str:
+    """Bucket how a page entered the crawl (not real visitor traffic)."""
+    ref = (referrer_url or "").strip()
+    if not ref:
+        return "unknown"
+    low = ref.lower()
+    if low == "seed":
+        return "direct_seed"
+    if low.startswith("sitemap:"):
+        return "sitemap"
+
+    dom = (page_domain or "").lower().strip()
+    try:
+        host = (urlparse(ref).hostname or "").lower()
+    except Exception:
+        host = ""
+    if not host:
+        return "other"
+
+    if host == dom or host.endswith("." + dom):
+        return "internal_discovery"
+
+    h = host + "."
+    for frag in _SOCIAL_HOST_FRAGMENTS:
+        if frag in h or host == frag.rstrip("."):
+            return "social_referrer"
+    for frag in _SEARCH_HOST_FRAGMENTS:
+        if frag in h:
+            return "search_referrer"
+    return "external_other"
+
+
+def aggregate_key_metrics_snapshot(
+    run_dirs: List[str],
+    filters: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Per-domain proxies for traffic, engagement, and conversion-style signals.
+
+    Real analytics (sessions, time on page, scroll, purchases) are **not** in
+    crawl exports. This aggregates **crawl-time** heuristics: how pages were
+    discovered, content size and link structure, and schema.org commercial hints.
+
+    Returns:
+        ``domains`` — list of per-domain dicts; ``disclaimer`` explains limits.
+    """
+    pages = filter_pages(
+        _read_csv_multi(run_dirs, config.PAGES_CSV), filters,
+    )
+
+    by_domain: Dict[str, Dict[str, Any]] = {}
+
+    def _ensure(dom: str) -> Dict[str, Any]:
+        if dom not in by_domain:
+            by_domain[dom] = {
+                "domain": dom,
+                "page_count": 0,
+                "discovery_counts": Counter(),
+                "word_counts": [],
+                "depths": [],
+                "link_int": [],
+                "link_ext": [],
+                "product_pages": 0,
+                "in_stock_pages": 0,
+                "has_price_pages": 0,
+                "form_label_pcts": [],
+            }
+        return by_domain[dom]
+
+    for r in pages:
+        dom = r.get("domain", "unknown")
+        d = _ensure(dom)
+        d["page_count"] += 1
+        bucket = _classify_discovery_referrer(
+            r.get("referrer_url", ""),
+            dom,
+        )
+        d["discovery_counts"][bucket] += 1
+
+        wc = _safe_int(r.get("word_count", "0"))
+        if wc > 0:
+            d["word_counts"].append(wc)
+        d["depths"].append(_safe_int(r.get("depth", "0")))
+        d["link_int"].append(_safe_int(r.get("link_count_internal", "0")))
+        d["link_ext"].append(_safe_int(r.get("link_count_external", "0")))
+
+        price = (r.get("schema_price") or "").strip()
+        if price:
+            d["has_price_pages"] += 1
+            d["product_pages"] += 1
+            avail = (r.get("schema_availability") or "").lower()
+            if "instock" in avail or "in stock" in avail:
+                d["in_stock_pages"] += 1
+
+        fl = _safe_float(r.get("wcag_form_labels_pct", ""), -1.0)
+        if fl >= 0:
+            d["form_label_pcts"].append(fl)
+
+    out: List[Dict[str, Any]] = []
+    for dom, d in by_domain.items():
+        pc = d["page_count"]
+        dc = d["discovery_counts"]
+        disc_pct = {
+            k: round(dc[k] / pc * 100, 1) if pc else 0.0
+            for k in sorted(dc.keys())
+        }
+        wcs = d["word_counts"]
+        depths = d["depths"]
+        li = d["link_int"]
+        le = d["link_ext"]
+        fls = d["form_label_pcts"]
+
+        out.append({
+            "domain": dom,
+            "page_count": pc,
+            "discovery_mix_pct": disc_pct,
+            "discovery_mix_counts": dict(dc),
+            "avg_word_count": round(sum(wcs) / len(wcs)) if wcs else 0,
+            "avg_depth": round(sum(depths) / len(depths), 2) if depths else 0.0,
+            "avg_internal_links": round(sum(li) / len(li), 1) if li else 0.0,
+            "avg_external_links": round(sum(le) / len(le), 1) if le else 0.0,
+            "product_pages": d["product_pages"],
+            "priced_pages": d["has_price_pages"],
+            "in_stock_pages": d["in_stock_pages"],
+            "in_stock_pct": round(d["in_stock_pages"] / d["product_pages"] * 100, 1)
+            if d["product_pages"] else 0.0,
+            "avg_form_label_pct": round(sum(fls) / len(fls) * 100, 1)
+            if fls else 0.0,
+        })
+
+    out.sort(key=lambda x: -x["page_count"])
+
+    disclaimer = (
+        "These figures are crawl snapshots, not Google Analytics or Search Console. "
+        "Traffic mix means how each URL entered the crawl (seed, sitemap, "
+        "following links from another site, etc.). "
+        "Engagement uses page structure (words, depth, links) as a rough proxy; "
+        "there is no time on page, scroll depth, or click data in the crawl. "
+        "Conversion-style counts use schema.org product fields where present, "
+        "not checkout or form submission events."
+    )
+
+    return {
+        "domains": out,
+        "disclaimer": disclaimer,
+    }
+
+
 # -- Coverage Metrics / Filter Options -------------------------------------
 
 def get_filter_options(run_dirs: List[str]) -> Dict[str, Any]:
