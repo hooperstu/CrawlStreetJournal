@@ -249,6 +249,10 @@ class _ThreadSafeDict:
         with self._lock:
             return self._dict.get(key, default)
 
+    def __getitem__(self, key):
+        with self._lock:
+            return self._dict[key]
+
     def __contains__(self, key):
         with self._lock:
             return key in self._dict
@@ -538,8 +542,12 @@ def _wait_for_domain(
 ) -> None:
     """Sleep to respect per-domain rate limiting and Crawl-delay directives."""
     delay = _per_domain_delay(hostname, delay_cfg)
-    # Respect Crawl-delay from robots.txt as a minimum floor
-    if url:
+    # Crawl-delay from robots.txt is only applied when obeying robots.
+    # If RESPECT_ROBOTS_TXT is False, skip it: otherwise every URL would
+    # fetch robots.txt just for Crawl-delay, and hosts with e.g. 10s
+    # Crawl-delay would cap throughput far below REQUEST_DELAY_SECONDS.
+    _respect = cfg.RESPECT_ROBOTS_TXT if cfg else config.RESPECT_ROBOTS_TXT
+    if url and _respect:
         robots_delay = _get_crawl_delay(url, cfg)
         if robots_delay is not None and robots_delay > delay:
             delay = robots_delay
