@@ -12,7 +12,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import socket
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 from urllib.parse import urlparse, urljoin
 
 import requests
@@ -184,22 +184,42 @@ def request_get_streaming(
     max_body_bytes: int,
     block_private: bool,
     headers: Optional[Dict[str, str]] = None,
-) -> Tuple[Optional[bytes], int, str, str, Optional[str], Dict[str, str]]:
+) -> Tuple[
+    Optional[bytes],
+    int,
+    str,
+    str,
+    Optional[str],
+    Dict[str, str],
+    int,
+    str,
+]:
     """
     GET *url* without auto-redirects; validate each hop; cap body size.
 
-    Returns ``(body_or_none, status, final_url, content_type, error, response_headers)``.
+    Returns
+    ``(body_or_none, status, final_url, content_type, error, response_headers,
+    redirect_count, last_redirect_url)``.
     *response_headers* is populated from the final response (lowercase keys).
     *error* is set on validation or network failure.
+    *redirect_count* is the number of HTTP redirect hops followed before the
+    terminal response (or before failure).
+    *last_redirect_url* is the destination URL of the last redirect hop, or
+    empty when *redirect_count* is 0.
     """
     current = url
     hdrs = dict(headers) if headers else {}
+    redirect_count = 0
+    last_redirect_url = ""
 
     for _hop in range(max(0, max_redirects) + 1):
         if block_private:
             verr = validate_outbound_url(current)
             if verr:
-                return None, 0, current, "", f"blocked: {verr}", {}
+                return (
+                    None, 0, current, "", f"blocked: {verr}", {},
+                    redirect_count, last_redirect_url,
+                )
 
         try:
             resp = sess.get(
@@ -210,7 +230,10 @@ def request_get_streaming(
                 headers=hdrs,
             )
         except requests.exceptions.RequestException as exc:
-            return None, 0, current, "", str(exc)[:400], {}
+            return (
+                None, 0, current, "", str(exc)[:400], {},
+                redirect_count, last_redirect_url,
+            )
 
         try:
             ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
@@ -220,23 +243,37 @@ def request_get_streaming(
             nxt = get_redirect_target(resp, current)
             if nxt is not None:
                 resp.close()
+                redirect_count += 1
+                last_redirect_url = nxt
                 current = nxt
                 continue
 
             if status >= 400:
                 resp.close()
-                return None, status, current, ctype, f"HTTP {status}", rh
+                return (
+                    None, status, current, ctype, f"HTTP {status}", rh,
+                    redirect_count, last_redirect_url,
+                )
 
             body = _read_body_capped(resp, max_body_bytes)
-            return body, status, current, ctype, None, rh
+            return (
+                body, status, current, ctype, None, rh,
+                redirect_count, last_redirect_url,
+            )
         except Exception as exc:
             try:
                 resp.close()
             except Exception:
                 pass
-            return None, 0, current, "", str(exc)[:400], {}
+            return (
+                None, 0, current, "", str(exc)[:400], {},
+                redirect_count, last_redirect_url,
+            )
 
-    return None, 0, current, "", "redirect limit exceeded", {}
+    return (
+        None, 0, current, "", "redirect limit exceeded", {},
+        redirect_count, last_redirect_url,
+    )
 
 
 def request_head_follow(

@@ -34,7 +34,6 @@ Key entry points:
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import heapq
 import logging
@@ -45,8 +44,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
-from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
-from urllib.robotparser import RobotFileParser
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse, urlunparse
+from urllib.robotparser import RobotFileParser, RuleLine
 
 import requests
 
@@ -114,7 +113,7 @@ def _outbound_request_outcome(
         if err:
             return 0, target, err
         if get_fallback and status in (403, 405, 501):
-            raw, st2, fin2, _ct2, err2, _rh2 = request_get_streaming(
+            raw, st2, fin2, _ct2, err2, _rh2, _rc2, _lr2 = request_get_streaming(
                 sess,
                 target,
                 timeout=timeout,
@@ -358,10 +357,9 @@ def _robots_for_url(url: str, cfg: Optional[CrawlConfig] = None) -> RobotFilePar
             _timeout = cfg.REQUEST_TIMEOUT_SECONDS if cfg else config.REQUEST_TIMEOUT_SECONDS
             _max_r = cfg.HTTP_MAX_REDIRECTS if cfg else config.HTTP_MAX_REDIRECTS
             _max_body = cfg.MAX_ROBOTS_TXT_BYTES if cfg else config.MAX_ROBOTS_TXT_BYTES
-            verify = cfg.HTTP_VERIFY_SSL if cfg else config.HTTP_VERIFY_SSL
             with _http_session(cfg) as sess:
                 sess.headers.update({"User-Agent": _ua})
-                raw, _st, _fin, _ct, err, _rh = request_get_streaming(
+                raw, _st, _fin, _ct, err, _rh, _rc, _lr = request_get_streaming(
                     sess,
                     robots_url,
                     timeout=float(_timeout),
@@ -429,6 +427,127 @@ def can_fetch(url: str, cfg: Optional[CrawlConfig] = None) -> bool:
         return allowed
     except Exception:
         return True
+
+
+def _normalised_robots_path(url: str) -> str:
+    """Path + query fragment for robots rule matching (mirrors stdlib ``can_fetch``)."""
+    try:
+        parsed_url = urlparse(unquote(url))
+        inner = urlunparse(
+            ("", "", parsed_url.path, parsed_url.params, parsed_url.query, parsed_url.fragment),
+        )
+        inner = quote(inner)
+        if not inner:
+            inner = "/"
+        return inner
+    except Exception:
+        return "/"
+
+
+def _robots_blocking_rule_hits(url: str, user_agent: str, rp: RobotFileParser) -> List[str]:
+    """Return ``Disallow`` path patterns that deny *url* for *user_agent* (longest last)."""
+    if getattr(rp, "disallow_all", False):
+        return ["(disallow all)"]
+    if not getattr(rp, "last_checked", 0):
+        return []
+    path = _normalised_robots_path(url)
+    hits: List[str] = []
+
+    def _collect(entry: Any) -> None:
+        if not entry:
+            return
+        try:
+            if not entry.applies_to(user_agent):
+                return
+        except Exception:
+            return
+        for line in getattr(entry, "rulelines", []) or []:
+            if not isinstance(line, RuleLine) or line.allowance:
+                continue
+            if line.applies_to(path):
+                hits.append(line.path)
+
+    for ent in getattr(rp, "entries", []) or []:
+        _collect(ent)
+    _collect(getattr(rp, "default_entry", None))
+    # Prefer the most specific rule (longest path) for the log message.
+    hits.sort(key=len)
+    return hits
+
+
+def _format_robots_rule_hint(url: str, user_agent: str, rp: RobotFileParser) -> str:
+    """Human-readable robots.txt rule summary when ``can_fetch`` is false."""
+    hits = _robots_blocking_rule_hits(url, user_agent, rp)
+    if not hits:
+        return "matched: (no explicit deny; default allow or unknown)"
+    worst = hits[-1]
+    if len(hits) == 1:
+        return f"Disallow: {worst}"
+    return f"Disallow: {worst} (also {len(hits) - 1} other pattern(s))"
+
+
+def _failure_class_for_message(message: str, error_type: str) -> str:
+    """Coarse failure category for analytics (derived from message and type)."""
+    m = (message or "").lower()
+    if error_type == "robots_disallowed":
+        return "robots_disallowed"
+    if error_type == "non_html":
+        return "non_html"
+    if error_type == "content_duplicate":
+        return "content_duplicate"
+    if error_type == "parse_error":
+        return "parse_error"
+    if error_type != "fetch_failed":
+        return error_type or "unknown"
+    if "timeout" in m:
+        return "timeout"
+    if "connectionerror" in m or "connection refused" in m:
+        return "connection"
+    if "ssl" in m or "certificate" in m:
+        return "ssl"
+    if "blocked:" in m:
+        return "blocked_private"
+    if "redirect limit" in m:
+        return "redirect_limit"
+    if m.startswith("http "):
+        return "http_error"
+    return "fetch_failed"
+
+
+def _error_row_base(
+    *,
+    requested_url: str,
+    final_url: str,
+    referrer: str,
+    depth: int,
+    error_type: str,
+    message: str,
+    http_status: Any,
+    content_type: str,
+    failure_class: str,
+    redirect_count: int,
+    last_redirect_url: str,
+    attempt_number: int,
+    robots_txt_rule: str,
+    worker_id: int,
+) -> Dict[str, Any]:
+    return {
+        "url": requested_url,
+        "final_url": final_url,
+        "referrer_url": referrer,
+        "depth": depth,
+        "error_type": error_type,
+        "failure_class": failure_class,
+        "message": message,
+        "http_status": http_status,
+        "content_type": content_type,
+        "redirect_count": redirect_count,
+        "last_redirect_url": last_redirect_url,
+        "attempt_number": attempt_number,
+        "robots_txt_rule": robots_txt_rule,
+        "worker_id": worker_id,
+        "discovered_at": _now_iso(),
+    }
 
 
 # ── Domain scope ──────────────────────────────────────────────────────────
@@ -556,13 +675,26 @@ def _wait_for_domain(
 
 def fetch_page(
     url: str, cfg: Optional[CrawlConfig] = None,
-) -> Tuple[Optional[str], int, str, str, Dict[str, str], str]:
+) -> Tuple[
+    Optional[str],
+    int,
+    str,
+    str,
+    Dict[str, str],
+    str,
+    int,
+    str,
+    int,
+]:
     """
     GET *url*.  Returns
-    ``(body, status_code, final_url, content_type, response_meta, error_detail)``.
+    ``(body, status_code, final_url, content_type, response_meta, error_detail,
+    redirect_count, last_redirect_url, attempt_number)``.
 
     *error_detail* is an empty string on success, or a human-readable
     diagnostic when the fetch fails.
+    *attempt_number* is 1-based for the successful or final failed attempt
+    within the retry loop.
     """
     _ua = cfg.USER_AGENT if cfg else config.USER_AGENT
     _retries = cfg.MAX_RETRIES if cfg else config.MAX_RETRIES
@@ -574,6 +706,8 @@ def fetch_page(
 
     empty_meta: Dict[str, str] = {}
     last_error = ""
+    last_rc = 0
+    last_lr = ""
 
     with _http_session(cfg) as sess:
         sess.headers.update({"User-Agent": _ua})
@@ -582,21 +716,31 @@ def fetch_page(
                 backoff = min(2 ** attempt, 30)
                 time.sleep(backoff)
             try:
-                raw, status, final, ctype, err, rh = request_get_streaming(
-                    sess,
-                    url,
-                    timeout=float(_timeout),
-                    max_redirects=int(_max_r),
-                    max_body_bytes=int(_max_body),
-                    block_private=bool(_block),
+                raw, status, final, ctype, err, rh, redir_cnt, last_redir = (
+                    request_get_streaming(
+                        sess,
+                        url,
+                        timeout=float(_timeout),
+                        max_redirects=int(_max_r),
+                        max_body_bytes=int(_max_body),
+                        block_private=bool(_block),
+                    )
                 )
+                last_rc = redir_cnt
+                last_lr = last_redir or ""
                 meta = empty_meta
                 if err:
                     last_error = err
                     if "blocked:" in err or "redirect limit" in err.lower():
-                        return None, 0, final, ctype, meta, last_error
+                        return (
+                            None, 0, final, ctype, meta, last_error,
+                            redir_cnt, last_lr, attempt + 1,
+                        )
                     if attempt == _retries:
-                        return None, 0, final, ctype, meta, last_error
+                        return (
+                            None, 0, final, ctype, meta, last_error,
+                            redir_cnt, last_lr, attempt + 1,
+                        )
                     logger.warning("Fetch failed for %s: %s", url, last_error)
                     continue
                 if raw is not None and len(raw) >= _max_body:
@@ -613,10 +757,16 @@ def fetch_page(
                 if status >= 400:
                     last_error = f"HTTP {status}"
                     if attempt == _retries:
-                        return None, status, final, ctype, meta, last_error
+                        return (
+                            None, status, final, ctype, meta, last_error,
+                            redir_cnt, last_lr, attempt + 1,
+                        )
                     continue
                 text = (raw or b"").decode("utf-8", errors="replace")
-                return text, status, final, ctype, meta, ""
+                return (
+                    text, status, final, ctype, meta, "",
+                    redir_cnt, last_lr, attempt + 1,
+                )
             except requests.exceptions.Timeout:
                 last_error = f"Timeout (attempt {attempt + 1}/{_retries + 1})"
                 logger.warning("Timeout fetching %s (attempt %s)", url, attempt + 1)
@@ -633,7 +783,10 @@ def fetch_page(
                 last_error = f"{type(e).__name__}: {str(e)[:200]}"
                 logger.warning("Error fetching %s: %s", url, last_error)
 
-    return None, 0, url, "", empty_meta, last_error
+    return (
+        None, 0, url, "", empty_meta, last_error,
+        last_rc, last_lr, _retries + 1,
+    )
 
 
 def head_asset(url: str, cfg: Optional[CrawlConfig] = None) -> Tuple[str, str]:
@@ -694,7 +847,7 @@ def _sitemaps_from_robots(
     try:
         with _http_session(cfg) as sess:
             sess.headers.update({"User-Agent": _ua})
-            raw, _st, _fin, _ct, err, _rh = request_get_streaming(
+            raw, _st, _fin, _ct, err, _rh, _rc, _lr = request_get_streaming(
                 sess,
                 robots_url,
                 timeout=float(_timeout),
@@ -1207,6 +1360,7 @@ def _process_one_url(
     ctx: StorageContext,
     max_depth: Optional[int],
     delay_cfg: Any = None,
+    worker_id: int = -1,
     **kwargs,
 ) -> Tuple[bool, int, str]:
     """Fetch and process one URL from the queue.
@@ -1223,13 +1377,27 @@ def _process_one_url(
     visited.add(url_key)
 
     if not can_fetch(url, cfg):
-        ctx.write_error({
-            "url": url,
-            "error_type": "robots_disallowed",
-            "message": "Blocked by robots.txt",
-            "http_status": "",
-            "discovered_at": _now_iso(),
-        })
+        _ua = cfg.USER_AGENT
+        rp = _robots_for_url(url, cfg)
+        rule_hint = _format_robots_rule_hint(url, _ua, rp)
+        ctx.write_error(
+            _error_row_base(
+                requested_url=url,
+                final_url=url,
+                referrer=referrer,
+                depth=depth,
+                error_type="robots_disallowed",
+                message="Blocked by robots.txt",
+                http_status="",
+                content_type="",
+                failure_class="robots_disallowed",
+                redirect_count=0,
+                last_redirect_url="",
+                attempt_number=1,
+                robots_txt_rule=rule_hint,
+                worker_id=worker_id,
+            ),
+        )
         return False, 0, url
 
     hostname = (urlparse(url).hostname or "").lower()
@@ -1239,17 +1407,39 @@ def _process_one_url(
     _render_js = cfg.RENDER_JAVASCRIPT
 
     _t0 = time.perf_counter()
-    html, status, final_url, ctype, resp_meta, error_detail = fetch_page(url, cfg)
+    (
+        html,
+        status,
+        final_url,
+        ctype,
+        resp_meta,
+        error_detail,
+        redir_cnt,
+        last_redir,
+        attempt_no,
+    ) = fetch_page(url, cfg)
     fetch_ms = (time.perf_counter() - _t0) * 1000.0
     if html is None:
         _record_domain_failure(hostname)
-        ctx.write_error({
-            "url": url,
-            "error_type": "fetch_failed",
-            "message": error_detail or "No response body or HTTP error",
-            "http_status": status,
-            "discovered_at": _now_iso(),
-        })
+        msg = error_detail or "No response body or HTTP error"
+        ctx.write_error(
+            _error_row_base(
+                requested_url=url,
+                final_url=final_url,
+                referrer=referrer,
+                depth=depth,
+                error_type="fetch_failed",
+                message=msg,
+                http_status=status,
+                content_type=ctype,
+                failure_class=_failure_class_for_message(msg, "fetch_failed"),
+                redirect_count=redir_cnt,
+                last_redirect_url=last_redir,
+                attempt_number=attempt_no,
+                robots_txt_rule="",
+                worker_id=worker_id,
+            ),
+        )
         return False, 0, url
 
     # A body was returned but the HTTP status was an error (e.g. a
@@ -1257,13 +1447,25 @@ def _process_one_url(
     # the failure so back-off applies, then skip the page.
     if status >= 400:
         _record_domain_failure(hostname)
-        ctx.write_error({
-            "url": url,
-            "error_type": "fetch_failed",
-            "message": f"HTTP {status}",
-            "http_status": status,
-            "discovered_at": _now_iso(),
-        })
+        msg = f"HTTP {status}"
+        ctx.write_error(
+            _error_row_base(
+                requested_url=url,
+                final_url=final_url,
+                referrer=referrer,
+                depth=depth,
+                error_type="fetch_failed",
+                message=msg,
+                http_status=status,
+                content_type=ctype,
+                failure_class=_failure_class_for_message(msg, "fetch_failed"),
+                redirect_count=redir_cnt,
+                last_redirect_url=last_redir,
+                attempt_number=attempt_no,
+                robots_txt_rule="",
+                worker_id=worker_id,
+            ),
+        )
         return False, 0, url
 
     # JS rendering fallback: re-fetch via headless browser when the
@@ -1297,13 +1499,25 @@ def _process_one_url(
     _record_domain_success(hostname)
 
     if not _is_probably_html(ctype):
-        ctx.write_error({
-            "url": final_url,
-            "error_type": "non_html",
-            "message": f"Content-Type not HTML: {ctype}",
-            "http_status": status,
-            "discovered_at": _now_iso(),
-        })
+        msg = f"Content-Type not HTML: {ctype}"
+        ctx.write_error(
+            _error_row_base(
+                requested_url=url,
+                final_url=final_url,
+                referrer=referrer,
+                depth=depth,
+                error_type="non_html",
+                message=msg,
+                http_status=status,
+                content_type=ctype,
+                failure_class="non_html",
+                redirect_count=redir_cnt,
+                last_redirect_url=last_redir,
+                attempt_number=attempt_no,
+                robots_txt_rule="",
+                worker_id=worker_id,
+            ),
+        )
         return False, 0, final_url
 
     # Content-hash deduplication: skip pages with identical visible text
@@ -1315,13 +1529,25 @@ def _process_one_url(
         content_hash = hashlib.sha256(visible.encode("utf-8", errors="replace")).hexdigest()[:16]
         if content_hash in content_hashes:
             logger.debug("Content dedup: %s matches %s", url, content_hashes[content_hash])
-            ctx.write_error({
-                "url": url,
-                "error_type": "content_duplicate",
-                "message": f"Identical content hash as {content_hashes[content_hash]}",
-                "http_status": status,
-                "discovered_at": _now_iso(),
-            })
+            msg = f"Identical content hash as {content_hashes[content_hash]}"
+            ctx.write_error(
+                _error_row_base(
+                    requested_url=url,
+                    final_url=final_url,
+                    referrer=referrer,
+                    depth=depth,
+                    error_type="content_duplicate",
+                    message=msg,
+                    http_status=status,
+                    content_type=ctype,
+                    failure_class="content_duplicate",
+                    redirect_count=redir_cnt,
+                    last_redirect_url=last_redir,
+                    attempt_number=attempt_no,
+                    robots_txt_rule="",
+                    worker_id=worker_id,
+                ),
+            )
             return False, 0, final_url
         content_hashes[content_hash] = url
 
@@ -1375,13 +1601,25 @@ def _process_one_url(
                 logger.debug("Nav extraction failed for %s: %s", final_url, nav_err)
     except Exception as e:
         logger.exception("Inventory parse failed for %s: %s", final_url, e)
-        ctx.write_error({
-            "url": final_url,
-            "error_type": "parse_error",
-            "message": str(e)[:500],
-            "http_status": status,
-            "discovered_at": now,
-        })
+        msg = str(e)[:500]
+        ctx.write_error(
+            _error_row_base(
+                requested_url=url,
+                final_url=final_url,
+                referrer=referrer,
+                depth=depth,
+                error_type="parse_error",
+                message=msg,
+                http_status=status,
+                content_type=ctype,
+                failure_class=_failure_class_for_message(msg, "parse_error"),
+                redirect_count=redir_cnt,
+                last_redirect_url=last_redir,
+                attempt_number=attempt_no,
+                robots_txt_rule="",
+                worker_id=worker_id,
+            ),
+        )
         return False, 0, final_url
 
     try:
@@ -1692,6 +1930,7 @@ def crawl(
                         visited, queued, pq,
                         sitemap_meta, cfg, ctx, max_depth,
                         delay_cfg=delay_cfg,
+                        worker_id=0,
                         content_hashes=content_hashes if cfg.CONTENT_DEDUP else None,
                         prev_hashes=prev_hashes if cfg.CHANGE_DETECTION else None,
                     )
@@ -1803,6 +2042,7 @@ def crawl(
                             visited, queued, pq,
                             sitemap_meta, cfg, ctx, max_depth,
                             delay_cfg=delay_cfg,
+                            worker_id=slot_idx,
                             content_hashes=content_hashes if cfg.CONTENT_DEDUP else None,
                             prev_hashes=prev_hashes if cfg.CHANGE_DETECTION else None,
                         )

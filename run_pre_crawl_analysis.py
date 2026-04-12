@@ -199,6 +199,44 @@ def detect_tech_stack(
 _now_iso = utils.now_iso
 
 
+def _pre_crawl_error_row(
+    *,
+    url: str,
+    error_type: str,
+    message: str,
+    http_status: Any = "",
+    final_url: str = "",
+    referrer_url: str = "",
+    depth: int = 0,
+    failure_class: str = "",
+    content_type: str = "",
+    redirect_count: int = 0,
+    last_redirect_url: str = "",
+    attempt_number: int = 1,
+    robots_txt_rule: str = "",
+    worker_id: int = -1,
+) -> Dict[str, Any]:
+    """Row dict aligned with :data:`storage.ERROR_FIELDS` for ``errors.csv``."""
+    fc = failure_class or error_type
+    return {
+        "url": url,
+        "final_url": final_url or url,
+        "referrer_url": referrer_url,
+        "depth": depth,
+        "error_type": error_type,
+        "failure_class": fc,
+        "message": message,
+        "http_status": http_status,
+        "content_type": content_type,
+        "redirect_count": redirect_count,
+        "last_redirect_url": last_redirect_url,
+        "attempt_number": attempt_number,
+        "robots_txt_rule": robots_txt_rule,
+        "worker_id": worker_id,
+        "discovered_at": _now_iso(),
+    }
+
+
 def _sanitise_domain(netloc: str) -> str:
     return re.sub(r"[^a-zA-Z0-9.\-]", "_", netloc)
 
@@ -299,7 +337,7 @@ def _fetch_raw(url: str) -> Tuple[Optional[requests.Response], str]:
             with requests.Session() as sess:
                 sess.verify = config.HTTP_VERIFY_SSL
                 sess.headers.update(headers)
-                raw, status, final, _ct, err, rh = request_get_streaming(
+                raw, status, final, _ct, err, rh, _rc, _lr = request_get_streaming(
                     sess,
                     url,
                     timeout=float(TIMEOUT_SECONDS),
@@ -486,10 +524,15 @@ def _prepare_urls(
         os.makedirs(ddir, exist_ok=True)
         _write_csv_header(os.path.join(ddir, "pages.csv"), PAGES_FIELDS_EXTENDED)
         _write_csv_header(errors_csv, storage.ERROR_FIELDS)
-        _append_csv_row(errors_csv, storage.ERROR_FIELDS, {
-            "url": seed_url, "error_type": "homepage_unreachable",
-            "message": err, "http_status": "", "discovered_at": _now_iso(),
-        })
+        _append_csv_row(
+            errors_csv, storage.ERROR_FIELDS,
+            _pre_crawl_error_row(
+                url=seed_url,
+                error_type="homepage_unreachable",
+                message=err,
+                failure_class="homepage_unreachable",
+            ),
+        )
         return None, "unreachable"
 
     homepage_html = resp.text if resp.status_code < 400 else ""
@@ -558,22 +601,37 @@ def _sample_pages(
         html, status, final_url, ctype, resp_meta = _safe_fetch(url)
 
         if html is None:
-            _append_csv_row(errors_csv, storage.ERROR_FIELDS, {
-                "url": url, "error_type": "fetch_failed",
-                "message": f"status={status}",
-                "http_status": status, "discovered_at": _now_iso(),
-            })
+            _append_csv_row(
+                errors_csv, storage.ERROR_FIELDS,
+                _pre_crawl_error_row(
+                    url=url,
+                    error_type="fetch_failed",
+                    message=f"status={status}",
+                    http_status=status,
+                    referrer_url=seed_url,
+                    depth=0,
+                    failure_class="fetch_failed",
+                ),
+            )
             failed += 1
             time.sleep(DELAY_SECONDS)
             continue
 
         ct_lower = (ctype or "").lower()
         if ct_lower and "text/html" not in ct_lower and "application/xhtml" not in ct_lower:
-            _append_csv_row(errors_csv, storage.ERROR_FIELDS, {
-                "url": url, "error_type": "non_html",
-                "message": f"Content-Type: {ctype}",
-                "http_status": status, "discovered_at": _now_iso(),
-            })
+            _append_csv_row(
+                errors_csv, storage.ERROR_FIELDS,
+                _pre_crawl_error_row(
+                    url=url,
+                    error_type="non_html",
+                    message=f"Content-Type: {ctype}",
+                    http_status=status,
+                    referrer_url=seed_url,
+                    depth=0,
+                    failure_class="non_html",
+                    content_type=ctype or "",
+                ),
+            )
             failed += 1
             time.sleep(DELAY_SECONDS)
             continue
@@ -593,11 +651,19 @@ def _sample_pages(
                 sitemap_meta={},
             )
         except Exception as exc:
-            _append_csv_row(errors_csv, storage.ERROR_FIELDS, {
-                "url": url, "error_type": "parse_error",
-                "message": str(exc)[:300],
-                "http_status": status, "discovered_at": _now_iso(),
-            })
+            _append_csv_row(
+                errors_csv, storage.ERROR_FIELDS,
+                _pre_crawl_error_row(
+                    url=url,
+                    error_type="parse_error",
+                    message=str(exc)[:300],
+                    http_status=status,
+                    referrer_url=seed_url,
+                    depth=0,
+                    failure_class="parse_error",
+                    content_type=ctype or "",
+                ),
+            )
             failed += 1
             time.sleep(DELAY_SECONDS)
             continue

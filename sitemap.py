@@ -49,7 +49,7 @@ def _fetch_xml(
     with requests.Session() as sess:
         sess.verify = v
         sess.headers.update({"User-Agent": ua})
-        raw, status, _fin, _ct, err, _rh = request_get_streaming(
+        raw, status, _fin, _ct, err, _rh, _rc, _lr = request_get_streaming(
             sess,
             url,
             timeout=float(to),

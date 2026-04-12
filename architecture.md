@@ -559,7 +559,7 @@ The header row is written once by `initialise_outputs` / `resume_outputs` at run
 | `sitemap_urls.csv` | `url`, `lastmod`, `source_sitemap`, `discovered_at` |
 | `link_checks.csv` | `from_url`, `to_url`, `check_status`, `check_final_url`, `discovered_at` |
 | `phone_numbers.csv` | `page_url`, `raw_href`, `phone_number`, `link_text`, `discovered_at` |
-| `crawl_errors.csv` | `url`, `error_type`, `message`, `http_status`, `discovered_at` |
+| `crawl_errors.csv` | Requested URL, `final_url`, `referrer_url`, `depth`, `error_type`, `failure_class`, `message`, `http_status`, `content_type`, redirect metadata, `attempt_number`, `robots_txt_rule`, `worker_id`, `discovered_at` |
 
 ### 8.4 Project lifecycle
 

@@ -284,9 +284,19 @@ def seed():
         w.writeheader()
         w.writerow({
             "url": "https://broken.example.com/missing",
+            "final_url": "https://broken.example.com/missing",
+            "referrer_url": "",
+            "depth": "1",
             "error_type": "fetch_failed",
+            "failure_class": "connection",
             "message": "Connection refused",
             "http_status": "0",
+            "content_type": "",
+            "redirect_count": "0",
+            "last_redirect_url": "",
+            "attempt_number": "1",
+            "robots_txt_rule": "",
+            "worker_id": "0",
             "discovered_at": "2025-03-15 10:00:00",
         })
 

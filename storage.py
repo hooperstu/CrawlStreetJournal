@@ -188,7 +188,23 @@ EDGE_FIELDS = ("from_url", "to_url", "link_text", "discovered_at")
 
 TAG_ROW_FIELDS = ("page_url", "tag_value", "tag_source", "discovered_at")
 
-ERROR_FIELDS = ("url", "error_type", "message", "http_status", "discovered_at")
+ERROR_FIELDS = (
+    "url",
+    "final_url",
+    "referrer_url",
+    "depth",
+    "error_type",
+    "failure_class",
+    "message",
+    "http_status",
+    "content_type",
+    "redirect_count",
+    "last_redirect_url",
+    "attempt_number",
+    "robots_txt_rule",
+    "worker_id",
+    "discovered_at",
+)
 
 SITEMAP_URL_FIELDS = (
     "url",

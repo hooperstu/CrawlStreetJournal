@@ -247,7 +247,7 @@ Filesystem persistence: CSV writing, project/run lifecycle, config snapshots, re
 | `write_asset(row, category)` | Write to `assets_<category>.csv`. |
 | `write_edge(row)` | Write to `edges.csv` (if enabled). |
 | `write_tag_row(row)` | Write to `tags.csv` (if enabled). |
-| `write_error(row)` | Write to `crawl_errors.csv`. |
+| `write_error(row)` | Write to `crawl_errors.csv` (extended schema: requested URL in `url`, `final_url`, provenance, `failure_class`, fetch/redirect metadata, `robots_txt_rule` when applicable). |
 | `write_sitemap_url(row)` | Write to `sitemap_urls.csv`. |
 | `write_nav_link(row)` | Write to `nav_links.csv`. |
 | `write_link_check(row)` | Write to `link_checks.csv`. |
