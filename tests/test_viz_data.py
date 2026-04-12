@@ -720,3 +720,79 @@ def test_aggregate_indexability_full_lists(tmp_path):
     assert len(capped["noindex_pages"]) == 500
     assert len(full["noindex_pages"]) == 600
     assert full.get("full_lists") is True
+
+
+# ── Competitor Intelligence tests ─────────────────────────────────────────
+
+def test_aggregate_competitor_intelligence_tags_and_edges(tmp_path):
+    """Tags aggregate; edges contribute to link summary."""
+    tags = [
+        {
+            "page_url": "https://example.com/",
+            "tag_value": "training",
+            "tag_source": "href",
+            "discovered_at": "",
+        },
+        {
+            "page_url": "https://example.com/",
+            "tag_value": "training",
+            "tag_source": "href",
+            "discovered_at": "",
+        },
+    ]
+    edges = [
+        {
+            "from_url": "https://example.com/",
+            "to_url": "https://other.com/page",
+            "link_text": "Partner",
+            "discovered_at": "",
+        },
+        {
+            "from_url": "https://shop.example.com/products/widget",
+            "to_url": "https://example.com/",
+            "link_text": "Home",
+            "discovered_at": "",
+        },
+    ]
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES, tags=tags, edges=edges)
+    result = viz_data.aggregate_competitor_intelligence([run_dir])
+
+    terms = {t["term"]: t["count"] for t in result["keyword_content"]["top_tags"]}
+    assert terms.get("training", 0) >= 1
+    assert "disclaimer" in result and result["disclaimer"]
+
+    pairs = result["backlinks"]["top_cross_domain_pairs"]
+    assert any(p["from_domain"] == "example.com" for p in pairs)
+
+    inbound = {x["domain"]: x["count"] for x in result["backlinks"]["top_inbound"]}
+    assert inbound.get("example.com", 0) >= 1
+
+
+def test_aggregate_competitor_intelligence_products(tmp_path):
+    """Schema price rows appear in product_pricing."""
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES)
+    result = viz_data.aggregate_competitor_intelligence([run_dir])
+    assert result["product_pricing"]["product_rows_total"] >= 1
+    sample = result["product_pricing"]["products_sample"]
+    assert any("shop.example.com" in (p.get("domain") or "") for p in sample)
+
+
+def test_aggregate_competitor_intelligence_full_lists(tmp_path):
+    """full_lists=True exposes full_lists flag and uncapped tag list."""
+    tags = [
+        {
+            "page_url": "https://example.com/",
+            "tag_value": "alphauniquezz",
+            "tag_source": "href",
+            "discovered_at": "",
+        },
+    ]
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES, tags=tags, edges=None)
+    capped = viz_data.aggregate_competitor_intelligence([run_dir])
+    full = viz_data.aggregate_competitor_intelligence([run_dir], full_lists=True)
+    assert capped.get("full_lists") is False
+    assert len(capped["keyword_content"]["top_tags"]) <= 50
+    assert full.get("full_lists") is True
+    assert len(full["keyword_content"]["top_tags"]) >= len(
+        capped["keyword_content"]["top_tags"],
+    )

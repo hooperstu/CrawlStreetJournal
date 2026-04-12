@@ -225,6 +225,80 @@ def build_key_metrics_zip(
     return _zip_files(files)
 
 
+def build_competitor_intelligence_zip(
+    run_dirs: List[str],
+    filters: Optional[Dict[str, Any]] = None,
+) -> bytes:
+    data = viz_data.aggregate_competitor_intelligence(
+        run_dirs, filters=filters, full_lists=True,
+    )
+    files: List[tuple] = []
+
+    kc = data.get("keyword_content") or {}
+    tags = kc.get("top_tags") or []
+    if tags:
+        files.append((
+            "top_tags.csv",
+            _csv_from_rows(list(tags[0].keys()), tags),
+        ))
+
+    pages = kc.get("top_content_pages") or []
+    if pages:
+        files.append((
+            "top_content_pages.csv",
+            _csv_from_rows(list(pages[0].keys()), pages),
+        ))
+
+    pp = data.get("product_pricing") or {}
+    summ_pp = {
+        "product_rows_total": pp.get("product_rows_total", ""),
+        "availability_mix_keys": len(pp.get("availability_mix") or {}),
+    }
+    files.append((
+        "product_pricing_summary.csv",
+        _csv_from_rows(list(summ_pp.keys()), [summ_pp]),
+    ))
+
+    prods = pp.get("products_sample") or []
+    if prods:
+        files.append((
+            "products_sample.csv",
+            _csv_from_rows(list(prods[0].keys()), prods),
+        ))
+
+    promos = pp.get("promotional_sample") or []
+    if promos:
+        files.append((
+            "promotional_sample.csv",
+            _csv_from_rows(list(promos[0].keys()), promos),
+        ))
+
+    bdp = pp.get("by_domain_price") or []
+    if bdp:
+        files.append((
+            "price_range_by_domain.csv",
+            _csv_from_rows(list(bdp[0].keys()), bdp),
+        ))
+
+    bl = data.get("backlinks") or {}
+    for key, fname in (
+        ("top_inbound", "inbound_domains.csv"),
+        ("top_outbound_external", "outbound_external_domains.csv"),
+        ("top_cross_domain_pairs", "cross_domain_pairs.csv"),
+    ):
+        rows = bl.get(key) or []
+        if rows:
+            files.append((
+                fname,
+                _csv_from_rows(list(rows[0].keys()), rows),
+            ))
+
+    if not files:
+        files.append(("readme.txt", b"No competitor intelligence data in scope.\r\n"))
+
+    return _zip_files(files)
+
+
 def build_indexability_zip(
     run_dirs: List[str],
     filters: Optional[Dict[str, Any]] = None,
