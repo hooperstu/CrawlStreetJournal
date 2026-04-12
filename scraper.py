@@ -249,6 +249,10 @@ class _ThreadSafeDict:
         with self._lock:
             return self._dict.get(key, default)
 
+    def __getitem__(self, key):
+        with self._lock:
+            return self._dict[key]
+
     def __contains__(self, key):
         with self._lock:
             return key in self._dict
