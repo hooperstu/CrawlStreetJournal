@@ -623,3 +623,100 @@ def test_aggregate_key_metrics_snapshot(tmp_path):
     )
     assert full.get("full_lists") is True
     assert len(full.get("page_breakdown") or []) == 3
+
+
+# ── Indexability report tests ───────────────────────────────────────────
+
+def test_aggregate_indexability_noindex_and_robots(tmp_path):
+    """Counts noindex pages and robots_disallowed errors."""
+    p_noindex = dict(SAMPLE_PAGES[0])
+    p_noindex["requested_url"] = "https://example.com/private"
+    p_noindex["final_url"] = "https://example.com/private"
+    p_noindex["robots_directives"] = "meta:noindex, nofollow"
+    p_noindex["http_status"] = "200"
+
+    errors = [
+        {
+            "url": "https://shop.example.com/hidden/",
+            "error_type": "robots_disallowed",
+            "message": "Blocked by robots.txt",
+            "http_status": "0",
+            "discovered_at": "2025-04-01T12:00:00",
+        },
+        {
+            "url": "https://example.com/other/",
+            "error_type": "http_error",
+            "message": "timeout",
+            "http_status": "0",
+            "discovered_at": "2025-04-01T12:00:00",
+        },
+    ]
+    run_dir = _make_run_dir(
+        tmp_path,
+        pages=SAMPLE_PAGES + [p_noindex],
+        errors=errors,
+    )
+    result = viz_data.aggregate_indexability([run_dir])
+
+    assert result["summary"]["page_count"] == 4
+    assert result["summary"]["noindex_count"] == 1
+    assert result["summary"]["robots_txt_blocked_count"] == 1
+    assert result["summary"]["non_indexable_total"] == 2
+    assert len(result["noindex_pages"]) == 1
+    assert "noindex" in result["noindex_pages"][0]["robots_directives"].lower()
+    assert len(result["robots_txt_blocked"]) == 1
+    assert "shop.example.com" in result["robots_txt_blocked"][0]["url"]
+
+
+def test_aggregate_indexability_domain_filter_errors(tmp_path):
+    """Domain filter applies to robots.txt error rows."""
+    errors = [
+        {
+            "url": "https://a.example.com/x",
+            "error_type": "robots_disallowed",
+            "message": "Blocked by robots.txt",
+            "http_status": "0",
+            "discovered_at": "",
+        },
+        {
+            "url": "https://b.example.com/y",
+            "error_type": "robots_disallowed",
+            "message": "Blocked by robots.txt",
+            "http_status": "0",
+            "discovered_at": "",
+        },
+    ]
+    run_dir = _make_run_dir(tmp_path, pages=SAMPLE_PAGES, errors=errors)
+    result = viz_data.aggregate_indexability(
+        [run_dir], filters={"domains": ["a.example.com"]},
+    )
+    assert result["summary"]["robots_txt_blocked_count"] == 1
+    assert "a.example.com" in result["robots_txt_blocked"][0]["url"]
+
+
+def test_aggregate_indexability_empty_pages(tmp_path):
+    """Empty pages.csv still returns a consistent shape."""
+    run_dir = _make_run_dir(tmp_path, pages=[])
+    result = viz_data.aggregate_indexability([run_dir])
+    assert result["summary"]["page_count"] == 0
+    assert result["noindex_pages"] == []
+    assert result["robots_txt_blocked"] == []
+    assert result.get("full_lists") is False
+
+
+def test_aggregate_indexability_full_lists(tmp_path):
+    """full_lists=True removes the 500-row cap on returned lists."""
+    base = dict(SAMPLE_PAGES[0])
+    rows = []
+    for i in range(600):
+        r = dict(base)
+        r["requested_url"] = f"https://example.com/p{i}"
+        r["final_url"] = f"https://example.com/p{i}"
+        r["robots_directives"] = "meta:noindex"
+        rows.append(r)
+    run_dir = _make_run_dir(tmp_path, pages=rows)
+    capped = viz_data.aggregate_indexability([run_dir])
+    full = viz_data.aggregate_indexability([run_dir], full_lists=True)
+    assert len(capped["noindex_pages"]) == 500
+    assert len(full["noindex_pages"]) == 600
+    assert full.get("full_lists") is True

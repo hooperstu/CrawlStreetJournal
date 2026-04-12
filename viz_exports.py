@@ -225,6 +225,44 @@ def build_key_metrics_zip(
     return _zip_files(files)
 
 
+def build_indexability_zip(
+    run_dirs: List[str],
+    filters: Optional[Dict[str, Any]] = None,
+) -> bytes:
+    data = viz_data.aggregate_indexability(
+        run_dirs, filters=filters, full_lists=True,
+    )
+    files: List[tuple] = []
+
+    summary = data.get("summary") or {}
+    files.append((
+        "summary.csv",
+        _csv_from_rows(
+            list(summary.keys()) if summary else ["page_count"],
+            [summary] if summary else [{"page_count": 0}],
+        ),
+    ))
+
+    ni = data.get("noindex_pages") or []
+    if ni:
+        files.append((
+            "noindex_pages.csv",
+            _csv_from_rows(list(ni[0].keys()), ni),
+        ))
+
+    rb = data.get("robots_txt_blocked") or []
+    if rb:
+        files.append((
+            "robots_txt_blocked.csv",
+            _csv_from_rows(list(rb[0].keys()), rb),
+        ))
+
+    if len(files) == 1:
+        files.append(("readme.txt", b"No noindex or robots.txt block rows in scope.\r\n"))
+
+    return _zip_files(files)
+
+
 def _zip_files(files: List[tuple]) -> bytes:
     bio = io.BytesIO()
     with zipfile.ZipFile(bio, "w", zipfile.ZIP_DEFLATED) as zf:

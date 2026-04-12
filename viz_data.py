@@ -191,6 +191,36 @@ def _extract_domain(url: str) -> str:
         return ""
 
 
+def _page_url_for_row(row: Dict[str, str]) -> str:
+    """Prefer ``final_url`` for display; fall back to ``requested_url``."""
+    return (row.get("final_url") or row.get("requested_url") or "").strip()
+
+
+def _robots_noindex_sources(robots_directives: str) -> Tuple[bool, bool]:
+    """Return whether *robots_directives* implies noindex via meta or HTTP header.
+
+    Parsed segments follow ``meta:...`` / ``header:...`` (see
+    ``parser._extract_robots_directives``).  If ``noindex`` appears outside
+    those prefixes, it is treated as meta-like for counting purposes.
+    """
+    if not robots_directives or "noindex" not in robots_directives.lower():
+        return False, False
+    from_meta = False
+    from_header = False
+    for seg in robots_directives.split("|"):
+        piece = seg.strip()
+        if not piece or "noindex" not in piece.lower():
+            continue
+        low = piece.lower()
+        if low.startswith("meta:"):
+            from_meta = True
+        elif low.startswith("header:"):
+            from_header = True
+        else:
+            from_meta = True
+    return from_meta, from_header
+
+
 def _parse_date(raw: str) -> Optional[str]:
     """Normalise heterogeneous date strings to YYYY-MM-DD.
 
@@ -2313,6 +2343,112 @@ def aggregate_key_metrics_snapshot(
     if full_lists:
         result["page_breakdown"] = page_breakdown
     return result
+
+
+# -- Indexability Report ---------------------------------------------------
+
+def aggregate_indexability(
+    run_dirs: List[str],
+    filters: Optional[Dict[str, Any]] = None,
+    full_lists: bool = False,
+) -> Dict[str, Any]:
+    """Summarise URLs that are not meant to be indexed.
+
+    - **noindex**: pages in ``pages.csv`` whose ``robots_directives`` field
+      contains ``noindex`` (from ``<meta name="robots">`` and/or
+      ``X-Robots-Tag``).
+    - **robots.txt**: rows in ``crawl_errors.csv`` with
+      ``error_type == robots_disallowed`` (URLs never fetched).
+
+    Domain filters apply to both lists; other ``filter_pages`` dimensions
+    apply only to crawled page rows.
+
+    Args:
+        full_lists: When True, return all noindex and robots-block rows (no 500 cap).
+    """
+    list_cap = None if full_lists else 500
+    pages = filter_pages(
+        _read_csv_multi(run_dirs, config.PAGES_CSV), filters,
+    )
+    domain_allow: Optional[set] = None
+    if filters and filters.get("domains"):
+        domain_allow = {d.lower() for d in filters["domains"]}
+
+    noindex_rows: List[Dict[str, Any]] = []
+    noindex_meta_only = 0
+    noindex_header_only = 0
+    noindex_both = 0
+
+    for r in pages:
+        rd = r.get("robots_directives", "")
+        if "noindex" not in rd.lower():
+            continue
+        from_meta, from_header = _robots_noindex_sources(rd)
+        if from_meta and from_header:
+            noindex_both += 1
+        elif from_header:
+            noindex_header_only += 1
+        else:
+            noindex_meta_only += 1
+        noindex_rows.append({
+            "url": _page_url_for_row(r),
+            "requested_url": (r.get("requested_url") or "").strip(),
+            "domain": r.get("domain", "unknown"),
+            "http_status": r.get("http_status", ""),
+            "robots_directives": rd,
+            "source_meta": from_meta,
+            "source_header": from_header,
+        })
+
+    errors_all = _read_csv_multi(run_dirs, config.ERRORS_CSV)
+    robots_blocked: List[Dict[str, Any]] = []
+    for e in errors_all:
+        if e.get("error_type", "").strip() != "robots_disallowed":
+            continue
+        url = (e.get("url") or "").strip()
+        dom = _extract_domain(url)
+        if domain_allow is not None and dom.lower() not in domain_allow:
+            continue
+        robots_blocked.append({
+            "url": url,
+            "domain": dom or "unknown",
+            "message": (e.get("message") or "").strip(),
+            "discovered_at": (e.get("discovered_at") or "").strip(),
+        })
+
+    noindex_sorted = sorted(
+        noindex_rows,
+        key=lambda x: (x.get("domain") or "", x.get("url") or ""),
+    )
+    blocked_sorted = sorted(
+        robots_blocked,
+        key=lambda x: (x.get("domain") or "", x.get("url") or ""),
+    )
+
+    page_count = len(pages)
+    ni = len(noindex_rows)
+    rb = len(robots_blocked)
+    combined = ni + rb
+    noindex_out = noindex_sorted if list_cap is None else noindex_sorted[:list_cap]
+    blocked_out = blocked_sorted if list_cap is None else blocked_sorted[:list_cap]
+    return {
+        "summary": {
+            "page_count": page_count,
+            "noindex_count": ni,
+            "noindex_pct": round(ni / page_count * 100, 1) if page_count else 0.0,
+            "noindex_meta_only": noindex_meta_only,
+            "noindex_header_only": noindex_header_only,
+            "noindex_both_sources": noindex_both,
+            "robots_txt_blocked_count": rb,
+            "non_indexable_total": combined,
+            "non_indexable_pct": round(combined / page_count * 100, 1) if page_count else 0.0,
+        },
+        "noindex_pages": noindex_out,
+        "noindex_pages_total": ni,
+        "robots_txt_blocked": blocked_out,
+        "robots_txt_blocked_total": rb,
+        "full_lists": bool(full_lists),
+    }
 
 
 # -- Coverage Metrics / Filter Options -------------------------------------
