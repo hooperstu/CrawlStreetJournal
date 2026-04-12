@@ -448,7 +448,7 @@ Results of HEAD-checking outbound link targets when `CHECK_OUTBOUND_LINKS` is en
 
 ### `crawl_errors.csv`
 
-Failures and intentional skips: robots disallow, fetch errors, non-HTML responses, parse errors. Columns: `url`, `error_type`, `message`, `http_status`, `discovered_at`.
+Failures and intentional skips: robots disallow, fetch errors, non-HTML responses, parse errors. The `url` column is the **requested** URL (same key as in older exports). Additional columns include `final_url`, `referrer_url`, `depth`, `failure_class` (coarse category such as `timeout`, `ssl`, `non_html`), `content_type`, `redirect_count`, `last_redirect_url`, `attempt_number` (fetch retry attempt), `robots_txt_rule` (matched `Disallow` pattern when blocked by robots.txt), `worker_id` (concurrent crawl slot, or `-1` when unknown), plus `error_type`, `message`, `http_status`, and `discovered_at`.
 
 ---
 

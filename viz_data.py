@@ -2650,6 +2650,7 @@ def aggregate_indexability(
             "url": url,
             "domain": dom or "unknown",
             "message": (e.get("message") or "").strip(),
+            "robots_txt_rule": (e.get("robots_txt_rule") or "").strip(),
             "discovered_at": (e.get("discovered_at") or "").strip(),
         })
 

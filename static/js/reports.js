@@ -4645,7 +4645,8 @@
         var u = row.url || "";
         var link = u ? '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + esc(u) + "</a>" : "—";
         return "<tr><td class=\"indexability-url\">" + link + "</td><td>" + esc(row.domain) +
-          "</td><td>" + esc(row.message || "Blocked by robots.txt") + "</td></tr>";
+          "</td><td>" + esc(row.robots_txt_rule || "") + "</td><td>" +
+          esc(row.message || "Blocked by robots.txt") + "</td></tr>";
       }).join("");
 
       root.innerHTML =
@@ -4659,8 +4660,8 @@
         '<div class="indexability-section">' +
         "<h3>URLs blocked by robots.txt</h3>" +
         '<div class="indexability-table-wrap"><table class="indexability-table">' +
-        "<thead><tr><th>URL</th><th>Domain</th><th>Note</th></tr></thead><tbody>" +
-        (rbHtml || "<tr><td colspan=\"3\">No robots.txt blocks recorded for this selection.</td></tr>") +
+        "<thead><tr><th>URL</th><th>Domain</th><th>Robots rule</th><th>Note</th></tr></thead><tbody>" +
+        (rbHtml || "<tr><td colspan=\"4\">No robots.txt blocks recorded for this selection.</td></tr>") +
         "</tbody></table></div></div></div>";
     });
   };
