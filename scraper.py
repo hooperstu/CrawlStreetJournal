@@ -1997,6 +1997,12 @@ def crawl(
     )
     logger.info("Saved crawl state (status=running); beginning fetches")
 
+    # If this resume session writes no new pages (e.g. empty queue from an
+    # imported project), we must not mark the run *completed* — that would
+    # wrongly imply the crawl finished. Treat as interrupted so the run can
+    # be extended (new seeds / config) and resumed again.
+    pages_at_session_start = pages_crawled
+
     interrupted = False
     last_state_save = pages_crawled
     content_hashes = _ThreadSafeDict()
@@ -2209,6 +2215,13 @@ def crawl(
                 render_module.close()
             except Exception:
                 pass
+
+        if resume and not interrupted and pages_crawled == pages_at_session_start:
+            interrupted = True
+            logger.info(
+                "Resume finished with no new pages written — "
+                "keeping status interrupted (not completed) so the run stays resumable",
+            )
 
         _finalise_run(
             run_dir, interrupted, pages_crawled,

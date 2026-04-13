@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 
 import config
+import viz_data
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -33,24 +34,16 @@ def _read_csv(path: str) -> List[Dict[str, str]]:
 
 
 def _read_pages(run_dirs: List[str]) -> List[Dict[str, str]]:
-    rows = []
-    for rd in run_dirs:
-        rows.extend(_read_csv(os.path.join(rd, config.PAGES_CSV)))
-    return rows
+    """Same merge rules as the reports dashboard (newer run wins per URL)."""
+    return viz_data.merged_page_rows_for_runs(run_dirs)
 
 
 def _read_edges(run_dirs: List[str]) -> List[Dict[str, str]]:
-    rows = []
-    for rd in run_dirs:
-        rows.extend(_read_csv(os.path.join(rd, config.EDGES_CSV)))
-    return rows
+    return viz_data.merged_edge_rows_for_runs(run_dirs)
 
 
 def _read_errors(run_dirs: List[str]) -> List[Dict[str, str]]:
-    rows = []
-    for rd in run_dirs:
-        rows.extend(_read_csv(os.path.join(rd, config.ERRORS_CSV)))
-    return rows
+    return viz_data.merged_error_rows_for_runs(run_dirs)
 
 
 def _severity(pct: float) -> str:

@@ -10,6 +10,12 @@ return JSON-serialisable dicts / lists.  The ``viz_api`` Blueprint
 delegates to these functions and serves the results as JSON to the D3.js
 reports dashboard on the front end.
 
+When several runs are selected (including gap-refetch runs that re-crawl
+a subset of URLs from an earlier run), rows are **merged** so the same
+logical URL does not appear twice: runs are ordered by folder name and
+**newer run wins** for duplicate keys (``requested_url`` for pages,
+``url`` for crawl errors, edge endpoints for edges, etc.).
+
 All functions are pure (no side effects on disk or global state) and
 accept a *run_dirs* list so the dashboard can aggregate across one or
 more crawl runs within a project.
@@ -67,12 +73,200 @@ def _read_csv(path: str) -> List[Dict[str, str]]:
         return []
 
 
+def _normalise_page_url_key(raw: str) -> str:
+    """Stable key for de-duplicating the same page across multiple runs."""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    try:
+        p = urlparse(s)
+        if not p.scheme or not p.netloc:
+            return s
+        scheme = p.scheme.lower()
+        netloc = p.netloc.lower()
+        path = p.path if p.path else "/"
+        if path != "/" and path.endswith("/"):
+            path = path.rstrip("/")
+        q = p.query
+        if q:
+            return f"{scheme}://{netloc}{path}?{q}"
+        return f"{scheme}://{netloc}{path}"
+    except Exception:
+        return s
+
+
+def _page_row_http_success(row: Dict[str, str]) -> bool:
+    st = (row.get("http_status") or "").strip()
+    try:
+        code = int(st[:3]) if st else 0
+        return 200 <= code < 400
+    except ValueError:
+        return False
+
+
+def _sorted_run_paths(run_dirs: List[str]) -> List[str]:
+    """Oldest run first (lexicographic on ``run_*`` folder name), newer overlays later."""
+    return sorted(run_dirs, key=lambda p: os.path.basename(p))
+
+
+def _read_pages_merged(run_dirs: List[str]) -> List[Dict[str, str]]:
+    """Merge ``pages.csv`` rows: one row per ``requested_url``, newer run wins."""
+    if not run_dirs:
+        return []
+    if len(run_dirs) == 1:
+        return _read_csv(os.path.join(run_dirs[0], config.PAGES_CSV))
+    by_key: Dict[str, Dict[str, str]] = {}
+    order: List[str] = []
+    for rd in _sorted_run_paths(run_dirs):
+        for row in _read_csv(os.path.join(rd, config.PAGES_CSV)):
+            k = _normalise_page_url_key(row.get("requested_url", ""))
+            if not k:
+                continue
+            if k not in by_key:
+                order.append(k)
+            by_key[k] = row
+    return [by_key[k] for k in order if k in by_key]
+
+
+def _read_errors_merged(run_dirs: List[str]) -> List[Dict[str, str]]:
+    """Merge ``crawl_errors.csv``: newer run wins; drop rows superseded by a 2xx/3xx page."""
+    if not run_dirs:
+        return []
+    pages_by_key = {
+        _normalise_page_url_key(r.get("requested_url", "")): r
+        for r in _read_pages_merged(run_dirs)
+    }
+    if len(run_dirs) == 1:
+        rows = _read_csv(os.path.join(run_dirs[0], config.ERRORS_CSV))
+    else:
+        by_key: Dict[str, Dict[str, str]] = {}
+        order: List[str] = []
+        for rd in _sorted_run_paths(run_dirs):
+            for row in _read_csv(os.path.join(rd, config.ERRORS_CSV)):
+                k = _normalise_page_url_key(row.get("url", ""))
+                if not k:
+                    continue
+                if k not in by_key:
+                    order.append(k)
+                by_key[k] = row
+        rows = [by_key[k] for k in order if k in by_key]
+    out: List[Dict[str, str]] = []
+    for row in rows:
+        k = _normalise_page_url_key(row.get("url", ""))
+        pr = pages_by_key.get(k)
+        if pr and _page_row_http_success(pr):
+            continue
+        out.append(row)
+    return out
+
+
+def _read_tags_merged(run_dirs: List[str]) -> List[Dict[str, str]]:
+    """Merge ``tags.csv``: same page URL + tag value → newer run wins."""
+    if not run_dirs:
+        return []
+    if len(run_dirs) == 1:
+        return _read_csv(os.path.join(run_dirs[0], config.TAGS_CSV))
+    by_key: Dict[str, Dict[str, str]] = {}
+    order: List[str] = []
+    for rd in _sorted_run_paths(run_dirs):
+        for row in _read_csv(os.path.join(rd, config.TAGS_CSV)):
+            pk = _normalise_page_url_key(row.get("page_url", ""))
+            tv = (row.get("tag_value") or "").strip().lower()
+            if not pk:
+                continue
+            key = f"{pk}\t{tv}"
+            if key not in by_key:
+                order.append(key)
+            by_key[key] = row
+    return [by_key[k] for k in order if k in by_key]
+
+
+def _read_nav_links_merged(run_dirs: List[str]) -> List[Dict[str, str]]:
+    """Merge ``nav_links.csv``: same page + href → newer run wins."""
+    if not run_dirs:
+        return []
+    if len(run_dirs) == 1:
+        return _read_csv(os.path.join(run_dirs[0], config.NAV_LINKS_CSV))
+    by_key: Dict[str, Dict[str, str]] = {}
+    order: List[str] = []
+    for rd in _sorted_run_paths(run_dirs):
+        for row in _read_csv(os.path.join(rd, config.NAV_LINKS_CSV)):
+            pk = _normalise_page_url_key(row.get("page_url", ""))
+            hk = _normalise_page_url_key(row.get("nav_href", ""))
+            if not pk or not hk:
+                continue
+            key = f"{pk}\t{hk}"
+            if key not in by_key:
+                order.append(key)
+            by_key[key] = row
+    return [by_key[k] for k in order if k in by_key]
+
+
+def _read_edges_merged(run_dirs: List[str]) -> List[Dict[str, str]]:
+    """Merge ``edges.csv``: same ``from_url`` / ``to_url`` pair → newer run wins."""
+    if not run_dirs:
+        return []
+    if len(run_dirs) == 1:
+        p = os.path.join(run_dirs[0], config.EDGES_CSV)
+        return _read_csv(p) if os.path.isfile(p) else []
+    by_key: Dict[str, Dict[str, str]] = {}
+    order: List[str] = []
+    for rd in _sorted_run_paths(run_dirs):
+        p = os.path.join(rd, config.EDGES_CSV)
+        if not os.path.isfile(p):
+            continue
+        for row in _read_csv(p):
+            fk = _normalise_page_url_key((row.get("from_url") or "").strip())
+            tk = _normalise_page_url_key((row.get("to_url") or "").strip())
+            if not fk or not tk:
+                continue
+            key = f"{fk}\t{tk}"
+            if key not in by_key:
+                order.append(key)
+            by_key[key] = row
+    return [by_key[k] for k in order if k in by_key]
+
+
 def _read_csv_multi(run_dirs: List[str], filename: str) -> List[Dict[str, str]]:
-    """Concatenate a named CSV from one or more run directories."""
+    """Load a named CSV from one or more run directories.
+
+    For multi-run projects, overlapping rows are merged so gap-refetch crawls
+    do not double-count (newer ``run_*`` folder wins).
+    """
+    if not run_dirs:
+        return []
+    if filename == config.PAGES_CSV:
+        return _read_pages_merged(run_dirs)
+    if filename == config.ERRORS_CSV:
+        return _read_errors_merged(run_dirs)
+    if filename == config.TAGS_CSV:
+        return _read_tags_merged(run_dirs)
+    if filename == config.NAV_LINKS_CSV:
+        return _read_nav_links_merged(run_dirs)
     rows: List[Dict[str, str]] = []
     for rd in run_dirs:
         rows.extend(_read_csv(os.path.join(rd, filename)))
     return rows
+
+
+def merged_page_rows_for_runs(run_dirs: List[str]) -> List[Dict[str, str]]:
+    """Public helper: merged ``pages.csv`` rows for dashboards and overview stats."""
+    return _read_pages_merged(run_dirs)
+
+
+def merged_error_rows_for_runs(run_dirs: List[str]) -> List[Dict[str, str]]:
+    """Public helper: merged ``crawl_errors.csv`` rows (same key rules as pages)."""
+    return _read_errors_merged(run_dirs)
+
+
+def merged_asset_rows_for_runs(run_dirs: List[str]) -> List[Dict[str, str]]:
+    """Public helper: merged rows from all ``assets_*.csv`` files across runs."""
+    return _gather_asset_rows(run_dirs)
+
+
+def merged_edge_rows_for_runs(run_dirs: List[str]) -> List[Dict[str, str]]:
+    """Public helper: merged ``edges.csv`` rows (newer run wins on same link pair)."""
+    return _read_edges_merged(run_dirs)
 
 
 # -- Global Filter --------------------------------------------------------
@@ -623,18 +817,12 @@ def aggregate_domains(
     # Scan per-type asset CSVs (assets_pdf.csv, assets_doc.csv, etc.)
     # and attribute each asset to the referring page's domain.
     asset_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    for rd in run_dirs:
-        if not os.path.isdir(rd):
-            continue
-        for name in sorted(os.listdir(rd)):
-            if name.startswith("assets_") and name.endswith(".csv"):
-                cat = name[len("assets_"):-len(".csv")]
-                rows = _read_csv(os.path.join(rd, name))
-                for ar in rows:
-                    ref = ar.get("referrer_page_url", "")
-                    adom = _extract_domain(ref)
-                    if adom:
-                        asset_counts[adom][cat] += 1
+    for ar in _gather_asset_rows(run_dirs):
+        ref = ar.get("referrer_page_url", "")
+        cat = (ar.get("category") or "").strip() or "other"
+        adom = _extract_domain(ref)
+        if adom:
+            asset_counts[adom][cat] += 1
 
     result = [
         _domain_row_to_json(dom, d, error_ctr, asset_counts)
@@ -676,20 +864,12 @@ def aggregate_domain_graph(
         domain_pages[dom] += 1
 
     edge_weights: Counter[Tuple[str, str]] = Counter()
-    for rd in run_dirs:
-        edges_path = os.path.join(rd, config.EDGES_CSV)
-        if not os.path.isfile(edges_path):
-            continue
-        try:
-            with open(edges_path, "r", encoding="utf-8") as f:
-                for row in csv.DictReader(f):
-                    src = _extract_domain(row.get("from_url", ""))
-                    tgt = _extract_domain(row.get("to_url", ""))
-                    if src and tgt and src != tgt:
-                        if src in domain_pages or tgt in domain_pages:
-                            edge_weights[(src, tgt)] += 1
-        except Exception:
-            pass
+    for row in _read_edges_merged(run_dirs):
+        src = _extract_domain(row.get("from_url", ""))
+        tgt = _extract_domain(row.get("to_url", ""))
+        if src and tgt and src != tgt:
+            if src in domain_pages or tgt in domain_pages:
+                edge_weights[(src, tgt)] += 1
 
     all_domains = set(domain_pages.keys())
     for s, t in edge_weights:
@@ -1081,19 +1261,11 @@ def aggregate_chord(
     n = len(top_domains)
     matrix = [[0] * n for _ in range(n)]
 
-    for rd in run_dirs:
-        edges_path = os.path.join(rd, config.EDGES_CSV)
-        if not os.path.isfile(edges_path):
-            continue
-        try:
-            with open(edges_path, "r", encoding="utf-8") as f:
-                for row in csv.DictReader(f):
-                    src = _extract_domain(row.get("from_url", ""))
-                    tgt = _extract_domain(row.get("to_url", ""))
-                    if src in dom_set and tgt in dom_set and src != tgt:
-                        matrix[dom_idx[src]][dom_idx[tgt]] += 1
-        except Exception:
-            pass
+    for row in _read_edges_merged(run_dirs):
+        src = _extract_domain(row.get("from_url", ""))
+        tgt = _extract_domain(row.get("to_url", ""))
+        if src in dom_set and tgt in dom_set and src != tgt:
+            matrix[dom_idx[src]][dom_idx[tgt]] += 1
 
     return {"domains": top_domains, "matrix": matrix}
 
@@ -1832,30 +2004,22 @@ def aggregate_competitor_intelligence(
     inbound: Counter[str] = Counter()
     outbound_external: Counter[str] = Counter()
 
-    for rd in run_dirs:
-        edges_path = os.path.join(rd, config.EDGES_CSV)
-        if not os.path.isfile(edges_path):
+    for row in _read_edges_merged(run_dirs):
+        from_u = (row.get("from_url") or "").strip()
+        to_u = (row.get("to_url") or "").strip()
+        if pages and from_u not in allowed_urls:
             continue
-        try:
-            with open(edges_path, "r", encoding="utf-8") as f:
-                for row in csv.DictReader(f):
-                    from_u = (row.get("from_url") or "").strip()
-                    to_u = (row.get("to_url") or "").strip()
-                    if pages and from_u not in allowed_urls:
-                        continue
-                    src = _extract_domain(from_u)
-                    tgt = _extract_domain(to_u)
-                    if not src or not tgt:
-                        continue
-                    if src == tgt:
-                        continue
-                    pair_counts[(src, tgt)] += 1
-                    if tgt in domains_in_scope:
-                        inbound[tgt] += 1
-                    if src in domains_in_scope and tgt not in domains_in_scope:
-                        outbound_external[src] += 1
-        except Exception:
-            pass
+        src = _extract_domain(from_u)
+        tgt = _extract_domain(to_u)
+        if not src or not tgt:
+            continue
+        if src == tgt:
+            continue
+        pair_counts[(src, tgt)] += 1
+        if tgt in domains_in_scope:
+            inbound[tgt] += 1
+        if src in domains_in_scope and tgt not in domains_in_scope:
+            outbound_external[src] += 1
 
     if full_lists:
         top_inbound = [
@@ -2060,32 +2224,24 @@ def aggregate_content_performance_audit(
     internal_edge_total = 0
     domain_internal_edges: Counter[str] = Counter()
 
-    for rd in run_dirs:
-        edges_path = os.path.join(rd, config.EDGES_CSV)
-        if not os.path.isfile(edges_path):
+    for row in _read_edges_merged(run_dirs):
+        from_u = (row.get("from_url") or "").strip()
+        to_u = (row.get("to_url") or "").strip()
+        if not from_u or not to_u:
             continue
-        try:
-            with open(edges_path, "r", encoding="utf-8") as f:
-                for row in csv.DictReader(f):
-                    from_u = (row.get("from_url") or "").strip()
-                    to_u = (row.get("to_url") or "").strip()
-                    if not from_u or not to_u:
-                        continue
-                    if from_u not in page_urls:
-                        continue
-                    src_dom = _extract_domain(from_u)
-                    tgt_dom = _extract_domain(to_u)
-                    if not src_dom or src_dom != tgt_dom:
-                        continue
-                    if tgt_dom not in domains_in_scope:
-                        continue
-                    internal_edge_total += 1
-                    domain_internal_edges[src_dom] += 1
-                    out_internal[from_u] += 1
-                    if to_u in page_urls:
-                        inlink[to_u] += 1
-        except Exception:
-            pass
+        if from_u not in page_urls:
+            continue
+        src_dom = _extract_domain(from_u)
+        tgt_dom = _extract_domain(to_u)
+        if not src_dom or src_dom != tgt_dom:
+            continue
+        if tgt_dom not in domains_in_scope:
+            continue
+        internal_edge_total += 1
+        domain_internal_edges[src_dom] += 1
+        out_internal[from_u] += 1
+        if to_u in page_urls:
+            inlink[to_u] += 1
 
     url_to_row = {}
     for r in pages:
@@ -2228,14 +2384,37 @@ _LARGE_IMAGE_BYTES = 500_000
 
 
 def _gather_asset_rows(run_dirs: List[str]) -> List[Dict[str, str]]:
-    rows: List[Dict[str, str]] = []
-    for rd in run_dirs:
+    """Merge asset rows across runs: same referrer + asset URL + category → newer wins."""
+    if not run_dirs:
+        return []
+    if len(run_dirs) == 1:
+        rd = run_dirs[0]
+        rows: List[Dict[str, str]] = []
         if not os.path.isdir(rd):
-            continue
+            return []
         for name in sorted(os.listdir(rd)):
             if name.startswith("assets_") and name.endswith(".csv"):
                 rows.extend(_read_csv(os.path.join(rd, name)))
-    return rows
+        return rows
+    by_key: Dict[str, Dict[str, str]] = {}
+    order: List[str] = []
+    for rd in _sorted_run_paths(run_dirs):
+        if not os.path.isdir(rd):
+            continue
+        for name in sorted(os.listdir(rd)):
+            if not (name.startswith("assets_") and name.endswith(".csv")):
+                continue
+            cat = name[len("assets_"):-len(".csv")]
+            for row in _read_csv(os.path.join(rd, name)):
+                ref = _normalise_page_url_key(row.get("referrer_page_url", ""))
+                a = _normalise_page_url_key(row.get("asset_url", ""))
+                if not ref or not a:
+                    continue
+                key = f"{ref}\t{a}\t{cat}"
+                if key not in by_key:
+                    order.append(key)
+                by_key[key] = row
+    return [by_key[k] for k in order if k in by_key]
 
 
 def aggregate_technical_performance(

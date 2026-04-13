@@ -810,3 +810,23 @@ def test_build_competitor_intelligence_zip_bytes(tmp_path):
     zf = zipfile.ZipFile(io.BytesIO(raw))
     names = zf.namelist()
     assert "product_pricing_summary.csv" in names
+
+
+def test_merged_pages_newer_run_wins(tmp_path):
+    """Gap-refetch style overlap: same requested_url appears once; newer run wins."""
+    row_old = dict(SAMPLE_PAGES[0])
+    row_old["title"] = "Older title"
+    row_new = dict(SAMPLE_PAGES[0])
+    row_new["title"] = "Newer title"
+    run_a = os.path.join(str(tmp_path), "run_2026-01-01_10-00-00_111111")
+    run_b = os.path.join(str(tmp_path), "run_2026-03-01_10-00-00_222222")
+    os.makedirs(run_a)
+    os.makedirs(run_b)
+    fn = list(SAMPLE_PAGES[0].keys())
+    _write_csv(os.path.join(run_a, "pages.csv"), fn, [row_old])
+    _write_csv(os.path.join(run_b, "pages.csv"), fn, [row_new])
+    merged = viz_data.merged_page_rows_for_runs([run_b, run_a])
+    assert len(merged) == 1
+    assert merged[0]["title"] == "Newer title"
+    merged2 = viz_data.merged_page_rows_for_runs([run_a, run_b])
+    assert merged2[0]["title"] == "Newer title"

@@ -1210,9 +1210,16 @@ def load_crawl_state(run_dir: str) -> Optional[Dict[str, Any]]:
 def get_run_status(run_dir: str) -> str:
     """Return the status of a run: new, running, interrupted, completed."""
     state = load_crawl_state(run_dir)
+    pages_n = _count_pages_in(run_dir)
     if state is None:
-        return "new"
-    return state.get("status", "new")
+        # Imported or hand-copied runs may have CSV outputs but no _state.json;
+        # treat as interrupted so the GUI does not offer "Start" (which would
+        # re-initialise outputs and truncate existing CSVs).
+        return "interrupted" if pages_n > 0 else "new"
+    st = state.get("status", "new")
+    if st == "new" and pages_n > 0:
+        return "interrupted"
+    return st
 
 
 def _cell_empty(val: Any) -> bool:

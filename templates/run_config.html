@@ -158,7 +158,7 @@
     <div class="card-title">Refetch enrichment</div>
     <p class="field-explain" style="margin-bottom:12px;">
       Re-fetch pages from an earlier run where chosen <code>pages.csv</code> columns are empty, using the current extractor.
-      New rows are appended to this run’s outputs (combine in analysis if needed).
+      New rows are written to this run’s outputs. The reports dashboard merges overlapping URLs across runs (newer run wins) so gap fills do not double-count.
     </p>
     <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer;margin-bottom:12px;">
       <input type="checkbox" name="refetch_mode" value="1" {% if cfg.get("REFETCH_MODE") %}checked{% endif %}>

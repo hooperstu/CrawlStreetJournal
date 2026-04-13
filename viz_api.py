@@ -19,7 +19,6 @@ from typing import Any, Dict, List, Optional
 from flask import Blueprint, jsonify, redirect, render_template, request, url_for, Response
 
 import config
-import utils
 from error_pages import render_http_error
 import storage as storage_module
 import viz_data
@@ -132,28 +131,17 @@ def reports_dashboard(slug: str):
     runs = ctx.list_run_dirs()
     preselected = request.args.get("runs", "")
 
+    run_paths = [
+        os.path.join(runs_base, r["name"])
+        for r in runs
+        if r.get("name") != "_legacy"
+    ]
     overview = {
-        "run_count": len([x for x in runs if x.get("name") != "_legacy"]),
-        "total_pages": sum(
-            r.get("page_count", 0) for r in runs if r.get("name") != "_legacy"
-        ),
-        "total_assets": 0,
-        "total_errors": 0,
+        "run_count": len(run_paths),
+        "total_pages": len(viz_data.merged_page_rows_for_runs(run_paths)),
+        "total_assets": len(viz_data.merged_asset_rows_for_runs(run_paths)),
+        "total_errors": len(viz_data.merged_error_rows_for_runs(run_paths)),
     }
-    for r in runs:
-        if r.get("name") == "_legacy":
-            continue
-        run_dir_path = os.path.join(runs_base, r["name"])
-        err_path = os.path.join(run_dir_path, config.ERRORS_CSV)
-        overview["total_errors"] += utils.count_csv_rows(err_path)
-        try:
-            for fn in os.listdir(run_dir_path):
-                if fn.startswith("assets_") and fn.endswith(".csv"):
-                    overview["total_assets"] += utils.count_csv_rows(
-                        os.path.join(run_dir_path, fn),
-                    )
-        except OSError:
-            pass
 
     return render_template(
         "reports.html",
