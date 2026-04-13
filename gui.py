@@ -824,19 +824,21 @@ def _metrics_from_pages(
     training = 0
 
     for r in pages_rows:
-        domain_ctr[r.get("domain", "unknown")] += 1
-        status_ctr[r.get("http_status", "")] += 1
-        kind = r.get("content_kind_guess", "").strip()
+        # DictReader can yield None for a field when the column is present but empty
+        # in some merged/re-exported CSVs — ``.get(k, "")`` does not substitute then.
+        domain_ctr[(r.get("domain") or "unknown")] += 1
+        status_ctr[(r.get("http_status") or "")] += 1
+        kind = (r.get("content_kind_guess") or "").strip()
         kind_ctr[kind if kind else "(unclassified)"] += 1
-        lang = r.get("lang", "").strip() or "(not set)"
+        lang = (r.get("lang") or "").strip() or "(not set)"
         lang_ctr[lang] += 1
-        wc = r.get("word_count", "0")
-        total_words += int(wc) if wc and wc.isdigit() else 0
-        ic = r.get("img_count", "0")
-        total_imgs += int(ic) if ic and ic.isdigit() else 0
-        ma = r.get("img_missing_alt_count", "0")
-        imgs_no_alt += int(ma) if ma and ma.isdigit() else 0
-        if r.get("training_related_flag", "").strip():
+        wc = r.get("word_count") or "0"
+        total_words += int(wc) if wc and str(wc).isdigit() else 0
+        ic = r.get("img_count") or "0"
+        total_imgs += int(ic) if ic and str(ic).isdigit() else 0
+        ma = r.get("img_missing_alt_count") or "0"
+        imgs_no_alt += int(ma) if ma and str(ma).isdigit() else 0
+        if (r.get("training_related_flag") or "").strip():
             training += 1
 
     return {
