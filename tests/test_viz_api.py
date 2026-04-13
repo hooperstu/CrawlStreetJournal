@@ -15,8 +15,10 @@ def test_api_competitor_intelligence_empty_project():
 
 
 def test_export_competitor_intelligence_zip_no_runs():
-    """ZIP export returns 404 when there is no crawl data."""
+    """ZIP export returns navigable HTML 404 when there is no crawl data."""
     gui.app.config["TESTING"] = True
     with gui.app.test_client() as c:
         r = c.get("/p/__viz_api_empty__/export/competitor_intelligence.zip")
     assert r.status_code == 404
+    assert "text/html" in (r.content_type or "")
+    assert "All projects" in r.get_data(as_text=True)

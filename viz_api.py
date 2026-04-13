@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from flask import Blueprint, jsonify, redirect, render_template, request, url_for, Response
 
 import config
+from error_pages import render_http_error
 import storage as storage_module
 import viz_data
 import viz_exports
@@ -100,6 +101,21 @@ def _want_full_lists() -> bool:
     return v in ("1", "true", "yes", "all")
 
 
+def _empty_export_zip_response(slug: str):
+    """HTML 404 when filters/runs yield nothing to ZIP (navigable in a browser)."""
+    project = storage_module.load_project(slug)
+    proj = dict(project) if project else None
+    if proj is not None:
+        proj["slug"] = slug
+    return render_http_error(
+        "No run data matches the current filters, or there are no runs to export yet.",
+        404,
+        slug=slug,
+        project=proj,
+        page_title="Nothing to export",
+    )
+
+
 # ── Project-level page route ─────────────────────────────────────────────
 
 @eco_bp.route("/p/<slug>/reports")
@@ -107,7 +123,7 @@ def reports_dashboard(slug: str):
     """Render the reports dashboard at project level."""
     project = storage_module.load_project(slug)
     if not project:
-        return "Project not found", 404
+        return render_http_error("Project not found", 404, slug=slug, page_title="Not found")
     project["slug"] = slug
     runs_base = storage_module.get_project_runs_dir(slug)
     os.makedirs(runs_base, exist_ok=True)
@@ -326,7 +342,7 @@ def export_content_performance_audit_zip(slug: str):
     """ZIP of UTF-8 CSVs — full list breakdown for the on-site performance audit."""
     run_dirs = _resolve_run_dirs(slug)
     if not run_dirs:
-        return "No run data", 404
+        return _empty_export_zip_response(slug)
     payload = viz_exports.build_content_audit_zip(
         run_dirs, filters=_parse_filters(),
     )
@@ -363,7 +379,7 @@ def export_technical_performance_zip(slug: str):
     """ZIP of UTF-8 CSVs — per-domain technical performance breakdown."""
     run_dirs = _resolve_run_dirs(slug)
     if not run_dirs:
-        return "No run data", 404
+        return _empty_export_zip_response(slug)
     payload = viz_exports.build_technical_performance_zip(
         run_dirs, filters=_parse_filters(),
     )
@@ -395,7 +411,7 @@ def export_key_metrics_snapshot_zip(slug: str):
     """ZIP of UTF-8 CSVs — domain summary and per-page discovery breakdown."""
     run_dirs = _resolve_run_dirs(slug)
     if not run_dirs:
-        return "No run data", 404
+        return _empty_export_zip_response(slug)
     payload = viz_exports.build_key_metrics_zip(
         run_dirs, filters=_parse_filters(),
     )
@@ -443,7 +459,7 @@ def export_competitor_intelligence_zip(slug: str):
     """ZIP of UTF-8 CSVs — full competitor intelligence breakdown."""
     run_dirs = _resolve_run_dirs(slug)
     if not run_dirs:
-        return "No run data", 404
+        return _empty_export_zip_response(slug)
     payload = viz_exports.build_competitor_intelligence_zip(
         run_dirs, filters=_parse_filters(),
     )
@@ -492,7 +508,7 @@ def export_indexability_zip(slug: str):
     """ZIP of UTF-8 CSVs — full noindex and robots.txt block lists."""
     run_dirs = _resolve_run_dirs(slug)
     if not run_dirs:
-        return "No run data", 404
+        return _empty_export_zip_response(slug)
     payload = viz_exports.build_indexability_zip(
         run_dirs, filters=_parse_filters(),
     )

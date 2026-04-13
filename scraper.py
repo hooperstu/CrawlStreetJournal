@@ -15,6 +15,11 @@ The crawler uses a **dual-queue** design:
 ``STATE_SAVE_INTERVAL`` pages.  On resume, the visited set is rebuilt from
 ``pages.csv`` / ``crawl_errors.csv``, and the queue is restored from state.
 
+**HTTP 503:** Treated as temporary overload / rate limiting — the host’s queued
+URLs are deprioritised and the current URL is re-queued at the back (no
+``crawl_errors.csv`` row until deferrals are exhausted). A per-host cooldown
+is then applied so the next fetch respects ``MAX_GLOBAL_REQUESTS_PER_MINUTE``.
+
 **Module-global caches** (thread-safety caveat):
 ``_robots_cache``, ``_blocked_origins``, ``_domain_last_fetch``, and
 ``_domain_fail_count`` are process-global dicts shared across concurrent
@@ -141,6 +146,11 @@ _PRIORITY_PATH_PENALTY_SUBSTRINGS = (
     "/comment-page-", "/?replytocom=", "/print/",
 )
 
+# Extra score added so deferred / deprioritised URLs sort after normal work.
+_HTTP_503_QUEUE_BUMP = 1_000_000.0
+# After this many 503 deferrals for the same URL, record a crawl error and stop re-queuing.
+_MAX_503_DEFERRALS_PER_URL = 12
+
 
 def _score_url(url: str, depth: int, is_seed: bool) -> float:
     """Compute a priority score for a URL (lower = higher priority).
@@ -216,6 +226,37 @@ class _PriorityQueue:
         with self._lock:
             return [(url, ref, d) for _, _, url, ref, d in self._heap]
 
+    def push_at_back(self, url: str, referrer: str, depth: int, is_seed: bool = False) -> None:
+        """Enqueue *url* with lowest priority (after normal and deprioritised work)."""
+        score = _score_url(url, depth, is_seed) + _HTTP_503_QUEUE_BUMP
+        with self._lock:
+            heapq.heappush(self._heap, (score, self._counter, url, referrer, depth))
+            self._counter += 1
+
+    def deprioritise_hostname(self, hostname: str) -> int:
+        """Raise the priority score of queued URLs whose host matches *hostname*.
+
+        Used after HTTP 503 so other origins are crawled before retrying this host.
+        Returns the number of queue entries adjusted.
+        """
+        hn = (hostname or "").lower()
+        if not hn:
+            return 0
+        with self._lock:
+            if not self._heap:
+                return 0
+            items = []
+            moved = 0
+            while self._heap:
+                items.append(heapq.heappop(self._heap))
+            for score, counter, url, ref, depth in items:
+                u_host = (urlparse(url).hostname or "").lower()
+                if u_host == hn:
+                    score += _HTTP_503_QUEUE_BUMP
+                    moved += 1
+                heapq.heappush(self._heap, (score, counter, url, ref, depth))
+            return moved
+
 
 class _ThreadSafeSet:
     """Thread-safe set wrapper for visited/queued URLs in concurrent mode."""
@@ -235,6 +276,10 @@ class _ThreadSafeSet:
     def __len__(self):
         with self._lock:
             return len(self._set)
+
+    def discard(self, item) -> None:
+        with self._lock:
+            self._set.discard(item)
 
 
 class _ThreadSafeDict:
@@ -259,6 +304,13 @@ class _ThreadSafeDict:
     def __setitem__(self, key, value):
         with self._lock:
             self._dict[key] = value
+
+    def increment_int(self, key: str) -> int:
+        """Increment an integer counter for *key*; return the new value."""
+        with self._lock:
+            n = int(self._dict.get(key, 0)) + 1
+            self._dict[key] = n
+            return n
 
     def to_dict(self) -> Dict[str, str]:
         with self._lock:
@@ -623,12 +675,16 @@ def _is_probably_html(content_type: str) -> bool:
 _domain_last_fetch: Dict[str, float] = {}
 # Consecutive failure count per hostname (drives adaptive back-off).
 _domain_fail_count: Dict[str, int] = {}
+# After HTTP 503 deferral: earliest monotonic time a hostname may be fetched again
+# (respects MAX_GLOBAL_REQUESTS_PER_MINUTE on retry).
+_domain_503_cooldown_until: Dict[str, float] = {}
 
 
 def _record_domain_success(hostname: str) -> None:
     """Reset the failure counter on a successful fetch so back-off resets."""
     with _global_state_lock:
         _domain_fail_count.pop(hostname, None)
+        _domain_503_cooldown_until.pop(hostname, None)
 
 
 def _record_domain_failure(hostname: str) -> None:
@@ -653,6 +709,32 @@ def _per_domain_delay(hostname: str, base_delay: Union[float, Tuple[float, float
     return base
 
 
+def _min_seconds_between_requests_for_global_rpm_cap(cfg: Optional[CrawlConfig]) -> float:
+    """Minimum spacing implied by ``MAX_GLOBAL_REQUESTS_PER_MINUTE`` (60 / rpm)."""
+    if cfg is not None and getattr(cfg, "MAX_GLOBAL_REQUESTS_PER_MINUTE", None) is not None:
+        rpm = cfg.MAX_GLOBAL_REQUESTS_PER_MINUTE
+    else:
+        rpm = config.MAX_GLOBAL_REQUESTS_PER_MINUTE
+    try:
+        r = int(rpm)
+    except (TypeError, ValueError):
+        r = 30
+    return 60.0 / float(max(1, r))
+
+
+def _schedule_503_host_cooldown(hostname: str, cfg: Optional[CrawlConfig]) -> None:
+    """After deferring a 503, block this host until the global RPM cap allows a retry."""
+    hn = (hostname or "").lower()
+    if not hn:
+        return
+    gap = _min_seconds_between_requests_for_global_rpm_cap(cfg)
+    with _global_state_lock:
+        now = time.monotonic()
+        until = now + gap
+        prev = _domain_503_cooldown_until.get(hn, 0)
+        _domain_503_cooldown_until[hn] = max(prev, until)
+
+
 def _wait_for_domain(
     hostname: str,
     delay_cfg: Union[float, Tuple[float, float]],
@@ -670,11 +752,15 @@ def _wait_for_domain(
         robots_delay = _get_crawl_delay(url, cfg)
         if robots_delay is not None and robots_delay > delay:
             delay = robots_delay
+    hn = (hostname or "").lower()
     with _global_state_lock:
         now = time.monotonic()
-        last = _domain_last_fetch.get(hostname, 0)
+        last = _domain_last_fetch.get(hn, 0)
         wait = max(0, delay - (now - last))
-        _domain_last_fetch[hostname] = now + wait
+        cool = _domain_503_cooldown_until.get(hn, 0)
+        if cool > now:
+            wait = max(wait, cool - now)
+        _domain_last_fetch[hn] = now + wait
     if wait > 0:
         time.sleep(wait)
 
@@ -1430,6 +1516,28 @@ def _process_one_url(
     if html is None:
         _record_domain_failure(hostname)
         msg = error_detail or "No response body or HTTP error"
+        deferrals = kwargs.get("http_503_deferrals")
+        if (
+            status == 503
+            and hostname
+            and deferrals is not None
+            and deferrals.increment_int(url_key) <= _MAX_503_DEFERRALS_PER_URL
+        ):
+            visited.discard(url_key)
+            n_moved = pq.deprioritise_hostname(hostname)
+            pq.push_at_back(url, referrer, depth, is_seed=False)
+            _schedule_503_host_cooldown(hostname, cfg)
+            gap = _min_seconds_between_requests_for_global_rpm_cap(cfg)
+            logger.info(
+                "HTTP 503 for %s — moving host %s to back of queue "
+                "(%d other queued URL(s) from this host deprioritised); "
+                "next fetch to this host after ≥%.1fs (MAX_GLOBAL_REQUESTS_PER_MINUTE)",
+                url,
+                hostname,
+                n_moved,
+                gap,
+            )
+            return False, 0, url
         ctx.write_error(
             _error_row_base(
                 requested_url=url,
@@ -1892,6 +2000,7 @@ def crawl(
     interrupted = False
     last_state_save = pages_crawled
     content_hashes = _ThreadSafeDict()
+    http_503_deferrals = _ThreadSafeDict()
 
     # Change detection: load hashes from the previous run if enabled
     prev_hashes: Dict[str, str] = {}
@@ -1941,6 +2050,7 @@ def crawl(
                         worker_id=0,
                         content_hashes=content_hashes if cfg.CONTENT_DEDUP else None,
                         prev_hashes=prev_hashes if cfg.CHANGE_DETECTION else None,
+                        http_503_deferrals=http_503_deferrals,
                     )
                 finally:
                     worker_slots[0] = ""
@@ -2053,6 +2163,7 @@ def crawl(
                             worker_id=slot_idx,
                             content_hashes=content_hashes if cfg.CONTENT_DEDUP else None,
                             prev_hashes=prev_hashes if cfg.CHANGE_DETECTION else None,
+                            http_503_deferrals=http_503_deferrals,
                         )
                     except Exception as exc:
                         logger.warning("Worker error for %s: %s", url, exc)

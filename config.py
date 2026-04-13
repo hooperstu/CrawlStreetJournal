@@ -116,6 +116,11 @@ MAX_LINK_CHECK_RESPONSE_BYTES = 65_536
 # Per-domain rate limiting is still enforced regardless of worker count.
 CONCURRENT_WORKERS = 1
 
+# Soft ceiling used after HTTP 503 (often “maximum … requests per minute”):
+# the next request to the same hostname will wait at least
+# ``60 / MAX_GLOBAL_REQUESTS_PER_MINUTE`` seconds. Lower values are politer.
+MAX_GLOBAL_REQUESTS_PER_MINUTE = 30
+
 # How often to persist _state.json during a crawl (every N pages).
 STATE_SAVE_INTERVAL = 10
 
@@ -326,6 +331,7 @@ class CrawlConfig:
     MAX_SITEMAP_RESPONSE_BYTES: int = 32 * 1024 * 1024
     MAX_LINK_CHECK_RESPONSE_BYTES: int = 65_536
     CONCURRENT_WORKERS: int = 1
+    MAX_GLOBAL_REQUESTS_PER_MINUTE: int = 30
     STATE_SAVE_INTERVAL: int = 10
     CONTENT_DEDUP: bool = True
     CHANGE_DETECTION: bool = False

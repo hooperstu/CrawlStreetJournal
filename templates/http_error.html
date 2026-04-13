@@ -1,0 +1,26 @@
+{#
+  http_error.html — Generic navigable error (4xx/5xx) with app chrome.
+  Context: message, page_title, status_code (int, optional for display).
+  Optional project dict enables Dashboard / Runs / Settings in base layout.
+#}
+{% extends "base.html" %}
+{% block title %}{{ page_title }} | CSJ{% endblock %}
+
+{% block content %}
+<h1 class="page-title">{{ page_title }}</h1>
+
+<div class="card">
+  <p>{{ message }}</p>
+  {% if status_code %}
+  <p class="form-hint" style="margin-top:10px;">HTTP {{ status_code }}</p>
+  {% endif %}
+
+  <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:24px;align-items:center;">
+    <a href="{{ url_for('projects_list') }}" class="btn btn-primary">All projects</a>
+    {% if project is defined and project %}
+    <a href="{{ url_for('reports.reports_dashboard', slug=project.slug) }}" class="btn btn-secondary">Dashboard</a>
+    <a href="{{ url_for('project_runs', slug=project.slug) }}" class="btn btn-secondary">Runs</a>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

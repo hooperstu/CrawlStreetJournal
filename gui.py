@@ -99,6 +99,8 @@ import config
 from config import CrawlConfig
 import storage as storage_module
 from storage import StorageContext
+
+from error_pages import render_http_error
 import utils
 
 app = Flask(
@@ -149,6 +151,28 @@ app.secret_key = _load_secret_key()
 from viz_api import eco_bp  # noqa: E402
 # Visualisation endpoints (reports charts, etc.) live in viz_api.py.
 app.register_blueprint(eco_bp)
+
+
+@app.errorhandler(404)
+def _handle_unmatched_url(_e):
+    """Unknown URLs (no route) — never a bare Werkzeug page in the desktop shell."""
+    return render_http_error(
+        "That page does not exist, or the link may be out of date.",
+        404,
+        page_title="Page not found",
+    )
+
+
+@app.errorhandler(500)
+def _handle_unexpected_server_error(_e):
+    """Uncaught exceptions — navigable recovery instead of a blank error body."""
+    logging.getLogger(__name__).exception("Unhandled server error")
+    return render_http_error(
+        "Something went wrong. Use the links below to get back to the app.",
+        500,
+        page_title="Server error",
+    )
+
 
 # ── Crawl state (per-project slots) ───────────────────────────────────────
 
@@ -1099,10 +1123,18 @@ def delete_project_route(slug: str):
     with _crawls_lock:
         slot = _active_crawls.get(slug)
         if slot and slot.status.get("running"):
-            return (
+            proj = storage_module.load_project(slug)
+            if proj:
+                proj = dict(proj)
+                proj["slug"] = slug
+            return render_http_error(
                 "Cannot delete a project while a crawl is running. "
-                "Please stop the crawl first."
-            ), 409
+                "Please stop the crawl first.",
+                409,
+                slug=slug,
+                project=proj,
+                page_title="Cannot delete project",
+            )
     storage_module.delete_project(slug)
     return redirect(url_for("projects_list"))
 
@@ -1111,18 +1143,25 @@ def delete_project_route(slug: str):
 def export_project_route(slug: str):
     project = storage_module.load_project(slug)
     if not project:
-        return "Project not found", 404
+        return render_http_error("Project not found", 404, slug=slug, page_title="Not found")
     with _crawls_lock:
         slot = _active_crawls.get(slug)
         if slot and slot.status.get("running"):
-            return (
-                "Cannot export while a crawl is running. "
-                "Please stop the crawl first."
-            ), 409
+            proj = dict(project)
+            proj["slug"] = slug
+            return render_http_error(
+                "Cannot export while a crawl is running. Please stop the crawl first.",
+                409,
+                slug=slug,
+                project=proj,
+                page_title="Cannot export",
+            )
     try:
         buf = storage_module.export_project(slug)
     except (FileNotFoundError, ValueError) as exc:
-        return str(exc), 400
+        proj = dict(project)
+        proj["slug"] = slug
+        return render_http_error(str(exc), 400, slug=slug, project=proj, page_title="Export failed")
     return Response(
         buf.getvalue(),
         mimetype="application/zip",
@@ -1138,11 +1177,15 @@ def import_project_route():
     if not uploaded or not uploaded.filename:
         return redirect(url_for("projects_list"))
     if not uploaded.filename.lower().endswith(".zip"):
-        return "Only .zip files are accepted", 400
+        return render_http_error(
+            "Only .zip files are accepted. Choose a `.zip` export from Crawl Street Journal.",
+            400,
+            page_title="Import failed",
+        )
     try:
         slug = storage_module.import_project(uploaded)
     except ValueError as exc:
-        return str(exc), 400
+        return render_http_error(str(exc), 400, page_title="Import failed")
     return redirect(url_for("reports.reports_dashboard", slug=slug))
 
 
@@ -1155,7 +1198,7 @@ def project_overview(slug: str):
     """``GET /p/<slug>`` — Redirect to the Dashboard (reports)."""
     project = storage_module.load_project(slug)
     if not project:
-        return "Project not found", 404
+        return render_http_error("Project not found", 404, slug=slug, page_title="Not found")
     return redirect(url_for("reports.reports_dashboard", slug=slug))
 
 
@@ -1170,7 +1213,7 @@ def project_settings(slug: str):
     """``GET /p/<slug>/settings`` — Project settings: defaults, export, delete."""
     project = storage_module.load_project(slug)
     if not project:
-        return "Project not found", 404
+        return render_http_error("Project not found", 404, slug=slug, page_title="Not found")
     project["slug"] = slug
     cfg = storage_module.load_project_defaults(slug) or storage_module.snapshot_config()
     return render_template("project_settings.html", project=project, cfg=cfg)
@@ -1181,7 +1224,7 @@ def project_audit(slug: str):
     """``GET /p/<slug>/audit`` — Content audit findings."""
     project = storage_module.load_project(slug)
     if not project:
-        return "Project not found", 404
+        return render_http_error("Project not found", 404, slug=slug, page_title="Not found")
     project["slug"] = slug
     return render_template("audit.html", project=project)
 
@@ -1191,7 +1234,7 @@ def project_wcag(slug: str):
     """``GET /p/<slug>/wcag`` — WCAG accessibility audit."""
     project = storage_module.load_project(slug)
     if not project:
-        return "Project not found", 404
+        return render_http_error("Project not found", 404, slug=slug, page_title="Not found")
     project["slug"] = slug
     return render_template("wcag.html", project=project)
 
@@ -1241,7 +1284,7 @@ def save_project_defaults_route(slug: str):
     """
     project = storage_module.load_project(slug)
     if not project:
-        return "Project not found", 404
+        return render_http_error("Project not found", 404, slug=slug, page_title="Not found")
     cfg = _build_config_dict_from_form(request.form)
     storage_module.save_project_defaults(slug, cfg)
     logging.info("Saved defaults for project %s", slug)
@@ -1258,7 +1301,7 @@ def project_runs(slug: str):
     """
     project = storage_module.load_project(slug)
     if not project:
-        return "Project not found", 404
+        return render_http_error("Project not found", 404, slug=slug, page_title="Not found")
     project["slug"] = slug
     ctx = storage_module.StorageContext(_runs_dir(slug), config.CrawlConfig.from_module())
     run_list = ctx.list_run_dirs()
@@ -1316,11 +1359,11 @@ def run_config(slug: str, run_name: str):
     """``GET /p/<slug>/runs/<run_name>/config`` — Show the configuration editor for a run."""
     project = storage_module.load_project(slug)
     if not project:
-        return "Project not found", 404
+        return render_http_error("Project not found", 404, slug=slug, page_title="Not found")
     project["slug"] = slug
     run_dir = _run_dir(slug, run_name)
     if not os.path.isdir(run_dir):
-        return "Run not found", 404
+        return render_http_error("Run not found", 404, slug=slug, project=project, page_title="Not found")
     cfg = storage_module.load_run_config(run_dir) or storage_module.snapshot_config()
     friendly = storage_module._read_run_name(run_dir) or ""
     run_st = _effective_run_status(
@@ -1361,9 +1404,13 @@ def save_run_config_route(slug: str, run_name: str):
         friendly_name: Optional display label persisted alongside the run.
         (remaining): Crawl settings parsed by :func:`_build_config_dict_from_form`.
     """
+    project = storage_module.load_project(slug)
+    if not project:
+        return render_http_error("Project not found", 404, slug=slug, page_title="Not found")
+    project["slug"] = slug
     run_dir = _run_dir(slug, run_name)
     if not os.path.isdir(run_dir):
-        return "Run not found", 404
+        return render_http_error("Run not found", 404, slug=slug, project=project, page_title="Not found")
 
     form = request.form
     friendly = form.get("friendly_name", "").strip()
@@ -1385,11 +1432,11 @@ def run_monitor(slug: str, run_name: str):
     """
     project = storage_module.load_project(slug)
     if not project:
-        return "Project not found", 404
+        return render_http_error("Project not found", 404, slug=slug, page_title="Not found")
     project["slug"] = slug
     run_dir = _run_dir(slug, run_name)
     if not os.path.isdir(run_dir):
-        return "Run not found", 404
+        return render_http_error("Run not found", 404, slug=slug, project=project, page_title="Not found")
     run_status = _effective_run_status(
         slug, run_name, storage_module.get_run_status(run_dir)
     )
@@ -1518,11 +1565,11 @@ def run_results(slug: str, run_name: str):
     """``GET /p/<slug>/runs/<run_name>/results`` — Results dashboard with grouped CSVs and metrics."""
     project = storage_module.load_project(slug)
     if not project:
-        return "Project not found", 404
+        return render_http_error("Project not found", 404, slug=slug, page_title="Not found")
     project["slug"] = slug
     run_dir = _run_dir(slug, run_name)
     if not os.path.isdir(run_dir):
-        return "Run not found", 404
+        return render_http_error("Run not found", 404, slug=slug, project=project, page_title="Not found")
     friendly = storage_module._read_run_name(run_dir) or ""
     groups = _grouped_output_csvs(run_dir)
     metrics = _run_metrics(run_dir)
@@ -1541,21 +1588,26 @@ def run_results_detail(slug: str, run_name: str, filename: str):
         page: 1-based page number (default 1).
         per_page: Rows per page (default 100).
     """
-    if not filename.endswith(".csv"):
-        return "Not found", 404
     # Prevent path traversal: strip directory components
     filename = os.path.basename(filename)
+    if not filename.endswith(".csv"):
+        return render_http_error(
+            "Only CSV files can be viewed here.", 404, slug=slug, page_title="Not found",
+        )
     project = storage_module.load_project(slug)
     if not project:
-        return "Project not found", 404
+        return render_http_error("Project not found", 404, slug=slug, page_title="Not found")
     project["slug"] = slug
     run_dir = _run_dir(slug, run_name)
     filepath = os.path.join(run_dir, filename)
     # Verify the resolved path is within the run directory
     if not os.path.realpath(filepath).startswith(os.path.realpath(run_dir)):
-        return "Not found", 404
+        return render_http_error("Not found", 404, slug=slug, project=project, page_title="Not found")
     if not os.path.isfile(filepath):
-        return "Not found", 404
+        return render_http_error(
+            f"No file named “{filename}” in this run.", 404,
+            slug=slug, project=project, page_title="Not found",
+        )
     try:
         page = int(request.args.get("page", 1))
     except (ValueError, TypeError):
@@ -1594,12 +1646,23 @@ def run_download(slug: str, run_name: str, filename: str):
     partially-written files.
     """
     if not filename.endswith(".csv"):
-        return "Not found", 404
+        return render_http_error(
+            "Only CSV files can be downloaded.", 404, slug=slug, page_title="Not found",
+        )
     if _is_run_active(slug, run_name):
+        project = storage_module.load_project(slug)
+        if not project:
+            return render_http_error("Project not found", 404, slug=slug, page_title="Not found")
+        project["slug"] = slug
         return (
-            "This run is still in progress. Please stop the crawl before "
-            "downloading files to avoid incomplete or corrupted data."
-        ), 409
+            render_template(
+                "download_blocked.html",
+                project=project,
+                run_name=run_name,
+                filename=filename,
+            ),
+            409,
+        )
     run_dir = _run_dir(slug, run_name)
     abs_dir = os.path.abspath(run_dir)
     return send_from_directory(abs_dir, filename, as_attachment=True)
@@ -1614,18 +1677,36 @@ def run_download_all(slug: str, run_name: str):
     still running.
     """
     if _is_run_active(slug, run_name):
+        project = storage_module.load_project(slug)
+        if not project:
+            return render_http_error("Project not found", 404, slug=slug, page_title="Not found")
+        project["slug"] = slug
         return (
-            "This run is still in progress. Please stop the crawl before "
-            "downloading files to avoid incomplete or corrupted data."
-        ), 409
+            render_template(
+                "download_blocked.html",
+                project=project,
+                run_name=run_name,
+                filename=None,
+            ),
+            409,
+        )
     run_dir = _run_dir(slug, run_name)
     abs_dir = os.path.abspath(run_dir)
+    project = storage_module.load_project(slug)
+    if not project:
+        return render_http_error("Project not found", 404, slug=slug, page_title="Not found")
+    project["slug"] = slug
     if not os.path.isdir(abs_dir):
-        return "No output directory", 404
+        return render_http_error(
+            "No output directory for this run.", 404, slug=slug, project=project, page_title="Not found",
+        )
 
     csv_names = sorted(n for n in os.listdir(abs_dir) if n.endswith(".csv"))
     if not csv_names:
-        return "No CSV files to download", 404
+        return render_http_error(
+            "No CSV files to download for this run yet.", 404,
+            slug=slug, project=project, page_title="Nothing to download",
+        )
 
     zip_label = run_name
     buf = io.BytesIO()
@@ -1650,13 +1731,20 @@ def delete_run_route(slug: str, run_name: str):
     with the ``run_`` prefix.
     """
     import shutil
+    project = storage_module.load_project(slug)
+    proj = dict(project) if project else None
+    if proj is not None:
+        proj["slug"] = slug
     if not run_name.startswith("run_"):
-        return "Cannot delete this entry", 400
+        return render_http_error(
+            "Only automated run folders (names starting with run_) can be deleted.",
+            400, slug=slug, project=proj, page_title="Cannot delete",
+        )
     runs_base = _runs_dir(slug)
     target = os.path.join(runs_base, run_name)
     real_base = os.path.realpath(runs_base) + os.sep
     if not os.path.realpath(target).startswith(real_base):
-        return "Invalid path", 400
+        return render_http_error("Invalid path", 400, slug=slug, project=proj, page_title="Cannot delete")
     if os.path.isdir(target):
         shutil.rmtree(target)
         logging.info("Deleted run: %s", run_name)

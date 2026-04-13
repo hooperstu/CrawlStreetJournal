@@ -1,0 +1,31 @@
+{#
+  download_blocked.html — Shown when a CSV/ZIP download is requested while
+  that run’s crawl is still active (HTTP 409). Gives clear escape hatches.
+  Context: project, run_name, optional filename (single-file download).
+#}
+{% extends "base.html" %}
+{% set active_tab = 'runs' %}
+{% block title %}Download unavailable — {{ project.name }} | CSJ{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Download not available while crawling</h1>
+
+<div class="card">
+  <p>
+    This run is still in progress. Stop the crawl first, then download again
+    so files are complete and consistent.
+  </p>
+  {% if filename %}
+  <p class="form-hint" style="margin-top:12px;">Requested file: <code>{{ filename }}</code></p>
+  {% endif %}
+  <p class="form-hint" style="margin-top:8px;">
+    Mid-crawl CSVs can be incomplete or change as the crawl continues.
+  </p>
+
+  <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:24px;align-items:center;">
+    <a href="{{ url_for('run_monitor', slug=project.slug, run_name=run_name) }}" class="btn btn-primary">Open crawl monitor</a>
+    <a href="{{ url_for('project_runs', slug=project.slug) }}" class="btn btn-secondary">All runs</a>
+    <a href="{{ url_for('reports.reports_dashboard', slug=project.slug) }}" class="btn btn-secondary">Dashboard</a>
+  </div>
+</div>
+{% endblock %}
