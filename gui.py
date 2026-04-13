@@ -1286,6 +1286,24 @@ def project_settings(slug: str):
     return render_template("project_settings.html", project=project, cfg=cfg)
 
 
+@app.route("/p/<slug>/settings/project", methods=["POST"])
+def save_project_metadata_route(slug: str):
+    """``POST /p/<slug>/settings/project`` — Update display name and description in ``_project.json``."""
+    project = storage_module.load_project(slug)
+    if not project:
+        return render_http_error("Project not found", 404, slug=slug, page_title="Not found")
+    name = (request.form.get("project_name") or "").strip()
+    description = (request.form.get("project_description") or "").strip()
+    try:
+        storage_module.save_project_metadata(slug, name=name, description=description)
+    except ValueError as e:
+        return render_http_error(str(e), 400, slug=slug, page_title="Bad request")
+    except FileNotFoundError:
+        return render_http_error("Project not found", 404, slug=slug, page_title="Not found")
+    logging.info("Saved project metadata for %s", slug)
+    return redirect(url_for("project_settings", slug=slug))
+
+
 @app.route("/p/<slug>/audit")
 def project_audit(slug: str):
     """``GET /p/<slug>/audit`` — Content audit findings."""

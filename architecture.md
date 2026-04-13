@@ -74,6 +74,7 @@ graph TD
     scraper --> renderPy
     scraper --> storage
     auditData --> storage
+    auditData --> vizData
     wcagAudit --> storage
     guiPy --> vizApi
     vizApi --> vizData
@@ -148,6 +149,7 @@ graph LR
 
     auditData[audit_data.py] --> configMod
     auditData --> storage
+    auditData --> vizData
 
     wcagAudit[wcag_audit.py] --> configMod
 
@@ -589,11 +591,35 @@ When `--resume` is passed (or the GUI resumes a run):
 4. `storage.resume_outputs(run_dir)` opens existing CSV files in append mode rather than overwriting them
 5. The scraper skips any URL already in the visited set
 
+**Terminal state after resume:** if a resume session completes without user stop but **writes no new pages** (empty queue or no progress), `scraper.crawl()` still finalises with **`interrupted`** — not **`completed`** — so imported or gap runs are not mis-labelled as finished (see §8.6).
+
+### 8.6 Run status (`get_run_status`) and imported projects
+
+`storage.get_run_status(run_dir)` derives UI state from `_state.json` and CSV presence:
+
+- If **`_state.json` is missing** but `pages.csv` has at least one data row, the run is treated as **`interrupted`** (typical imported archive without crawl state). This avoids the GUI offering **Start** on a folder that already contains crawl output — **Start** would call `initialise_outputs` and truncate CSVs.
+- If **`_state.json` exists** with `status: "new"` but `pages.csv` has rows, status is normalised to **`interrupted`** (inconsistent state).
+
+Otherwise the on-disk `status` field is used (`running`, `interrupted`, `completed`). Stale `running` without a live crawl thread is mapped to **`interrupted`** in the GUI via `_effective_run_status` in `gui.py`.
+
+### 8.7 Multi-run reporting merge (`viz_data.py`)
+
+When the dashboard aggregates **more than one** `run_*` directory (including a gap-refetch run alongside its source run), `viz_data` **merges** rows instead of concatenating duplicate URLs:
+
+- Runs are ordered by folder name (`run_*` timestamp); **older first, then newer**.
+- **Newer run wins** for the same logical key: e.g. `requested_url` for `pages.csv`, `(from_url, to_url)` for `edges.csv`, `url` for `crawl_errors.csv` (with errors dropped when the merged page row shows a 2xx/3xx success), and analogous keys for `tags.csv`, `nav_links.csv`, and `assets_*.csv`.
+
+Public helpers (`merged_page_rows_for_runs`, `merged_error_rows_for_runs`, `merged_asset_rows_for_runs`, `merged_edge_rows_for_runs`) mirror this logic for the project **Reports** overview counts in `viz_api.py`. The content audit (`audit_data.py`) uses the same merge helpers so audit results align with the ecosystem dashboard.
+
+### 8.8 Operational utility: import ZIP resume state
+
+`tools/fix_project_zip_resume_state.py` rewrites (or adds) `_state.json` per run that has `pages.csv` data — useful when preparing a hand-merged project ZIP so on-disk status matches resumable crawl semantics.
+
 ---
 
 ## 9. Ecosystem visualisation layer
 
-The ecosystem dashboard is a separate read-only layer that sits entirely on top of the completed crawl output. It never writes crawl data to disk (exports are generated on demand in memory). **~30** D3 or HTML-table panels are organised into **8 tab groups** on `reports.html`, and all panels share a unified filter system.
+The ecosystem dashboard is a separate read-only layer that sits entirely on top of the completed crawl output. It never writes crawl data to disk (exports are generated on demand in memory). **~30** D3 or HTML-table panels are organised into **8 tab groups** on `reports.html`, and all panels share a unified filter system. Multi-run selections apply **`viz_data`** merge rules (§8.7) so overlapping URLs from a baseline crawl plus a gap-refetch run contribute **one** logical row to aggregates.
 
 ### 9.1 Architecture
 
@@ -771,7 +797,7 @@ Two post-crawl audit modules analyse completed crawl data and surface findings v
 
 ### 12.1 Content audit (`audit_data.py`)
 
-`audit_data.py` reads `pages.csv`, `edges.csv`, and `crawl_errors.csv` from one or more run directories and produces structured findings across **10 finding types**:
+`audit_data.py` reads `pages.csv`, `edges.csv`, and `crawl_errors.csv` via **`viz_data` merge helpers** when multiple run directories are passed, so audit findings match the ecosystem dashboard (no duplicate URLs from gap-refetch overlays). It produces structured findings across **10 finding types**:
 
 | Finding type | What it detects |
 |-------------|----------------|
@@ -921,13 +947,14 @@ python3 -m pytest tests/ -v
 | `tests/test_parser.py` | Phase 1–4 extraction, content kind classification, URL hints, WCAG signals (all 15 columns), coverage %, `fetch_time_ms` / `has_viewport_meta`, full `build_page_inventory_row` integration | Inline HTML fixtures, `response_meta` / `sitemap_meta` dicts |
 | `tests/test_sitemap.py` | Sitemap XML parsing (urlset + index), malformed XML resilience, domain allowlist case-insensitivity across `scraper` and `parser` | Inline XML strings, `monkeypatch` / direct `config.ALLOWED_DOMAINS` mutation |
 | `tests/test_signals_audit.py` | `audit_page` top-level keys, per-category signal extraction, `summarise_audit` output | Single comprehensive HTML fixture with all signal types present |
-| `tests/test_viz_data.py` | `filter_pages`, core aggregators, newer report functions (indexability, competitor intelligence, content audit, technical performance, key metrics), `viz_exports.build_competitor_intelligence_zip` smoke | `tempfile.mkdtemp`, synthetic CSVs matching production schemas |
+| `tests/test_viz_data.py` | `filter_pages`, core aggregators, multi-run page merge (`test_merged_pages_newer_run_wins`), newer report functions (indexability, competitor intelligence, content audit, technical performance, key metrics), `viz_exports.build_competitor_intelligence_zip` smoke | `tempfile.mkdtemp`, synthetic CSVs matching production schemas |
+| `tests/test_import_run_status.py` | `storage.get_run_status` for imported runs (missing `_state.json` / inconsistent `new` with `pages.csv` data) | Temporary directories |
 | `tests/test_viz_api.py` | Smoke tests for reports blueprint routes (e.g. competitor intelligence JSON empty shape, ZIP 404 when no runs) | `gui.app.test_client()` |
 | `tests/test_playwright.py` | End-to-end GUI testing: project creation, configuration, crawl lifecycle, results viewing, ecosystem dashboard interactions | Playwright sync API; shared session browser from `conftest` |
 | `tests/test_real_crawl.py` | Integration tests against **`nhs-estate-crawl`** project data: API consistency, reports rendering, results CSV | Playwright + live Flask; requires crawl data under `projects/` |
 | Other | `test_continue_from.py`, `test_outbound_http.py`, `test_sitemap_discovery_cache.py`, `test_quit_api.py` | Mixed unit / API |
 
-**Total: 268 tests** (114 tests without Playwright + real-crawl; 113 Playwright GUI; 41 real-crawl integration — counts from `pytest --collect-only`).
+**Total: 268+ tests** (the suite grows over time; 114 tests without Playwright + real-crawl; 113 Playwright GUI; 41 real-crawl integration — approximate split from `pytest --collect-only` when dev dependencies are installed).
 
 Linting:
 

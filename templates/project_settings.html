@@ -3,6 +3,7 @@
 
   Simple at the top (paste URLs, click go), advanced features below.
   Route: GET  /p/<slug>/settings  (project_settings)
+         POST /p/<slug>/settings/project  (save_project_metadata_route)
          POST /p/<slug>/defaults  (save_project_defaults_route)
 #}
 {% extends "base.html" %}
@@ -61,6 +62,24 @@
 <div class="settings-note">
   These defaults are applied when you create a new run. Changing them here does not affect runs already in progress.
 </div>
+
+<form method="post" action="{{ url_for('save_project_metadata_route', slug=project.slug) }}" id="project-meta-form">
+  <div class="card">
+    <div class="card-title">Project details</div>
+    <p class="field-explain" style="margin-bottom:12px;">
+      The display name and description shown in the app. The project folder and URL (<code>/p/{{ project.slug }}/…</code>) stay the same.
+    </p>
+    <div class="form-group">
+      <label class="form-label" for="project-name">Project name</label>
+      <input type="text" name="project_name" id="project-name" value="{{ project.name }}" required maxlength="200" autocomplete="off">
+    </div>
+    <div class="form-group" style="margin-top:12px;">
+      <label class="form-label" for="project-description">Description <span style="font-weight:400;color:var(--csj-body);">(optional)</span></label>
+      <textarea name="project_description" id="project-description" rows="3" placeholder="What this crawl is for">{{ project.get('description', '') }}</textarea>
+    </div>
+    <button type="submit" class="btn btn-secondary">Save project details</button>
+  </div>
+</form>
 
 <form method="post" action="{{ url_for('save_project_defaults_route', slug=project.slug) }}" id="config-form">
 

@@ -128,6 +128,8 @@ When `CHANGE_DETECTION` is enabled and the crawl resumes:
 | `_finalise_run(...)` | Write terminal state record (completed or interrupted). |
 | `crawl(seed_urls, max_pages, delay, ...)` | Main entry point. Initialises run, executes crawl loop, handles interrupts. Sequential when `CONCURRENT_WORKERS ≤ 1`; concurrent via `ThreadPoolExecutor` otherwise. Returns `(pages_crawled, assets_from_pages)`. |
 
+**Resume exit semantics:** when `resume=True`, if the session ends without a user stop but **no new pages** were written (`pages_crawled` unchanged for the session), the terminal `_state.json` is written with **`interrupted`** — not **`completed`** — so empty-queue resumes and imported runs are not mis-classified as successfully finished crawls.
+
 ---
 
 ## 2. HTML Parser
@@ -265,6 +267,8 @@ Filesystem persistence: CSV writing, project/run lifecycle, config snapshots, re
 | `export_project(slug)` | Create ZIP of project directory. |
 | `import_project(uploaded)` | Extract ZIP into projects directory. |
 
+**Import ZIPs without `_state.json`:** if an extracted run has `pages.csv` rows but no `_state.json`, `get_run_status` still reports **`interrupted`** so the GUI does not offer **Start** (which would re-initialise CSVs). Optional: run `tools/fix_project_zip_resume_state.py` on an archive to embed explicit `_state.json` with counters before import.
+
 #### Run lifecycle
 
 | Function | Purpose |
@@ -276,7 +280,7 @@ Filesystem persistence: CSV writing, project/run lifecycle, config snapshots, re
 | `load_crawl_state(run_dir)` | Load crawl state for resume. |
 | `rebuild_visited_from_csvs(run_dir)` | Reconstruct visited URL set from `pages.csv` and `crawl_errors.csv`. |
 | `rebuild_sitemap_meta_from_csv(run_dir)` | Reconstruct the sitemap metadata lookup from `sitemap_urls.csv` for crawl resume. |
-| `get_run_status(run_dir)` | Return the status of a run (`new`, `running`, `interrupted`, `completed`) from `_state.json`. |
+| `get_run_status(run_dir)` | Return the status of a run (`new`, `running`, `interrupted`, `completed`). Reads `_state.json` when present; if **missing** but `pages.csv` has data rows, returns **`interrupted`**; if state says **`new`** but `pages.csv` has rows, returns **`interrupted`**. |
 | `recover_stale_running_states()` | On startup, mark any run left in `running` state as `interrupted` (indicates unclean shutdown). |
 | `load_project(slug)` | Read `_project.json` for a project, or `None` if missing. |
 | `load_project_defaults(slug)` | Load `_defaults.json` for a project. |
@@ -315,12 +319,18 @@ Shared stateless helpers used across the codebase.
 
 The ecosystem dashboard (`/p/<slug>/reports`) is read-only: it aggregates existing CSVs. Several endpoints support **`full_lists`** (query `full=1` / `true` / `yes` / `all`) to return uncapped row lists for exports or deep analysis; otherwise list fields may be sampled for UI performance.
 
+When **`runs=`** includes multiple folders (or “all runs”), **`viz_data`** **merges** CSV rows so the same logical URL or edge does not appear twice: runs are sorted by `run_*` folder name (oldest first) and **newer run wins** on key collision (`requested_url` for pages, `(from_url, to_url)` for edges, `url` for errors with stale errors removed when the merged page shows HTTP success, plus keys for tags, nav links, and assets). This aligns gap-refetch runs with their baseline crawl in reports.
+
 ### Module: `viz_data.py`
 
 Pure aggregation layer — reads crawl CSVs and returns JSON-serialisable structures.
 
 | Function | Purpose |
 |----------|---------|
+| `merged_page_rows_for_runs(run_dirs)` | **Public:** merged `pages.csv` rows (used by `viz_api` overview and `audit_data`). |
+| `merged_error_rows_for_runs(run_dirs)` | **Public:** merged `crawl_errors.csv` rows with stale-error suppression. |
+| `merged_asset_rows_for_runs(run_dirs)` | **Public:** merged rows from all `assets_*.csv` files. |
+| `merged_edge_rows_for_runs(run_dirs)` | **Public:** merged `edges.csv` rows. |
 | `filter_pages(rows, filters)` | Cross-cutting filter: domains, CMS, content kinds, schema formats/types, date range, min coverage. |
 | `aggregate_domains(run_dirs, filters)` | Per-domain summary with 40+ metrics including Phase 4 fields. |
 | `aggregate_domain_graph(run_dirs, filters)` | Force-directed node + link data from `edges.csv`. |
@@ -338,11 +348,13 @@ Pure aggregation layer — reads crawl CSVs and returns JSON-serialisable struct
 | `aggregate_technical_performance(run_dirs, filters, full_lists=…)` | Per-domain fetch time (`fetch_time_ms`), viewport meta coverage, asset categories, external scripts, large images (from `assets_*.csv` HEAD metadata when present). |
 | `aggregate_key_metrics_snapshot(run_dirs, filters, full_lists=…)` | Crawl-proxy “traffic” (referrer buckets), structural engagement, schema commerce counts — **not** analytics sessions. |
 | `aggregate_indexability(run_dirs, filters, full_lists=…)` | Pages with `noindex` in `robots_directives` plus `robots_disallowed` rows from `crawl_errors.csv`. |
-| `get_filter_options(run_dirs)` | Available values for filter dropdowns. |
+| `get_filter_options(run_dirs)` | Available values for filter dropdowns; `total_pages` reflects **merged** page count when multiple runs exist. |
 
 ### Module: `viz_api.py`
 
 Flask blueprint (`eco_bp`) registered in `gui.py`. Routes are prefixed with `/p/<slug>/`.
+
+The **Reports** dashboard template receives an **`overview`** dict for the stat cards: **`total_pages`**, **`total_errors`**, and **`total_assets`** are computed from **merged** row lists (`viz_data` public helpers) across all non-legacy runs so figures match multi-run aggregation rather than summing per-run CSV row counts.
 
 **JSON APIs** (all accept the shared filter query parameters plus optional `full` where noted above):
 
@@ -372,7 +384,7 @@ Builds in-memory ZIP archives by calling the corresponding `viz_data.aggregate_*
 
 ### Module: `audit_data.py`
 
-Content audit — 10 finding types with severity ratings and drill-down tables.
+Content audit — 10 finding types with severity ratings and drill-down tables. **`audit_data`** loads pages, edges, and errors through **`viz_data.merged_*_for_runs`** helpers when multiple run directories are supplied, matching dashboard de-duplication (§4).
 
 | Function | Checks | Data source |
 |----------|--------|-------------|

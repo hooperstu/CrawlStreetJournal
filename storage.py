@@ -952,6 +952,32 @@ def load_project(slug: str) -> Optional[Dict[str, Any]]:
         return json.load(f)
 
 
+def save_project_metadata(slug: str, *, name: str, description: str = "") -> None:
+    """Update ``name`` and ``description`` in ``_project.json``. Preserves other keys (e.g. ``created_at``).
+
+    Raises ``ValueError`` if *name* is empty after stripping, or if the project path is invalid.
+    Raises ``FileNotFoundError`` if ``_project.json`` is missing.
+    """
+    nm = (name or "").strip()
+    if not nm:
+        raise ValueError("Project name cannot be empty.")
+    desc = (description or "").strip()
+    pdir = get_project_dir(slug)
+    real_base = os.path.realpath(config.PROJECTS_DIR) + os.sep
+    if not os.path.realpath(pdir).startswith(real_base):
+        raise ValueError("Invalid project path.")
+    path = os.path.join(pdir, "_project.json")
+    if not os.path.isfile(path):
+        raise FileNotFoundError(path)
+    with open(path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+    meta["name"] = nm
+    meta["description"] = desc
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2, ensure_ascii=False)
+    logger.info("Updated project metadata: %s", slug)
+
+
 def delete_project(slug: str) -> None:
     """Remove the project directory tree.  Validates the path stays inside PROJECTS_DIR."""
     pdir = get_project_dir(slug)
