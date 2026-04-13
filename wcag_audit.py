@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import csv
 import os
-from collections import Counter, defaultdict
+from collections import defaultdict
 from typing import Any, Dict, List
 
 import config
@@ -89,10 +89,12 @@ def run_wcag_audit(run_dirs: List[str]) -> Dict[str, Any]:
         if pct >= 1.0 or _safe_int(r.get("img_count", "0")) == 0:
             pass_111 += 1
         else:
+            misses = _safe_int(r.get("img_missing_alt_count", "0"))
+            total_img = _safe_int(r.get("img_count", "0"))
             fails_111.append({
                 "url": r.get("final_url", ""),
                 "domain": r.get("domain", ""),
-                "detail": f"{_safe_int(r.get('img_missing_alt_count', '0'))} of {_safe_int(r.get('img_count', '0'))} images missing alt",
+                "detail": f"{misses} of {total_img} images missing alt",
             })
     criteria.append(_criterion(
         "1.1.1", "Non-text Content", "A", "perceivable", total, pass_111, fails_111,

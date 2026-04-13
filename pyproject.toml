@@ -14,7 +14,7 @@
 
 [project]
 name = "csjapp"
-version = "3.5.0"
+version = "3.6.0"
 description = "The Crawl Street Journal — web crawler and estate inventory tool"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -31,7 +31,7 @@ Homepage = "https://github.com/hooperstu/CrawlStreetJournal"
 [tool.briefcase]
 project_name = "The Crawl Street Journal"
 bundle = "io.csj"
-version = "3.5.0"
+version = "3.6.0"
 url = "https://github.com/hooperstu/CrawlStreetJournal"
 license.file = "LICENSE"
 author = "hooperstu"
