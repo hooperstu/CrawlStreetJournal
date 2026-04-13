@@ -2653,7 +2653,6 @@ def aggregate_indexability(
             "robots_txt_rule": (e.get("robots_txt_rule") or "").strip(),
             "discovered_at": (e.get("discovered_at") or "").strip(),
         })
-
     noindex_sorted = sorted(
         noindex_rows,
         key=lambda x: (x.get("domain") or "", x.get("url") or ""),
