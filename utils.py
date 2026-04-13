@@ -75,14 +75,20 @@ def sanitise_csv_value(value: Any) -> str:
 def count_csv_rows(filepath: str) -> int:
     """Return the number of data rows in *filepath* (excluding the header), or 0 on any error.
 
-    Counts by iterating lines rather than loading the full CSV into memory, so
-    it is safe to call on large output files.
+    Uses the CSV parser so quoted fields that contain line breaks count as **one**
+    row each (RFC 4180). A naive newline count can inflate totals by orders of
+    magnitude when ``pages.csv`` stores multi-line HTML snippets in a column.
     """
     if not os.path.isfile(filepath):
         return 0
     try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            return max(sum(1 for _ in f) - 1, 0)
+        with open(filepath, "r", encoding="utf-8", newline="") as f:
+            reader = csv.reader(f)
+            try:
+                next(reader)
+            except StopIteration:
+                return 0
+            return sum(1 for _ in reader)
     except Exception:
         return 0
 

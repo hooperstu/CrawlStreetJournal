@@ -52,7 +52,7 @@ import threading
 import uuid
 import zipfile
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import config
 import utils
@@ -172,6 +172,23 @@ PAGES_FIELDS = (
     "referrer_url",
     "depth",
     "discovered_at",
+)
+
+# Default columns for refetch gap detection: a row is queued if any of these
+# is blank in the source run’s ``pages.csv``. Override via ``REFETCH_GAP_COLUMNS``
+# in the run’s ``_config.json`` (empty list = use this default).
+DEFAULT_REFETCH_GAP_COLUMNS = (
+    "author",
+    "publisher",
+    "json_ld_id",
+    "cms_generator",
+    "microdata_types",
+    "rdfa_types",
+    "breadcrumb_schema",
+    "extraction_coverage_pct",
+    "extraction_coverage_core_pct",
+    "hreflang_links",
+    "feed_urls",
 )
 
 ASSET_FIELDS = (
@@ -433,6 +450,7 @@ class StorageContext:
         self,
         run_name: Optional[str] = None,
         continue_from_folder: Optional[str] = None,
+        refetch_from_folder: Optional[str] = None,
     ) -> str:
         os.makedirs(self.output_dir, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S_%f")
@@ -443,7 +461,20 @@ class StorageContext:
             _write_run_name(run_dir, run_name)
 
         cfg_dict: Optional[Dict[str, Any]] = None
-        if continue_from_folder == CONTINUE_FROM_ALL_PRIOR_RUNS:
+        if refetch_from_folder and refetch_from_folder.startswith("run_"):
+            prior_path = os.path.join(self.output_dir, refetch_from_folder)
+            if (
+                os.path.isdir(prior_path)
+                and os.path.realpath(prior_path) != os.path.realpath(run_dir)
+            ):
+                loaded = load_run_config(prior_path)
+                if loaded:
+                    cfg_dict = dict(loaded)
+                    cfg_dict["REFETCH_MODE"] = True
+                    cfg_dict["REFETCH_SOURCE_RUN"] = refetch_from_folder.strip()
+                    if not cfg_dict.get("REFETCH_GAP_COLUMNS"):
+                        cfg_dict["REFETCH_GAP_COLUMNS"] = []
+        elif continue_from_folder == CONTINUE_FROM_ALL_PRIOR_RUNS:
             existing = _sorted_run_folder_names(self.output_dir, exclude=folder_name)
             if existing:
                 prior_path = os.path.join(self.output_dir, existing[0])
@@ -703,6 +734,9 @@ _SNAPSHOT_KEYS = (
     "DOMAIN_OWNERSHIP_RULES",
     "USER_AGENT",
     "LOG_LEVEL",
+    "REFETCH_MODE",
+    "REFETCH_SOURCE_RUN",
+    "REFETCH_GAP_COLUMNS",
 )
 
 
@@ -1181,6 +1215,59 @@ def get_run_status(run_dir: str) -> str:
     return state.get("status", "new")
 
 
+def _cell_empty(val: Any) -> bool:
+    if val is None:
+        return True
+    s = str(val).strip()
+    return s == ""
+
+
+def refetch_gap_requested_urls(
+    source_run_dir: str,
+    gap_columns: Optional[Sequence[str]] = None,
+) -> List[str]:
+    """Collect ``requested_url`` values for pages with blank gap columns.
+
+    Reads *source_run_dir* ``pages.csv``. A row is included if **any** column
+    in *gap_columns* is empty (after strip). When *gap_columns* is ``None`` or
+    empty, :data:`DEFAULT_REFETCH_GAP_COLUMNS` is used. Unknown column names
+    are ignored. Order is preserved; URLs are de-duplicated on first occurrence.
+    """
+    pages_path = os.path.join(source_run_dir, config.PAGES_CSV)
+    if not os.path.isfile(pages_path):
+        return []
+
+    allowed = set(PAGES_FIELDS)
+    if gap_columns:
+        cols = [c.strip() for c in gap_columns if c and str(c).strip()]
+        if not cols:
+            cols = list(DEFAULT_REFETCH_GAP_COLUMNS)
+    else:
+        cols = list(DEFAULT_REFETCH_GAP_COLUMNS)
+    cols = [c for c in cols if c in allowed]
+    if not cols:
+        cols = list(DEFAULT_REFETCH_GAP_COLUMNS)
+        cols = [c for c in cols if c in allowed]
+    if not cols:
+        return []
+
+    out: List[str] = []
+    seen: set[str] = set()
+    try:
+        with open(pages_path, "r", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                req = (row.get("requested_url") or "").strip()
+                if not req or req in seen:
+                    continue
+                if any(_cell_empty(row.get(c, "")) for c in cols):
+                    seen.add(req)
+                    out.append(req)
+    except Exception as e:
+        logger.warning("Failed to scan pages CSV for refetch gaps %s: %s", pages_path, e)
+        return []
+    return out
+
+
 def rebuild_visited_from_csvs(run_dir: str) -> set:
     """Reconstruct the set of already-visited URLs from existing CSV data."""
     visited: set = set()
@@ -1232,6 +1319,7 @@ def rebuild_sitemap_meta_from_csv(run_dir: str) -> Dict[str, Dict[str, str]]:
 def create_run(
     run_name: Optional[str] = None,
     continue_from_folder: Optional[str] = None,
+    refetch_from_folder: Optional[str] = None,
 ) -> str:
     """Create a new run folder with a config snapshot. Returns the folder name.
 
@@ -1241,6 +1329,10 @@ def create_run(
     If it equals ``CONTINUE_FROM_ALL_PRIOR_RUNS``, write that marker and copy
     config from the newest existing ``run_*`` (if any); visited URLs from all
     other runs are merged when the crawl starts.
+
+    If *refetch_from_folder* names a ``run_*`` directory, copy its config and
+    set ``REFETCH_MODE`` so the crawl can re-fetch only pages with empty gap
+    columns in that run’s ``pages.csv`` (no ``.continue_from`` marker).
     """
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S_%f")
@@ -1252,7 +1344,20 @@ def create_run(
         _write_run_name(run_dir, run_name)
 
     prior_cfg: Optional[Dict[str, Any]] = None
-    if continue_from_folder == CONTINUE_FROM_ALL_PRIOR_RUNS:
+    if refetch_from_folder and refetch_from_folder.startswith("run_"):
+        prior_path = os.path.join(config.OUTPUT_DIR, refetch_from_folder)
+        if (
+            os.path.isdir(prior_path)
+            and os.path.realpath(prior_path) != os.path.realpath(run_dir)
+        ):
+            loaded = load_run_config(prior_path)
+            if loaded:
+                prior_cfg = dict(loaded)
+                prior_cfg["REFETCH_MODE"] = True
+                prior_cfg["REFETCH_SOURCE_RUN"] = refetch_from_folder.strip()
+                if not prior_cfg.get("REFETCH_GAP_COLUMNS"):
+                    prior_cfg["REFETCH_GAP_COLUMNS"] = []
+    elif continue_from_folder == CONTINUE_FROM_ALL_PRIOR_RUNS:
         existing = _sorted_run_folder_names(config.OUTPUT_DIR, exclude=folder_name)
         if existing:
             prior_path = os.path.join(config.OUTPUT_DIR, existing[0])

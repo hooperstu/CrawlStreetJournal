@@ -75,7 +75,7 @@
       {% if show_continue_from %}
       <div>
         <label class="form-label" style="font-size:12px;margin-bottom:2px;">Continue without re-crawling prior URLs</label>
-        <select name="continue_from" style="padding:8px 10px;font-size:14px;min-width:220px;max-width:min(100%, 420px);">
+        <select name="continue_from" id="start-continue-from" style="padding:8px 10px;font-size:14px;min-width:220px;max-width:min(100%, 420px);" {% if cfg.get("REFETCH_MODE") and cfg.get("REFETCH_SOURCE_RUN") %}disabled{% endif %}>
           <option value="">— None (or use “created from” below)</option>
           {% if other_runs and other_runs|length > 0 %}
           <option value="{{ continue_all_value }}" {% if continue_from_marker == continue_all_value %}selected{% endif %}>All prior runs (cumulative)</option>
@@ -90,6 +90,14 @@
       {% endif %}
       <button type="submit" class="btn btn-primary" {% if status.running %}disabled title="A crawl is already running in this project"{% endif %}>Start This Run</button>
     </form>
+    {% if cfg.get("REFETCH_MODE") and cfg.get("REFETCH_SOURCE_RUN") %}
+    <script>
+    (function() {
+      var s = document.getElementById('start-continue-from');
+      if (s) { s.value = ''; }
+    })();
+    </script>
+    {% endif %}
     {% elif run_status == 'interrupted' %}
     <form method="post" action="{{ url_for('resume_run_route', slug=project.slug, run_name=run_name) }}" style="display:inline;">
       <button type="submit" class="btn btn-primary" {% if status.running %}disabled title="A crawl is already running in this project"{% endif %}>Resume This Run</button>
@@ -115,6 +123,12 @@
 </div>
 {% endif %}
 
+{% if cfg.get("REFETCH_MODE") and cfg.get("REFETCH_SOURCE_RUN") %}
+<div class="settings-note" style="margin-bottom:16px;">
+  <strong>Refetch mode.</strong> On first start, only URLs from <code>{{ cfg.get("REFETCH_SOURCE_RUN") }}</code> with at least one empty gap column are queued (link depth forced to 0). Adjust gap columns below before starting.
+</div>
+{% endif %}
+
 {% if run_status not in ('new', 'running') %}
 <div class="card" style="padding:10px 18px;background:#fff3cd;border-left:4px solid var(--csj-amber);">
   <strong>Note:</strong> This run has status <strong>{{ run_status }}</strong>.
@@ -137,6 +151,33 @@
       <label class="form-label">Friendly name</label>
       <p class="field-explain">Optional label shown in the runs list and reports.</p>
       <input type="text" name="friendly_name" value="{{ friendly_name }}" placeholder="e.g. Weekly full crawl">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Refetch enrichment</div>
+    <p class="field-explain" style="margin-bottom:12px;">
+      Re-fetch pages from an earlier run where chosen <code>pages.csv</code> columns are empty, using the current extractor.
+      New rows are appended to this run’s outputs (combine in analysis if needed).
+    </p>
+    <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer;margin-bottom:12px;">
+      <input type="checkbox" name="refetch_mode" value="1" {% if cfg.get("REFETCH_MODE") %}checked{% endif %}>
+      <span>Enable refetch on first start</span>
+    </label>
+    <div class="form-group" style="max-width:440px;">
+      <label class="form-label">Source run</label>
+      <p class="field-explain">Folder whose <code>pages.csv</code> is scanned for blank gap cells.</p>
+      <select name="refetch_source_run" style="padding:8px 10px;font-size:14px;min-width:280px;">
+        <option value="">— Select a run</option>
+        {% for r in refetch_runs %}
+        <option value="{{ r.name }}" {% if cfg.get("REFETCH_SOURCE_RUN") == r.name %}selected{% endif %}>{{ r.label }} — {{ "{:,}".format(r.page_count|int) }} pages</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-group" style="max-width:520px;">
+      <label class="form-label">Gap columns</label>
+      <p class="field-explain">One column name per line. Leave blank to use the default list: {{ default_refetch_gap_columns | join(', ') }}.</p>
+      <textarea name="refetch_gap_columns" rows="5" placeholder="author&#10;publisher&#10;microdata_types" style="font-family:monospace;font-size:13px;">{{ cfg.get("REFETCH_GAP_COLUMNS", []) | join('\n') }}</textarea>
     </div>
   </div>
 

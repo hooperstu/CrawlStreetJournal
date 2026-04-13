@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from flask import Blueprint, jsonify, redirect, render_template, request, url_for, Response
 
 import config
+import utils
 from error_pages import render_http_error
 import storage as storage_module
 import viz_data
@@ -132,16 +133,27 @@ def reports_dashboard(slug: str):
     preselected = request.args.get("runs", "")
 
     overview = {
-        "run_count": len(runs),
-        "total_pages": sum(r.get("page_count", 0) for r in runs),
+        "run_count": len([x for x in runs if x.get("name") != "_legacy"]),
+        "total_pages": sum(
+            r.get("page_count", 0) for r in runs if r.get("name") != "_legacy"
+        ),
         "total_assets": 0,
         "total_errors": 0,
     }
     for r in runs:
+        if r.get("name") == "_legacy":
+            continue
         run_dir_path = os.path.join(runs_base, r["name"])
-        state = storage_module.load_crawl_state(run_dir_path)
-        if state:
-            overview["total_assets"] += state.get("assets_from_pages", 0)
+        err_path = os.path.join(run_dir_path, config.ERRORS_CSV)
+        overview["total_errors"] += utils.count_csv_rows(err_path)
+        try:
+            for fn in os.listdir(run_dir_path):
+                if fn.startswith("assets_") and fn.endswith(".csv"):
+                    overview["total_assets"] += utils.count_csv_rows(
+                        os.path.join(run_dir_path, fn),
+                    )
+        except OSError:
+            pass
 
     return render_template(
         "reports.html",

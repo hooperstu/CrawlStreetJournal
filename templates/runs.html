@@ -40,7 +40,7 @@
       <label class="form-label" style="font-size:12px;margin-bottom:2px;">Continue from prior run(s)</label>
       <p class="form-hint" style="margin-bottom:4px;max-width:420px;">Optional. Reuse another run’s settings and treat URLs already listed in that run’s CSVs as visited so they are not fetched again.</p>
       <p class="form-hint" style="margin-bottom:6px;max-width:420px;"><strong>All prior runs (cumulative)</strong> — merge visited URLs from every existing run in this project.</p>
-      <select name="continue_from" style="padding:6px 10px;font-size:14px;min-width:260px;max-width:100%;">
+      <select name="continue_from" id="create-continue-from" style="padding:6px 10px;font-size:14px;min-width:260px;max-width:100%;">
         <option value="">— New crawl only (no prior run)</option>
         {% if cumulative_continue_available %}
         <option value="{{ continue_all_value }}">All prior runs (cumulative)</option>
@@ -52,10 +52,42 @@
         {% endfor %}
       </select>
     </div>
+    <div style="flex:1 1 100%;max-width:520px;">
+      <label class="form-label" style="font-size:12px;margin-bottom:2px;">Refetch gap pages (optional)</label>
+      <p class="form-hint" style="margin-bottom:6px;">New run: copy settings from a source run and queue only pages where enrichment columns are still empty. Ignores “Continue from prior run(s)” above.</p>
+      <label style="display:flex;gap:8px;align-items:center;cursor:pointer;margin-bottom:6px;">
+        <input type="checkbox" name="refetch_gap_pages" value="1" id="create-refetch-toggle">
+        <span>Refetch gaps only</span>
+      </label>
+      <select name="refetch_source_run" id="create-refetch-source" style="padding:6px 10px;font-size:14px;min-width:260px;max-width:100%;">
+        <option value="">— Source run (pages.csv)</option>
+        {% for r in runs %}
+        {% if r.name != '_legacy' and r.page_count|int > 0 %}
+        <option value="{{ r.name }}">{{ r.label }} ({{ r.name }}) — {{ "{:,}".format(r.page_count|int) }} pages</option>
+        {% endif %}
+        {% endfor %}
+      </select>
+    </div>
     <button type="submit" class="btn btn-primary">
       + Create Run
     </button>
   </form>
+  <script>
+  (function() {
+    var cb = document.getElementById('create-refetch-toggle');
+    var cf = document.getElementById('create-continue-from');
+    var rs = document.getElementById('create-refetch-source');
+    if (!cb || !cf) return;
+    function sync() {
+      var on = cb.checked;
+      cf.disabled = on;
+      if (on) cf.value = '';
+      if (rs) rs.disabled = !on;
+    }
+    cb.addEventListener('change', sync);
+    sync();
+  })();
+  </script>
 </div>
 
 {% if runs %}

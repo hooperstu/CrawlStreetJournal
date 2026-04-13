@@ -18,7 +18,7 @@ import copy
 import os
 import sys
 from dataclasses import dataclass, field, fields as dc_fields
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 # ── Platform helpers ──────────────────────────────────────────────────
 
@@ -301,6 +301,11 @@ USER_AGENT = (
     "(research; public page metadata inventory; contact: configure in config)"
 )
 
+# Refetch enrichment defaults (per-run overrides live in ``_config.json``).
+REFETCH_MODE = False
+REFETCH_SOURCE_RUN = ""
+REFETCH_GAP_COLUMNS: List[str] = []
+
 
 # ── Per-crawl configuration dataclass ─────────────────────────────────
 
@@ -357,6 +362,11 @@ class CrawlConfig:
     URL_INCLUDE_PATTERNS: list = field(default_factory=list)
     USER_AGENT: str = ""
     LOG_LEVEL: str = "INFO"
+    # Refetch enrichment (new run): re-crawl pages from a source run whose rows
+    # have empty gap columns, writing fresh rows into the new run’s CSVs.
+    REFETCH_MODE: bool = False
+    REFETCH_SOURCE_RUN: str = ""
+    REFETCH_GAP_COLUMNS: list = field(default_factory=list)
 
     @classmethod
     def from_module(cls) -> CrawlConfig:

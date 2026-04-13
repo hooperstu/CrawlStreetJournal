@@ -69,6 +69,7 @@ blueprint from ``viz_api``.
 """
 from __future__ import annotations
 
+import copy
 import csv
 import io
 import itertools
@@ -428,7 +429,44 @@ def _run_crawl(
             resume,
         )
         visited_seed = None
-        if run_folder and not resume and continue_from_run:
+        seed_urls_kw: Optional[List[str]] = None
+        cfg_live = slot.cfg
+        if (
+            not resume
+            and getattr(slot.cfg, "REFETCH_MODE", False)
+            and getattr(slot.cfg, "REFETCH_SOURCE_RUN", "")
+        ):
+            runs_root = storage_module.get_project_runs_dir(project_slug)
+            src = slot.cfg.REFETCH_SOURCE_RUN
+            source_dir = os.path.join(runs_root, src)
+            cols = getattr(slot.cfg, "REFETCH_GAP_COLUMNS", None)
+            gap_urls = storage_module.refetch_gap_requested_urls(
+                source_dir,
+                cols if cols else None,
+            )
+            if not gap_urls:
+                logging.warning(
+                    "Refetch mode: no gap URLs in %s",
+                    source_dir,
+                )
+                slot.status["finished_message"] = (
+                    "Refetch finished: no pages matched the gap-column rules in the source run."
+                )
+                return
+            if on_phase:
+                on_phase(
+                    "crawling",
+                    "Refetch mode — %s page URL(s) with at least one empty gap column queued"
+                    % f"{len(gap_urls):,}",
+                )
+            cfg_live = copy.copy(slot.cfg)
+            cfg_live.MAX_DEPTH = 0
+            slot.ctx.cfg = cfg_live
+            seed_urls_kw = gap_urls
+
+        if run_folder and not resume and continue_from_run and not getattr(
+            slot.cfg, "REFETCH_MODE", False,
+        ):
             runs_root = storage_module.get_project_runs_dir(project_slug)
             if continue_from_run == storage_module.CONTINUE_FROM_ALL_PRIOR_RUNS:
                 visited_seed = scraper.visited_keys_from_all_prior_runs(
@@ -468,9 +506,10 @@ def _run_crawl(
             run_name=run_name,
             run_folder=run_folder,
             resume=resume,
+            seed_urls=seed_urls_kw,
             visited_seed=visited_seed,
             project_slug=project_slug,
-            cfg=slot.cfg,
+            cfg=cfg_live,
             ctx=slot.ctx,
         )
         slot.status["pages"] = pages
@@ -630,6 +669,23 @@ def _resolve_continue_from_create(slug: str, form_value: str) -> Optional[str]:
         return None
     full = os.path.join(base, v)
     if not os.path.isdir(full):
+        return None
+    return v
+
+
+def _resolve_refetch_source_run(slug: str, form_value: str) -> Optional[str]:
+    """Validate *refetch_source_run*: must name a ``run_*`` folder with a ``pages.csv``."""
+    v = (form_value or "").strip()
+    if not v.startswith("run_"):
+        return None
+    base = _runs_dir(slug)
+    if v not in os.listdir(base):
+        return None
+    full = os.path.join(base, v)
+    if not os.path.isdir(full):
+        return None
+    pages_csv = os.path.join(full, config.PAGES_CSV)
+    if not os.path.isfile(pages_csv):
         return None
     return v
 
@@ -1023,6 +1079,12 @@ def _build_config_dict_from_form(form) -> Dict[str, Any]:
         for t in form.get("keyword_log_terms", "").strip().splitlines()
         if t.strip()
     ]
+    refetch_on = "refetch_mode" in form
+    refetch_gap_columns = [
+        c.strip()
+        for c in form.get("refetch_gap_columns", "").strip().splitlines()
+        if c.strip()
+    ] if refetch_on else []
 
     # Domain ownership rules: "domain_suffix = label" per line
     ownership_rules = []
@@ -1076,6 +1138,11 @@ def _build_config_dict_from_form(form) -> Dict[str, Any]:
         "USER_AGENT": form.get("user_agent", config.USER_AGENT).strip(),
         "LOG_LEVEL": form.get("log_level", "INFO").upper(),
         "DOMAIN_OWNERSHIP_RULES": ownership_rules,
+        "REFETCH_MODE": refetch_on,
+        "REFETCH_SOURCE_RUN": (
+            form.get("refetch_source_run", "").strip() if refetch_on else ""
+        ),
+        "REFETCH_GAP_COLUMNS": refetch_gap_columns,
     }
 
 
@@ -1338,15 +1405,34 @@ def create_run_route(slug: str):
         continue_from: Optional ``run_*`` folder, or cumulative sentinel
             (``storage.CONTINUE_FROM_ALL_PRIOR_RUNS``) — copy config and skip URLs
             from that run or from all other runs on first start.
+        refetch_gap_pages: When set, ``refetch_source_run`` must name a ``run_*``
+            with ``pages.csv`` — copy that run’s config and enable refetch mode
+            (ignored with ``continue_from``).
+        refetch_source_run: Source ``run_*`` folder for gap scanning.
     """
     defaults = storage_module.load_project_defaults(slug) or storage_module.snapshot_config()
     cfg = config.CrawlConfig.from_dict(defaults)
     ctx = storage_module.StorageContext(_runs_dir(slug), cfg)
     name = request.form.get("run_name", "").strip() or None
-    continue_from = _resolve_continue_from_create(
-        slug, request.form.get("continue_from", "")
-    )
-    folder = ctx.create_run(name, continue_from_folder=continue_from)
+    refetch_on = request.form.get("refetch_gap_pages") in ("1", "on", "yes", "true")
+    if refetch_on:
+        refetch_src = _resolve_refetch_source_run(
+            slug, request.form.get("refetch_source_run", ""),
+        )
+        if not refetch_src:
+            return render_http_error(
+                "Refetch mode requires a source run that has a pages.csv file. "
+                "Choose a run under “Source run for refetch”.",
+                400,
+                slug=slug,
+                page_title="Invalid refetch source",
+            )
+        folder = ctx.create_run(name, refetch_from_folder=refetch_src)
+    else:
+        continue_from = _resolve_continue_from_create(
+            slug, request.form.get("continue_from", ""),
+        )
+        folder = ctx.create_run(name, continue_from_folder=continue_from)
     return redirect(url_for("run_config", slug=slug, run_name=folder))
 
 
@@ -1384,6 +1470,12 @@ def run_config(slug: str, run_name: str):
     show_continue_from = bool(other_runs) or (
         continue_from_marker == storage_module.CONTINUE_FROM_ALL_PRIOR_RUNS
     )
+    ctx_list = storage_module.StorageContext(base, config.CrawlConfig.from_module())
+    refetch_runs = [
+        r for r in ctx_list.list_run_dirs()
+        if r.get("name") not in ("_legacy", run_name)
+        and int(r.get("page_count") or 0) > 0
+    ]
     return render_template(
         "run_config.html",
         project=project, run_name=run_name,
@@ -1393,6 +1485,8 @@ def run_config(slug: str, run_name: str):
         other_runs=other_runs,
         continue_all_value=storage_module.CONTINUE_FROM_ALL_PRIOR_RUNS,
         show_continue_from=show_continue_from,
+        refetch_runs=refetch_runs,
+        default_refetch_gap_columns=storage_module.DEFAULT_REFETCH_GAP_COLUMNS,
     )
 
 
