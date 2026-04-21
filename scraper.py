@@ -1311,6 +1311,11 @@ def _init_run(
                     if u not in visited and u not in queued:
                         pq.push(u, ref, int(depth), is_seed=(depth == 0))
                         queued.add(u)
+        else:
+            # Missing or empty ``_state.json`` (e.g. merged export) — align counters
+            # with on-disk CSVs so resume progress and the GUI stay consistent.
+            pages_crawled = storage._count_pages_in(run_dir)
+            assets_from_pages = storage.count_asset_rows_in_run(run_dir)
         logger.info(
             "Resumed: %d visited, %d in queue, %d pages already crawled",
             len(visited), len(pq), pages_crawled,

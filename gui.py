@@ -601,6 +601,11 @@ def _start_crawl_thread(
         active_worker_urls=[""] * _workers_n,
         draining_workers=0,
     )
+    if resume and run_folder:
+        run_path = os.path.join(runs_dir, run_folder)
+        cp, ca = _checkpoint_page_asset_counts(run_path)
+        status["pages"] = cp
+        status["assets"] = ca
 
     stop_event = threading.Event()
     # Thread is set to None initially and patched after creation because
@@ -718,6 +723,19 @@ def _count_csv_rows(filepath: str) -> int:
     Delegates to ``utils.count_csv_rows``.
     """
     return utils.count_csv_rows(filepath)
+
+
+def _checkpoint_page_asset_counts(run_dir: str) -> Tuple[int, int]:
+    """Baseline (pages, asset rows) from ``_state.json``, or CSVs if state is absent."""
+    state = storage_module.load_crawl_state(run_dir)
+    if state:
+        pages = int(state.get("pages_crawled") or 0)
+        assets = int(state.get("assets_from_pages") or 0)
+        return (pages, assets)
+    return (
+        _count_csv_rows(os.path.join(run_dir, config.PAGES_CSV)),
+        _metrics_from_assets(run_dir).get("total_assets", 0),
+    )
 
 
 def _output_csvs(run_dir: str) -> List[Dict[str, Any]]:
@@ -1563,6 +1581,14 @@ def run_monitor(slug: str, run_name: str):
     assets_written = 0
     elapsed_written = ""
     live_status = _project_status(slug)
+    if (
+        live_status.get("run_folder") == run_name
+        and live_status.get("running")
+    ):
+        cp, ca = _checkpoint_page_asset_counts(run_dir)
+        live_status = dict(live_status)
+        live_status["pages"] = max(int(live_status.get("pages") or 0), cp)
+        live_status["assets"] = max(int(live_status.get("assets") or 0), ca)
     if live_status.get("run_folder") != run_name:
         pages_csv = os.path.join(run_dir, "pages.csv")
         pages_written = _count_csv_rows(pages_csv)

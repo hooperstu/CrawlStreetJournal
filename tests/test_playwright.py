@@ -40,6 +40,8 @@ from playwright.sync_api import Page
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import config as project_config  # noqa: E402 — after sys.path for repo root
+
 # Use 127.0.0.1 so Playwright matches Flask's default bind (localhost can resolve to ::1).
 BASE = "http://127.0.0.1:5001"
 SLUG = "bugbot-test"
@@ -66,7 +68,9 @@ def page(browser):
 
 @pytest.fixture(scope="session")
 def run_name():
-    runs_dir = f"/workspace/projects/{SLUG}/runs/"
+    runs_dir = os.path.join(project_config.PROJECTS_DIR, SLUG, "runs")
+    if not os.path.isdir(runs_dir):
+        return None
     runs = sorted(os.listdir(runs_dir))
     return runs[0] if runs else None
 

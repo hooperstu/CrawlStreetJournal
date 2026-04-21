@@ -116,3 +116,51 @@ def test_thread_safe_dict_supports_getitem_for_content_dedup():
     assert d["abc123"] == "https://example.com/first"
     assert d.get("abc123") == "https://example.com/first"
     assert "abc123" in d
+
+
+def test_init_run_resume_without_state_uses_csv_page_and_asset_counts():
+    """If ``_state.json`` is missing, page/asset counters match CSV row totals."""
+    with tempfile.TemporaryDirectory() as base:
+        run_dir = os.path.join(base, "run_resume")
+        os.makedirs(run_dir)
+        pages = os.path.join(run_dir, config.PAGES_CSV)
+        with open(pages, "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["requested_url"])
+            w.writeheader()
+            w.writerow({"requested_url": "https://example.com/a"})
+            w.writerow({"requested_url": "https://example.com/b"})
+        assets_path = os.path.join(run_dir, f"{config.ASSETS_CSV_PREFIX}image.csv")
+        with open(assets_path, "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["url"])
+            w.writeheader()
+            w.writerow({"url": "https://cdn.example/x.png"})
+        cfg = scraper.CrawlConfig.from_module()
+        cfg.OUTPUT_DIR = base
+        ctx = storage.StorageContext(base, cfg)
+        *_, pages_crawled, assets_from_pages, saved_state, _ = scraper._init_run(
+            cfg,
+            ctx,
+            seed_urls=None,
+            run_name=None,
+            run_folder="run_resume",
+            resume=True,
+            max_pages=100,
+            delay_cfg=0,
+            max_depth=5,
+            on_phase=None,
+            visited_seed=None,
+        )
+        assert saved_state is None
+        assert pages_crawled == 2
+        assert assets_from_pages == 1
+
+
+def test_count_asset_rows_in_run_sums_asset_csvs():
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, f"{config.ASSETS_CSV_PREFIX}css.csv")
+        with open(p, "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["url"])
+            w.writeheader()
+            w.writerow({"url": "https://x/a.css"})
+            w.writerow({"url": "https://x/b.css"})
+        assert storage.count_asset_rows_in_run(tmp) == 2

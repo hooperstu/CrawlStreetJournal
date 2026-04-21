@@ -1496,6 +1496,18 @@ def _count_pages_in(directory: str) -> int:
     return utils.count_csv_rows(os.path.join(directory, config.PAGES_CSV))
 
 
+def count_asset_rows_in_run(run_dir: str) -> int:
+    """Return the total number of data rows across all ``assets_*.csv`` files."""
+    if not os.path.isdir(run_dir):
+        return 0
+    prefix = config.ASSETS_CSV_PREFIX
+    total = 0
+    for name in os.listdir(run_dir):
+        if name.startswith(prefix) and name.endswith(".csv"):
+            total += utils.count_csv_rows(os.path.join(run_dir, name))
+    return total
+
+
 def list_run_dirs() -> List[Dict[str, Any]]:
     """Return metadata for every run (including legacy un-foldered data),
     newest first."""
