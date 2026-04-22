@@ -14,8 +14,8 @@ The Crawl Street Journal (CSJ) is a single-process Python (3.9+) web crawler wit
 
 ### Testing
 
-- **Full suite:** `source .venv/bin/activate && python3 -m pytest tests/ -v` (306 tests — parser, sitemap, outbound HTTP, continue-from, viz_data, viz_api, quit API, parallel worker scheduling, Playwright GUI, real NHS crawl).
-- **Unit-only (no browser E2E):** `source .venv/bin/activate && python3 -m pytest tests/ --ignore=tests/test_playwright.py --ignore=tests/test_real_crawl.py -v` (152 tests).
+- **Full suite:** `source .venv/bin/activate && python3 -m pytest tests/ -v` (309 tests — parser, sitemap, outbound HTTP, continue-from, viz_data, viz_api, quit API, parallel worker scheduling, Playwright GUI, real NHS crawl).
+- **Unit-only (no browser E2E):** `source .venv/bin/activate && python3 -m pytest tests/ --ignore=tests/test_playwright.py --ignore=tests/test_real_crawl.py -v` (155 tests).
 - **Playwright GUI:** `source .venv/bin/activate && python3 -m pytest tests/test_playwright.py -v` (113 scenario tests).
 - **Real crawl:** `source .venv/bin/activate && python3 -m pytest tests/test_real_crawl.py -v` (41 tests — requires an `nhs-estate-crawl` project with crawl data under `projects/`).
 - **Linting:** `source .venv/bin/activate && flake8 --max-line-length=120 *.py` — no linting config is committed; the repo has minor pre-existing style warnings.
@@ -34,4 +34,4 @@ The Crawl Street Journal (CSJ) is a single-process Python (3.9+) web crawler wit
 - The `pages.csv` schema includes Phase 4 columns (author, publisher, cms_generator, microdata_types, rdfa_types, schema_* fields, etc.). These are always populated but may be empty for pages that lack the relevant signals.
 - The app navigation is **Dashboard | Runs | Settings**. The old `/p/<slug>` (overview) and `/p/<slug>/defaults` URLs redirect to Dashboard and Settings respectively.
 - Crawl scope filtering: `EXCLUDED_DOMAINS`, `URL_EXCLUDE_PATTERNS`, and `URL_INCLUDE_PATTERNS` are enforced in `scraper.py` via `is_url_allowed()` — both at seed queueing and link discovery.
-- Parallel crawls (`CONCURRENT_WORKERS > 1`): when the priority queue contains URLs for more than one hostname, workers avoid starting a fetch for a host that another worker is already fetching; single-host queues still use all workers on that host. See `architecture.md` §6.7.
+- Parallel crawls (`CONCURRENT_WORKERS > 1`): when the project has multiple seed hostnames or the post-seed queue spans several hosts, at most one in-flight HTML fetch per hostname (other workers wait or idle). Single-seed single-host crawls may still parallelise on that host. See `architecture.md` §6.7.

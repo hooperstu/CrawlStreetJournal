@@ -126,7 +126,7 @@ When `CHANGE_DETECTION` is enabled and the crawl resumes:
 | `_preflight_robots_report(queue_items, cfg)` | Pre-check robots.txt for every unique origin in the queue. Logs blocked origins. |
 | `_persist_state_if_needed(...)` | Save crawl state every `STATE_SAVE_INTERVAL` pages. |
 | `_finalise_run(...)` | Write terminal state record (completed or interrupted). |
-| `crawl(seed_urls, max_pages, delay, ...)` | Main entry point. Initialises run, executes crawl loop, handles interrupts. Sequential when `CONCURRENT_WORKERS ≤ 1`; concurrent via `ThreadPoolExecutor` otherwise (each worker pops the queue independently; when multiple hostnames are queued, pops avoid hosts already being fetched). Returns `(pages_crawled, assets_from_pages)`. |
+| `crawl(seed_urls, max_pages, delay, ...)` | Main entry point. Initialises run, executes crawl loop, handles interrupts. Sequential when `CONCURRENT_WORKERS ≤ 1`; concurrent via `ThreadPoolExecutor` otherwise (each worker pops independently; multi-seed or multi-host initial queue ⇒ at most one in-flight fetch per hostname). Returns `(pages_crawled, assets_from_pages)`. |
 
 **Resume exit semantics:** when `resume=True`, if the session ends without a user stop but **no new pages** were written (`pages_crawled` unchanged for the session), the terminal `_state.json` is written with **`interrupted`** — not **`completed`** — so empty-queue resumes and imported runs are not mis-classified as successfully finished crawls.
 
@@ -495,7 +495,7 @@ All configuration is defined as module-level constants with a `CrawlConfig` data
 | `MAX_RETRIES` | 3 | Retries on transient errors |
 | `HTTP_MAX_REDIRECTS` | 30 | Maximum redirects per request (Requests default) |
 | `HTTP_VERIFY_SSL` | True | Verify TLS certificates (`False` is insecure — for broken-chain audits only) |
-| `CONCURRENT_WORKERS` | 1 | Parallel fetch workers; when the queue holds several hostnames, scheduling prefers distinct hosts across in-flight fetches |
+| `CONCURRENT_WORKERS` | 1 | Parallel fetch workers; multi-seed or multi-host queue ⇒ no second concurrent fetch to the same hostname |
 | `STATE_SAVE_INTERVAL` | 10 | Persist `_state.json` every N pages |
 
 #### Feature flags
