@@ -201,7 +201,7 @@ Edit `config.py` before you run. You do not need to change Python code elsewhere
 | `REQUEST_DELAY_SECONDS` | Pause between requests — either a single number (fixed) or a `(min, max)` tuple for a random delay in that range (default `(3, 5)`). Keep at least 1 second in production to be polite. |
 | `REQUEST_TIMEOUT_SECONDS` | How long to wait for a response before giving up. |
 | `MAX_RETRIES` | Retries after transient network errors. |
-| `CONCURRENT_WORKERS` | Number of parallel fetch workers (default 1). Per-domain rate limiting is still enforced. |
+| `CONCURRENT_WORKERS` | Number of parallel fetch workers (default 1). When the queue spans multiple hostnames, workers prefer different hosts so the same origin is not fetched from several threads at once; with a single host in the queue, workers may still overlap on that host. Per-domain rate limiting is still enforced. |
 | `STATE_SAVE_INTERVAL` | How often to persist `_state.json` during a crawl, in pages (default 10). |
 | `CONTENT_DEDUP` | Skip pages with identical visible text hash (default True). |
 | `CHANGE_DETECTION` | Compare content hashes across runs to flag changes (default False). |

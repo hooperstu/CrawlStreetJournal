@@ -395,7 +395,7 @@ If `config.RENDER_JAVASCRIPT` is `True` and `render.is_available()` returns `Tru
 
 ### 6.7 Concurrent fetching and engine optimisations
 
-**Concurrent fetching** is supported via `ThreadPoolExecutor` when `CONCURRENT_WORKERS > 1`. The crawl loop drains a batch of URLs from the priority queue and submits them to the pool. Per-domain rate limiting is preserved because `_wait_for_domain()` uses a thread-safe lock. When `CONCURRENT_WORKERS = 1` (default), the original sequential code path is used with zero regression risk.
+**Concurrent fetching** is supported via `ThreadPoolExecutor` when `CONCURRENT_WORKERS > 1`. Each worker thread repeatedly takes the next URL from the shared `_PriorityQueue` as soon as it is idle (no batch barrier), so a slow page on one host does not block other workers. When the queue currently contains URLs for **more than one hostname**, dequeue prefers a host that is **not** already in use by another in-flight fetch, so parallel workers spread across origins when possible (politer to `robots.txt` and per-host rate limits). If every queued URL shares one hostname, behaviour falls back to competing for that host so workers are not left idle when there are fewer distinct origins than threads. Per-domain rate limiting is preserved because `_wait_for_domain()` uses a thread-safe lock. When `CONCURRENT_WORKERS = 1` (default), the original sequential code path is used with zero regression risk.
 
 Cross-cutting behaviours:
 
