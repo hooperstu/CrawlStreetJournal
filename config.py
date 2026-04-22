@@ -112,8 +112,11 @@ MAX_SITEMAP_RESPONSE_BYTES = 32 * 1024 * 1024
 MAX_LINK_CHECK_RESPONSE_BYTES = 65_536
 
 # Number of concurrent fetch workers. 1 = sequential (safest / most polite).
-# Higher values fetch multiple pages in parallel across different domains.
-# Per-domain rate limiting is still enforced regardless of worker count.
+# When >1 and the project has multiple seed hostnames (or the initial queue
+# holds URLs on several hosts), at most one in-flight HTML fetch per hostname:
+# workers wait rather than starting a second concurrent request to the same host.
+# With a single seed host and single-host queue, workers may still overlap on that
+# host. Per-domain rate limiting still applies.
 CONCURRENT_WORKERS = 1
 
 # Soft ceiling used after HTTP 503 (often “maximum … requests per minute”):

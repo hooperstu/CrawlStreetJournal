@@ -20,6 +20,11 @@ URLs are deprioritised and the current URL is re-queued at the back (no
 ``crawl_errors.csv`` row until deferrals are exhausted). A per-host cooldown
 is then applied so the next fetch respects ``MAX_GLOBAL_REQUESTS_PER_MINUTE``.
 
+**Parallel workers:** when ``CONCURRENT_WORKERS > 1`` and the project has
+multiple seed hostnames (or the seeded queue spans several hosts), at most one
+in-flight HTML fetch per hostname — workers do not start a second concurrent
+request to the same host while another worker is still on that host.
+
 **Module-global caches** (thread-safety caveat):
 ``_robots_cache``, ``_blocked_origins``, ``_domain_last_fetch``, and
 ``_domain_fail_count`` are process-global dicts shared across concurrent
@@ -213,6 +218,84 @@ class _PriorityQueue:
             _, _, url, referrer, depth = heapq.heappop(self._heap)
             return (url, referrer, depth)
 
+    def try_pop_respecting_busy_hosts(
+        self,
+        scheduling_lock: threading.Lock,
+        busy_hosts: Set[str],
+        enforce_distinct_hosts: bool,
+        strict_same_host_exclusion: bool,
+    ) -> Optional[Tuple[str, str, int, Optional[str]]]:
+        """Pop the next URL while optionally avoiding hostnames already being fetched.
+
+        When *enforce_distinct_hosts* is false, behaves like :meth:`try_pop` (no
+        busy-host logic).
+
+        When *enforce_distinct_hosts* is true and *strict_same_host_exclusion* is
+        true (multi-seed project), an item is returned only if its hostname is not
+        in *busy_hosts*. If every queued URL is on hosts that are all busy, returns
+        ``None`` so workers idle rather than starting a second concurrent fetch to
+        the same hostname.
+
+        When *strict_same_host_exclusion* is false but *enforce_distinct_hosts* is
+        true, the queue is inspected: if it currently holds URLs for only one
+        non-empty hostname, reservations are skipped (legacy behaviour) so workers
+        do not stall on a single-origin queue.
+
+        Returns ``(url, referrer, depth, reserved_host)`` where *reserved_host* is
+        the lowercase hostname registered in *busy_hosts* (caller must discard it
+        after the fetch), or ``None`` when no reservation was made.
+
+        *busy_hosts* is mutated only while holding *scheduling_lock* and this queue's
+        internal lock, so pops and releases stay atomic relative to each other.
+        """
+        with scheduling_lock:
+            with self._lock:
+                if not self._heap:
+                    return None
+                if not enforce_distinct_hosts:
+                    _, _, url, referrer, depth = heapq.heappop(self._heap)
+                    return (url, referrer, depth, None)
+
+                nonempty_hosts: Set[str] = set()
+                for _, _, u, _, _ in self._heap:
+                    hn = (urlparse(u).hostname or "").lower()
+                    if hn:
+                        nonempty_hosts.add(hn)
+                collapse_single_origin = (
+                    not strict_same_host_exclusion and len(nonempty_hosts) <= 1
+                )
+
+                best: Optional[Tuple] = None
+                for entry in self._heap:
+                    _, _, url, _, _ = entry
+                    hn = (urlparse(url).hostname or "").lower()
+                    if hn and hn in busy_hosts:
+                        if strict_same_host_exclusion or not collapse_single_origin:
+                            continue
+                    if best is None or entry < best:
+                        best = entry
+
+                if best is None:
+                    return None
+
+                _, _, url, referrer, depth = best
+                remaining: List = []
+                removed = False
+                for e in self._heap:
+                    if not removed and e == best:
+                        removed = True
+                        continue
+                    remaining.append(e)
+                heapq.heapify(remaining)
+                self._heap = remaining
+
+                reserved: Optional[str] = None
+                hn = (urlparse(url).hostname or "").lower()
+                if hn and (strict_same_host_exclusion or not collapse_single_origin):
+                    busy_hosts.add(hn)
+                    reserved = hn
+                return (url, referrer, depth, reserved)
+
     def __len__(self):
         with self._lock:
             return len(self._heap)
@@ -389,6 +472,35 @@ def _origin_of(url: str) -> str:
         return f"{p.scheme}://{p.netloc}"
     except Exception:
         return ""
+
+
+def _project_has_multiple_seed_hostnames(
+    cfg: CrawlConfig,
+    seed_urls_override: Optional[List[str]],
+) -> bool:
+    """True when configured seeds span at least two distinct non-empty hostnames."""
+    if seed_urls_override is not None:
+        seeds = [u.strip() for u in seed_urls_override if u.strip()]
+    else:
+        seeds = [str(u).strip() for u in (cfg.SEED_URLS or []) if str(u).strip()]
+    hosts: Set[str] = set()
+    for u in seeds:
+        hn = (urlparse(u).hostname or "").lower()
+        if hn:
+            hosts.add(hn)
+    return len(hosts) >= 2
+
+
+def _queue_has_multiple_nonempty_hostnames(pq: _PriorityQueue) -> bool:
+    """True when the crawl queue currently holds URLs on two+ distinct non-empty hosts."""
+    hosts: Set[str] = set()
+    for u, _, _ in pq.to_list():
+        hn = (urlparse(u).hostname or "").lower()
+        if hn:
+            hosts.add(hn)
+        if len(hosts) >= 2:
+            return True
+    return False
 
 
 _crawl_delay_cache: Dict[str, Optional[float]] = {}
@@ -1959,6 +2071,16 @@ def crawl(
     max_depth = cfg.MAX_DEPTH
 
     workers = max(1, cfg.CONCURRENT_WORKERS if cfg else 1)
+    multi_seed_hosts = _project_has_multiple_seed_hostnames(cfg, seed_urls)
+    strict_parallel_host_exclusion = workers > 1 and (
+        multi_seed_hosts or _queue_has_multiple_nonempty_hostnames(pq)
+    )
+    if strict_parallel_host_exclusion:
+        logger.info(
+            "Parallel crawl: strict one-in-flight-fetch-per-hostname "
+            "(multiple seed hosts and/or multiple hosts in the queue); "
+            "extra workers may idle until another host has work ready",
+        )
     logger.info(
         "Queue ready: %d URL(s) waiting, %d worker thread(s), "
         "request_delay=%s, max_depth=%s",
@@ -2078,14 +2200,18 @@ def crawl(
         else:
             # Concurrent mode — shared priority queue with independent workers.
             # Each worker pops the next URL as soon as it is free (no batch barrier),
-            # so a slow page on one origin does not idle other workers. Per-domain
-            # rate limiting remains inside _process_one_url.
+            # so a slow page on one origin does not idle other workers. When the
+            # multiple seed hostnames, workers never start a second fetch to a
+            # hostname while another fetch to that host is in flight (may idle).
+            # Per-domain rate limiting remains inside _process_one_url.
             worker_slots = [""] * workers
             _emit_slots(worker_slots)
 
             pages_lock = threading.Lock()
             in_flight_lock = threading.Lock()
             in_flight = 0
+            scheduling_lock = threading.Lock()
+            busy_hosts: Set[str] = set()
             stop_accepting = threading.Event()
             stop_main_logged = threading.Event()
             drain_logged = threading.Event()
@@ -2147,9 +2273,17 @@ def crawl(
                             _log_stop_main()
                         _log_stop_drain()
 
-                    item = pq.try_pop() if not stop_accepting.is_set() else None
+                    if not stop_accepting.is_set():
+                        popped = pq.try_pop_respecting_busy_hosts(
+                            scheduling_lock,
+                            busy_hosts,
+                            enforce_distinct_hosts=(workers > 1),
+                            strict_same_host_exclusion=strict_parallel_host_exclusion,
+                        )
+                    else:
+                        popped = None
 
-                    if item is None:
+                    if popped is None:
                         with in_flight_lock:
                             idle = in_flight == 0
                         qempty = len(pq) == 0
@@ -2160,7 +2294,7 @@ def crawl(
                         time.sleep(0.01)
                         continue
 
-                    url, referrer, depth = item
+                    url, referrer, depth, reserved_host = popped
                     worker_slots[slot_idx] = url
                     _emit_slots(worker_slots)
                     with in_flight_lock:
@@ -2180,6 +2314,9 @@ def crawl(
                         logger.warning("Worker error for %s: %s", url, exc)
                         page_written, new_assets, final_url = False, 0, url
                     finally:
+                        if reserved_host:
+                            with scheduling_lock:
+                                busy_hosts.discard(reserved_host)
                         with in_flight_lock:
                             in_flight -= 1
                         worker_slots[slot_idx] = ""
