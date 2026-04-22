@@ -213,6 +213,80 @@ class _PriorityQueue:
             _, _, url, referrer, depth = heapq.heappop(self._heap)
             return (url, referrer, depth)
 
+    def try_pop_respecting_busy_hosts(
+        self,
+        scheduling_lock: threading.Lock,
+        busy_hosts: Set[str],
+        enforce_distinct_hosts: bool,
+    ) -> Optional[Tuple[str, str, int, Optional[str]]]:
+        """Pop the next URL while optionally avoiding hostnames already being fetched.
+
+        When *enforce_distinct_hosts* is true and the queue currently contains URLs
+        for at least two distinct non-empty hostnames, an item is returned only if
+        its hostname is not in *busy_hosts*. This keeps parallel workers on
+        different origins when possible (politer to robots and origin rate limits).
+
+        If every queued URL shares a single hostname (or hostnames are unknown),
+        behaviour matches :meth:`try_pop` so the crawl does not stall with idle
+        workers when there are fewer origins than worker threads.
+
+        Returns ``(url, referrer, depth, reserved_host)`` where *reserved_host* is
+        the lowercase hostname registered in *busy_hosts* (caller must discard it
+        after the fetch), or ``None`` when no reservation was made.
+
+        *busy_hosts* is mutated only while holding *scheduling_lock* and this queue's
+        internal lock, so pops and releases stay atomic relative to each other.
+        """
+        with scheduling_lock:
+            with self._lock:
+                if not self._heap:
+                    return None
+                if not enforce_distinct_hosts:
+                    _, _, url, referrer, depth = heapq.heappop(self._heap)
+                    return (url, referrer, depth, None)
+
+                nonempty_hosts: Set[str] = set()
+                for _, _, u, _, _ in self._heap:
+                    hn = (urlparse(u).hostname or "").lower()
+                    if hn:
+                        nonempty_hosts.add(hn)
+                collapse_single_origin = len(nonempty_hosts) <= 1
+
+                best: Optional[Tuple] = None
+                for entry in self._heap:
+                    _, _, url, _, _ = entry
+                    hn = (urlparse(url).hostname or "").lower()
+                    if (
+                        not collapse_single_origin
+                        and hn
+                        and hn in busy_hosts
+                    ):
+                        continue
+                    if best is None or entry < best:
+                        best = entry
+
+                if best is None:
+                    return None
+
+                _, _, url, referrer, depth = best
+                remaining: List = []
+                removed = False
+                for e in self._heap:
+                    if not removed and e == best:
+                        removed = True
+                        continue
+                    remaining.append(e)
+                heapq.heapify(remaining)
+                self._heap = remaining
+
+                reserved: Optional[str] = None
+                if not collapse_single_origin:
+                    hn = (urlparse(url).hostname or "").lower()
+                    if hn:
+                        busy_hosts.add(hn)
+                        reserved = hn
+                return (url, referrer, depth, reserved)
+
     def __len__(self):
         with self._lock:
             return len(self._heap)
@@ -2078,14 +2152,18 @@ def crawl(
         else:
             # Concurrent mode — shared priority queue with independent workers.
             # Each worker pops the next URL as soon as it is free (no batch barrier),
-            # so a slow page on one origin does not idle other workers. Per-domain
-            # rate limiting remains inside _process_one_url.
+            # so a slow page on one origin does not idle other workers. When the
+            # queue spans multiple hostnames, workers avoid picking the same host
+            # as another in-flight fetch (reduces 503s and duplicate robots pressure).
+            # Per-domain rate limiting remains inside _process_one_url.
             worker_slots = [""] * workers
             _emit_slots(worker_slots)
 
             pages_lock = threading.Lock()
             in_flight_lock = threading.Lock()
             in_flight = 0
+            scheduling_lock = threading.Lock()
+            busy_hosts: Set[str] = set()
             stop_accepting = threading.Event()
             stop_main_logged = threading.Event()
             drain_logged = threading.Event()
@@ -2147,9 +2225,16 @@ def crawl(
                             _log_stop_main()
                         _log_stop_drain()
 
-                    item = pq.try_pop() if not stop_accepting.is_set() else None
+                    if not stop_accepting.is_set():
+                        popped = pq.try_pop_respecting_busy_hosts(
+                            scheduling_lock,
+                            busy_hosts,
+                            enforce_distinct_hosts=(workers > 1),
+                        )
+                    else:
+                        popped = None
 
-                    if item is None:
+                    if popped is None:
                         with in_flight_lock:
                             idle = in_flight == 0
                         qempty = len(pq) == 0
@@ -2160,7 +2245,7 @@ def crawl(
                         time.sleep(0.01)
                         continue
 
-                    url, referrer, depth = item
+                    url, referrer, depth, reserved_host = popped
                     worker_slots[slot_idx] = url
                     _emit_slots(worker_slots)
                     with in_flight_lock:
@@ -2180,6 +2265,9 @@ def crawl(
                         logger.warning("Worker error for %s: %s", url, exc)
                         page_written, new_assets, final_url = False, 0, url
                     finally:
+                        if reserved_host:
+                            with scheduling_lock:
+                                busy_hosts.discard(reserved_host)
                         with in_flight_lock:
                             in_flight -= 1
                         worker_slots[slot_idx] = ""
