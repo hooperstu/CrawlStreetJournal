@@ -100,6 +100,7 @@ a = Analysis(
         # importable in the frozen tree.
         "run_pre_crawl_analysis",
         "run_background_crawl",
+        "launcher_desktop",
         # Flask and its template/routing stack load submodules via package
         # metadata and lazy imports; PyInstaller often omits pieces that
         # surface as errors on first request rather than at startup.
@@ -164,6 +165,9 @@ a = Analysis(
             # Windows: pythonnet (.NET CLR bridge) + WinForms/EdgeChromium
             "clr",
             "pythonnet",
+            "pystray",
+            "PIL",
+            "PIL.Image",
             "webview.platforms",
             "webview.platforms.winforms",
             "webview.platforms.edgechromium",
