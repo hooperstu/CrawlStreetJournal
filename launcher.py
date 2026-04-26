@@ -13,6 +13,7 @@ import logging
 import os
 import signal
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -54,14 +55,78 @@ def _wait_for_server(port: int, retries: int = 60, interval: float = 0.25) -> bo
     return False
 
 
+def _windows_chromium_profile_dir() -> str:
+    """Isolated user-data dir so the GUI opens in its own window, not a random browser tab."""
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    return os.path.join(base, "CrawlStreetJournal", "WebGuiProfile")
+
+
+def _windows_chromium_candidates() -> list[tuple[str, str]]:
+    """Return [(label, executable_path), ...] in preference order."""
+    pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+    pfx86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    local = os.environ.get("LOCALAPPDATA", "")
+    out: list[tuple[str, str]] = []
+    for path in (
+        os.path.join(pfx86, "Microsoft", "Edge", "Application", "msedge.exe"),
+        os.path.join(pf, "Microsoft", "Edge", "Application", "msedge.exe"),
+        os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
+        os.path.join(pfx86, "Google", "Chrome", "Application", "chrome.exe"),
+    ):
+        if os.path.isfile(path):
+            name = "Edge" if "Edge" in path else "Chrome"
+            out.append((name, path))
+    if local:
+        chrome_local = os.path.join(
+            local, "Google", "Chrome", "Application", "chrome.exe"
+        )
+        if os.path.isfile(chrome_local):
+            out.append(("Chrome", chrome_local))
+    return out
+
+
+def _try_open_windows_dedicated_browser(url: str) -> bool:
+    """Start Edge or Chrome with a dedicated profile (own window). Returns True if launched."""
+    if sys.platform != "win32":
+        return False
+    profile = _windows_chromium_profile_dir()
+    try:
+        os.makedirs(profile, exist_ok=True)
+    except OSError:
+        return False
+    args_prefix = [
+        f"--user-data-dir={profile}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions",
+    ]
+    log = logging.getLogger(__name__)
+    for name, exe in _windows_chromium_candidates():
+        try:
+            subprocess.Popen(  # noqa: S603
+                [exe] + args_prefix + [url],
+                close_fds=True,
+            )
+            log.info("Opened GUI in dedicated %s window (profile %s)", name, profile)
+            return True
+        except OSError as e:
+            log.debug("Could not start %s at %s: %s", name, exe, e)
+    return False
+
+
 def _open_in_browser(port: int) -> None:
-    """Fallback: open in the default browser (used when pywebview is missing)."""
-    if _wait_for_server(port):
-        webbrowser.open(f"http://{HOST}:{port}")
-    else:
-        logging.getLogger(__name__).warning(
+    """Fallback when pywebview is missing: browser tab, or dedicated Chromium on Windows."""
+    log = logging.getLogger(__name__)
+    if not _wait_for_server(port):
+        log.warning(
             "Server did not become ready on port %d — skipping browser launch", port
         )
+        return
+    url = f"http://{HOST}:{port}"
+    if sys.platform == "win32" and _try_open_windows_dedicated_browser(url):
+        return
+    log.info("Opening GUI in default browser")
+    webbrowser.open(url)
 
 
 def _crash_log_path() -> str:
