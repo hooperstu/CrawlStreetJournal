@@ -54,6 +54,8 @@ Run pages::
 
 SSE streams (consumed by the front-end JavaScript)::
 
+    GET  /api/health                              Liveness probe (loopback only).
+    GET  /api/raise                               Second-instance hand-off (loopback only).
     GET  /api/progress/<slug>                     Crawl progress events.
     GET  /api/logs                                Global log tail.
 
@@ -2006,6 +2008,28 @@ def _quit_worker() -> None:
             webview.windows[0].destroy()
     except Exception:
         log.exception("Failed to destroy pywebview window")
+
+
+@app.route("/api/health")
+def api_health():
+    """Lightweight liveness check for single-instance detection (desktop launcher)."""
+    if not _client_is_loopback():
+        return jsonify({"ok": False}), 403
+    return jsonify({"ok": True})
+
+
+@app.route("/api/raise", methods=["GET"])
+def api_raise_desktop():
+    """Second-instance hand-off: desktop launcher sets ``CSJ_DESKTOP_RAISE_EVENT``."""
+    if not _client_is_loopback():
+        return jsonify({"ok": False}), 403
+    ev = app.config.get("CSJ_DESKTOP_RAISE_EVENT")
+    if ev is not None:
+        try:
+            ev.set()
+        except Exception:
+            logging.getLogger(__name__).exception("Desktop raise event failed")
+    return jsonify({"ok": True})
 
 
 @app.route("/api/quit", methods=["POST"])
