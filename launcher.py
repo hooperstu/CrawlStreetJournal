@@ -7,7 +7,14 @@ Falls back to the default browser if pywebview is not available.
 
 The Flask server runs in a background thread; the main thread owns the
 native window lifecycle (required by macOS and Windows GUI toolkits).
+
+On Windows with pywebview, closing the window hides it to the system tray
+(if pystray is installed); use **Quit** there or **Quit application** in the
+UI to exit. A second launch while the app is running focuses the existing
+window instead of occupying another port.
 """
+
+from __future__ import annotations
 
 import logging
 import os
@@ -16,31 +23,21 @@ import socket
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 import webbrowser
 
-HOST = "127.0.0.1"
-PORT = 5001
-MAX_PORT_ATTEMPTS = 10
+import launcher_desktop as _desk
+
+HOST = _desk.HOST
+DEFAULT_PORT = _desk.DEFAULT_PORT
 
 _WEBVIEW_AVAILABLE = False
 try:
     import webview  # pywebview
     _WEBVIEW_AVAILABLE = True
 except ImportError:
-    pass
-
-
-def _find_free_port(start: int = PORT, attempts: int = MAX_PORT_ATTEMPTS) -> int:
-    for port in range(start, start + attempts):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind((HOST, port))
-                return port
-            except OSError:
-                continue
-    raise RuntimeError(
-        f"No free port found in range {start}\u2013{start + attempts - 1}"
-    )
+    webview = None  # type: ignore[misc, assignment]
 
 
 def _wait_for_server(port: int, retries: int = 60, interval: float = 0.25) -> bool:
@@ -55,13 +52,18 @@ def _wait_for_server(port: int, retries: int = 60, interval: float = 0.25) -> bo
 
 
 def _open_in_browser(port: int) -> None:
-    """Fallback: open in the default browser (used when pywebview is missing)."""
-    if _wait_for_server(port):
-        webbrowser.open(f"http://{HOST}:{port}")
-    else:
-        logging.getLogger(__name__).warning(
+    """Fallback when pywebview is missing: browser tab, or dedicated Chromium on Windows."""
+    log = logging.getLogger(__name__)
+    if not _wait_for_server(port):
+        log.warning(
             "Server did not become ready on port %d — skipping browser launch", port
         )
+        return
+    url = f"http://{HOST}:{port}"
+    if sys.platform == "win32" and _desk.try_open_windows_dedicated_browser(url):
+        return
+    log.info("Opening GUI in default browser")
+    webbrowser.open(url)
 
 
 def _crash_log_path() -> str:
@@ -77,14 +79,49 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    log = logging.getLogger(__name__)
 
     import storage as storage_module
-    from gui import run_server
+    from gui import app, run_server
 
     storage_module.migrate_legacy_data()
 
-    port = _find_free_port()
+    preferred = int(os.environ.get("CSJ_GUI_PORT", str(DEFAULT_PORT)))
+    try:
+        port = _desk.resolve_desktop_listen_port(preferred)
+    except SystemExit as e:
+        code = e.code
+        return int(code) if isinstance(code, int) else 0
+
     url = f"http://{HOST}:{port}"
+    raise_evt = threading.Event()
+    app.config["CSJ_DESKTOP_RAISE_EVENT"] = raise_evt
+
+    def _post_quit() -> None:
+        quit_url = f"http://{HOST}:{port}/api/quit"
+        try:
+            req = urllib.request.Request(quit_url, method="POST", data=b"")
+            with urllib.request.urlopen(req, timeout=5.0):
+                pass
+        except (OSError, urllib.error.URLError) as e:
+            log.warning("Quit request failed: %s", e)
+
+    def _show_main_window() -> None:
+        if webview is None:
+            return
+        try:
+            if webview.windows:
+                webview.windows[0].show()
+        except Exception:
+            log.exception("Show main window failed")
+
+    def _raise_poll() -> None:
+        while True:
+            if raise_evt.wait(timeout=0.5):
+                raise_evt.clear()
+                _show_main_window()
+
+    threading.Thread(target=_raise_poll, name="csj-raise", daemon=True).start()
 
     def _shutdown(*_args):
         print("\nShutting down\u2026", file=sys.stderr)
@@ -96,8 +133,6 @@ def main() -> int:
 
     print(f"The Crawl Street Journal: {url}")
 
-    # Start Flask in a daemon thread — the main thread drives the UI.
-    # ``run_server`` uses Werkzeug so /api/quit can call ``server.shutdown()``.
     flask_thread = threading.Thread(
         target=run_server,
         kwargs={"host": HOST, "port": port, "threaded": True},
@@ -105,27 +140,42 @@ def main() -> int:
     )
     flask_thread.start()
 
-    if _WEBVIEW_AVAILABLE:
+    if _WEBVIEW_AVAILABLE and webview is not None:
         _wait_for_server(port)
         try:
-            # WKWebView / WebView2 do not save attachment responses unless this is set
-            # (CSV and ZIP downloads from the Results page would otherwise appear to do nothing).
             webview.settings["ALLOW_DOWNLOADS"] = True
-            webview.create_window(
+
+            def _window_for_tray():
+                return webview.windows[0] if webview.windows else None
+
+            _desk.run_windows_tray(
+                window_factory=_window_for_tray,
+                on_quit=_post_quit,
+            )
+
+            win = webview.create_window(
                 "The Crawl Street Journal",
                 url,
                 width=1280,
                 height=860,
                 min_size=(900, 600),
             )
+
+            if sys.platform == "win32":
+
+                def _cancel_close(_w=None) -> bool:
+                    try:
+                        win.hide()
+                    except Exception:
+                        log.exception("Minimise to tray failed")
+                    return True
+
+                win.events.closing += _cancel_close
+
             webview.start()
             return 0
         except Exception as wv_err:
-            # GUI backend not available — e.g. missing pythonnet/.NET on
-            # Windows, or no GTK/WebKit on Linux.  Log diagnostics so the
-            # issue is traceable, then fall through to the browser fallback.
-            _log = logging.getLogger(__name__)
-            _log.warning(
+            log.warning(
                 "Native window unavailable (%s: %s) — opening in default browser",
                 type(wv_err).__name__,
                 wv_err,
@@ -133,15 +183,16 @@ def main() -> int:
             if getattr(sys, "frozen", False):
                 try:
                     import config as _cfg
-                    _diag = os.path.join(_cfg.DATA_DIR, "webview-error.log")
                     import traceback
+
+                    _diag = os.path.join(_cfg.DATA_DIR, "webview-error.log")
                     with open(_diag, "w") as _f:
                         _f.write(
                             f"pywebview failed at "
                             f"{time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                         )
                         traceback.print_exc(file=_f)
-                    _log.info("Diagnostic log written to %s", _diag)
+                    log.info("Diagnostic log written to %s", _diag)
                 except Exception:
                     pass
 
@@ -159,6 +210,7 @@ if __name__ == "__main__":
         sys.exit(main())
     except Exception:
         import traceback
+
         crash_path = _crash_log_path()
         tb = traceback.format_exc()
         try:

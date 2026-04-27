@@ -54,6 +54,8 @@ Run pages::
 
 SSE streams (consumed by the front-end JavaScript)::
 
+    GET  /api/health                              Liveness probe (loopback only).
+    GET  /api/raise                               Second-instance hand-off (loopback only).
     GET  /api/progress/<slug>                     Crawl progress events.
     GET  /api/logs                                Global log tail.
 
@@ -102,6 +104,7 @@ import storage as storage_module
 from storage import StorageContext
 
 from error_pages import render_http_error
+import launcher_desktop as _ldesk
 import utils
 
 app = Flask(
@@ -2008,6 +2011,28 @@ def _quit_worker() -> None:
         log.exception("Failed to destroy pywebview window")
 
 
+@app.route("/api/health")
+def api_health():
+    """Lightweight liveness check for single-instance detection (desktop launcher)."""
+    if not _client_is_loopback():
+        return jsonify({"ok": False}), 403
+    return jsonify({"ok": True})
+
+
+@app.route("/api/raise", methods=["GET"])
+def api_raise_desktop():
+    """Second-instance hand-off: desktop launcher sets ``CSJ_DESKTOP_RAISE_EVENT``."""
+    if not _client_is_loopback():
+        return jsonify({"ok": False}), 403
+    ev = app.config.get("CSJ_DESKTOP_RAISE_EVENT")
+    if ev is not None:
+        try:
+            ev.set()
+        except Exception:
+            logging.getLogger(__name__).exception("Desktop raise event failed")
+    return jsonify({"ok": True})
+
+
 @app.route("/api/quit", methods=["POST"])
 def quit_application():
     """Quit the whole app: cooperative crawl stop, Flask shutdown, pywebview close.
@@ -2040,7 +2065,22 @@ if __name__ == "__main__":
     # Move any flat-file data from pre-project-era layouts into the new structure.
     storage_module.migrate_legacy_data()
     bind = _gui_bind_address()
-    port = int(os.environ.get("CSJ_GUI_PORT", "5001"))
+    preferred = int(os.environ.get("CSJ_GUI_PORT", "5001"))
+
+    if bind in ("127.0.0.1", "::1"):
+        try:
+            port = _ldesk.resolve_desktop_listen_port(preferred)
+        except SystemExit as e:
+            if e.code == 0:
+                host_hint = "localhost" if bind == "127.0.0.1" else "[::1]"
+                print(
+                    f"The Crawl Street Journal is already running at "
+                    f"http://{host_hint}:{preferred}/",
+                    file=sys.stderr,
+                )
+            raise
+    else:
+        port = preferred
     host_hint = "localhost" if bind in ("127.0.0.1", "::1") else bind
     print(f"The Crawl Street Journal: http://{host_hint}:{port}")
     if bind == "0.0.0.0":

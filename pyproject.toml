@@ -62,6 +62,7 @@ sources = [
     "run_pre_crawl_analysis.py",
     "run_background_crawl.py",
     "launcher.py",
+    "launcher_desktop.py",
     "templates",
     "static",
 ]
@@ -97,6 +98,8 @@ requires = [
 requires = [
     "lxml>=4.9.0",
     "pywebview>=5.0",
+    "pystray>=0.19.5",
+    "Pillow>=10.0.0",
 ]
 
 [tool.briefcase.app.csjapp.linux]
