@@ -547,11 +547,20 @@
     });
   })();
   </script>
-  {# PWA service worker registration #}
+  {# PWA service worker: skip on loopback and pywebview so desktop UI always hits the network. #}
   <script>
-  if ('serviceWorker' in navigator) {
+  (function() {
+    if (!('serviceWorker' in navigator)) return;
+    var h = location.hostname;
+    var loopback = h === '127.0.0.1' || h === 'localhost' || h === '[::1]';
+    if (loopback || window.pywebview) {
+      navigator.serviceWorker.getRegistrations().then(function(regs) {
+        regs.forEach(function(r) { r.unregister(); });
+      }).catch(function() {});
+      return;
+    }
     navigator.serviceWorker.register('/static/sw.js').catch(function() {});
-  }
+  })();
   </script>
 </body>
 </html>

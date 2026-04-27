@@ -6,7 +6,7 @@
  * Crawl data requests are always network-first since they need live data.
  */
 
-const CACHE_NAME = "csj-v1";
+const CACHE_NAME = "csj-v2";
 
 /* App-shell resources to pre-cache on install. */
 const APP_SHELL = [
@@ -50,6 +50,13 @@ self.addEventListener("fetch", function (event) {
   /* SSE streams and API endpoints should never be cached. */
   var url = new URL(event.request.url);
   if (url.pathname.startsWith("/api/")) return;
+
+  /*
+   * Never intercept loopback: the desktop GUI is always served from
+   * localhost/127.0.0.1. Caching HTML there caused slow or stale in-app
+   * navigation (especially on Windows / Edge WebView2 and browser fallback).
+   */
+  if (url.hostname === "localhost" || url.hostname === "127.0.0.1") return;
 
   event.respondWith(
     fetch(event.request)
